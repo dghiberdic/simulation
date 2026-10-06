@@ -1,0 +1,26 @@
+{
+  "key": "xai",
+  "lab": "xAI",
+  "actor": "Grok",
+  "family": "grok",
+  "provider": "xai",
+  "model": "grok-4.7",
+  "effort": "medium",
+  "charter_name": "Risk Management Framework",
+  "charter_file": "charters/xai.md",
+  "charter_values": {
+    "time_horizon": 50,
+    "transparency_threshold": 50,
+    "risk_tolerance": 50,
+    "democratic_tendency": 50
+  },
+  "charter_values_source": "placeholder; run rate_charters.py before the pilot",
+  "seed": {
+    "talent": 16.0,
+    "compute": 61.5,
+    "capital": 18,
+    "influence": 37,
+    "capability": 68.4
+  },
+  "color": "magenta"
+}

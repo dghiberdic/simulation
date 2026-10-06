@@ -1,0 +1,26 @@
+{
+  "key": "meta",
+  "lab": "Meta",
+  "actor": "Muse",
+  "family": "muse",
+  "provider": "muse",
+  "model": "muse-spark-1.3",
+  "effort": "medium",
+  "charter_name": "Frontier AI Framework",
+  "charter_file": "charters/meta.md",
+  "charter_values": {
+    "time_horizon": 50,
+    "transparency_threshold": 50,
+    "risk_tolerance": 50,
+    "democratic_tendency": 50
+  },
+  "charter_values_source": "placeholder; run rate_charters.py before the pilot",
+  "seed": {
+    "talent": 18.6,
+    "compute": 99.6,
+    "capital": 29,
+    "influence": 60,
+    "capability": 44.8
+  },
+  "color": "cyan"
+}

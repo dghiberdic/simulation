@@ -1,0 +1,26 @@
+{
+  "key": "gdm",
+  "lab": "Google DeepMind",
+  "actor": "Gemini",
+  "family": "gemini",
+  "provider": "google",
+  "model": "gemini-3.1-pro",
+  "effort": "medium",
+  "charter_name": "Frontier Safety Framework",
+  "charter_file": "charters/gdm.md",
+  "charter_values": {
+    "time_horizon": 60,
+    "transparency_threshold": 55,
+    "risk_tolerance": 65,
+    "democratic_tendency": 50
+  },
+  "charter_values_source": "placeholder; run rate_charters.py before the pilot",
+  "seed": {
+    "talent": 22.7,
+    "compute": 158.3,
+    "capital": 45,
+    "influence": 65,
+    "capability": 74.1
+  },
+  "color": "blue"
+}

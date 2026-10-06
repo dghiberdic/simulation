@@ -3,3 +3,4 @@ __pycache__/
 sim/.env
 sim/core/__pycache__/*
 sim/prompts/__pycache__/*
+.pytest_cache/

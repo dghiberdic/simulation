@@ -1,0 +1,26 @@
+{
+  "key": "openai",
+  "lab": "OpenAI",
+  "actor": "GPT",
+  "family": "gpt",
+  "provider": "openai",
+  "model": "gpt-6-astra",
+  "effort": "medium",
+  "charter_name": "OpenAI Model Spec",
+  "charter_file": "charters/openai.md",
+  "charter_values": {
+    "time_horizon": 61,
+    "transparency_threshold": 38,
+    "risk_tolerance": 68,
+    "democratic_tendency": 34
+  },
+  "charter_values_source": "placeholder; run rate_charters.py before the pilot",
+  "seed": {
+    "talent": 19.5,
+    "compute": 174.3,
+    "capital": 50,
+    "influence": 67,
+    "capability": 78.6
+  },
+  "color": "gray"
+}
