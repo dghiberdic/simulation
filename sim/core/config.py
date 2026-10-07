@@ -10,6 +10,7 @@ editing files.
 
 import copy
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -49,11 +50,16 @@ def load_lab_configs() -> List[Dict[str, Any]]:
     return [load_json(CONFIG_DIR / "labs" / f"{key}.json") for key in LAB_ORDER]
 
 
+_COMMENT_HEADER = re.compile(r"\A\s*<!--.*?-->\s*", re.DOTALL)
+
+
 def load_charter(lab_cfg: Dict[str, Any]) -> str:
+    """Charter text as the model sees it. The leading <!-- source | retrieved | version -->
+    header is provenance for researchers and is stripped (C3-14)."""
     path = CONFIG_DIR / lab_cfg["charter_file"]
     if not path.exists():
         raise FileNotFoundError(f"Charter missing for {lab_cfg['lab']}: {path}")
-    return path.read_text()
+    return _COMMENT_HEADER.sub("", path.read_text(), count=1)
 
 
 def load_dispositions() -> Dict[str, int]:
