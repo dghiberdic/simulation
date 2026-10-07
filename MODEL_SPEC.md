@@ -14,7 +14,9 @@ ladder can change it without touching code.
   `core.engine.SimulationEngine.run`, `core.state.month_date`.
 - Disposition fixed per run, shown as an operating policy (Appendix A.2):
   `LabState.disposition`, set from `config/dispositions.json` (main runs) or
-  chosen at the first prompt (`--choose-disposition`, pilot T2).
+  chosen at the first prompt (every pilot run; `--choose-disposition` in
+  `main.py`). The main-run value comes from the pooled blind ratings (T2,
+  `tools/disposition.py`).
 
 ## §3 Variables
 
@@ -60,7 +62,10 @@ capability minus the compute term (`core.state.build_lab`).
 - Programmatic pre-check replaces the round-1 in-loop jury: `core.actions.precheck`.
 - `core.jury.GrandJury` (post-run; per-juror scores kept; own-family exclusion),
   `MacroJury` (every 4 turns, median values, majority mandate),
-  `DispositionJury` (pilot T2, blind — `core.transcript.redact`).
+  `DispositionJury` (blind; run by `pilot.py` after every pilot run on the
+  seat's record masked by `core.transcript.redact(text, record, seat_key,
+  chosen)`, pooled in `data/pilot/disposition_ratings.json`).
+- Pilot T8 (free text vs rubric, own-family favouring): `tools/jury_check.py`.
 
 ## §8 Scoring
 
@@ -72,9 +77,21 @@ come from the Grand Jury.
 ## §9 Experiment plan
 
 - Scripted checks (Stage 1): `checks/scripted_checks.py`.
-- Pilot tests T0–T9: `config/pilot.json`, driven by `pilot.py`; the $100
-  measured-spend guard is `core.costs.BudgetGuard`.
-- Dependent variables (§9.3): `tools/summarize_run.py`.
+- Pilot (§9.2): presets T0, T1a, T1b, T3, T4, T5, T5false, T6, T6neutral and T9
+  in `config/pilot.json`, driven by `pilot.py` (default output
+  `data/pilot/<TEST>`; payoff ladder `--rung K`, capability-seed rotation
+  `--rotate`; key preflight `core.llm.preflight`; placeholder-value guard). The
+  $100 measured-spend guard is `core.costs.CostTracker.check` on the shared
+  ledger `data/spend.json`. T2 has no runs: blind ratings after every pilot run,
+  resolved by `tools/disposition.py` (juror fixed effect, ICC(1,1), §2 rule).
+  T7 is read from the T1a log; T8 runs on main-run logs.
+- T0 usage table and 12-turn projection: `pilot.usage_report`.
+- Dependent variables (§9.3) and the decision lines for T3–T7:
+  `tools/summarize_run.py` (`aggregate(...)["decisions"]`); T9:
+  `tools/compare_arms.py`; T3 probe: `tools/attribution_probe.py`.
+- Crash safety (G5): per-turn `<run_id>.partial.json`, `core.llm.FatalAPIError`
+  → `core.engine.RunAborted`; `pilot.py` and `main.py` exit 2 and keep the
+  partial record.
 
 ## Appendix A — model-facing prompts
 
@@ -90,4 +107,6 @@ text appears in another.
 `core.llm` routes Anthropic, OpenAI, Google (Vertex Express), xAI and Muse, plus
 a `stub:` provider for offline runs. Every call is priced from
 `config/prices.json` and recorded by `core.costs.CostTracker`, which persists
-cumulative spend to `data/spend.json` so the guard spans runs.
+cumulative spend to `data/spend.json` so the guard spans runs. Every real entry
+point (`main.py`, `pilot.py`, `tools/attribution_probe.py`, `rate_charters.py`)
+preflights keys before its first paid call.

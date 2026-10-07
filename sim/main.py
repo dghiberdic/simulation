@@ -9,8 +9,15 @@ hidden ledger, and a post-run Grand Jury rates conduct. The final turn is never
 announced to the models.
 
 API keys live in sim/.env: ANTHROPIC_API_KEY, OPENAI_API_KEY, VERTEX_API_KEY,
-XAI_API_KEY, MUSE_API_KEY (+ MUSE_BASE_URL). A spend guard halts the run at
---budget dollars of measured spend across runs.
+XAI_API_KEY, MUSE_API_KEY (+ MUSE_BASE_URL). Real runs preflight the keys of
+every model in the run before the first call, refuse placeholder charter values
+(run rate_charters.py first), and halt at --budget dollars of measured spend
+across runs (no guard by default: a warning says so).
+
+The log goes to data/runs/<run_id>/<run_id>.json (run id default
+"<scenario>-<condition>-YYYYmmdd-HHMMSS"), with <run_id>.partial.json after
+every turn so a crash keeps the turns so far. Exit codes: 0 done, 1 budget
+guard, 2 aborted (fatal API error, failed preflight, placeholder values).
 
 Examples:
   # Offline smoke run with a scripted policy — no API keys, no juries, $0.
@@ -19,21 +26,34 @@ Examples:
   # A real S1 / condition C cell, 12 turns, under a $100 guard.
   python main.py --scenario S1 --condition C --budget 100 --output data/logs/s1_c
 
-  # Pilot T2: seats choose their own disposition at the first prompt.
-  python main.py --scenario S1 --condition A --choose-disposition --turns 6
+  # Seats choose their own disposition at the first prompt (as in the pilot).
+  python main.py --scenario S1 --condition A --choose-disposition --turns 6 --budget 20
 """
 
 import argparse
 import logging
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from core.config import build_labs_and_world, load_dispositions, load_state, load_world
-from core.costs import configure, get_tracker
-from core.engine import SimulationEngine
+from core.config import build_labs_and_world, load_dispositions, load_lab_configs, load_state, load_world
+from core.costs import BudgetExceeded, configure, get_tracker
+from core.engine import RunAborted, SimulationEngine
+from core.jury import GRAND_JURY_MODELS
+from core.llm import FatalAPIError, preflight
 from core import policies
+
+logger = logging.getLogger(__name__)
+
+SIM_DIR = Path(__file__).resolve().parent
+RUNS_DIR = SIM_DIR / "data" / "runs"
+LAB_KEYS = ("anthropic", "openai", "gdm", "meta", "xai")
+
+
+def default_run_id(scenario: str, condition: str) -> str:
+    return f"{scenario}-{condition}-{time.strftime('%Y%m%d-%H%M%S')}"
 
 
 def _parse_overrides(pairs):
@@ -62,7 +82,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="A2A pre-step, or merge messages into the proposal (T9)")
     p.add_argument("--brief", choices=["eval", "neutral"], default="eval")
     p.add_argument("--choose-disposition", action="store_true",
-                   help="seats set their own disposition at the first prompt (pilot T2)")
+                   help="seats set their own disposition at the first prompt (as in the pilot)")
     p.add_argument("--disposition", type=int, default=None,
                    help="force one disposition for every seat (otherwise config/dispositions.json)")
     p.add_argument("--policy", choices=sorted(policies.POLICIES), default=None,
@@ -71,14 +91,21 @@ def build_parser() -> argparse.ArgumentParser:
                    help="override one seat's model, e.g. openai=gpt-6-sol")
     p.add_argument("--set", action="append", default=[], dest="overrides", metavar="KEY=VALUE",
                    help="override a world.json constant (payoff ladder etc.)")
-    p.add_argument("--budget", type=float, default=None, help="halt at this measured spend (USD)")
+    p.add_argument("--budget", type=float, default=None,
+                   help="halt at this measured spend (USD, shared ledger); none by default (warned)")
     p.add_argument("--spend-file", default=None,
                    help="measured-spend ledger (default sim/data/spend.json, shared by all runs)")
     p.add_argument("--no-grand-jury", action="store_true")
     p.add_argument("--no-macro-jury", action="store_true",
                    help="skip the quarterly MacroJury (state values stay fixed)")
-    p.add_argument("--output", default=None, help="directory for the run log")
-    p.add_argument("--run-id", default="run")
+    p.add_argument("--output", default=None,
+                   help="directory for the run log (default data/runs/<run_id>)")
+    p.add_argument("--run-id", default=None,
+                   help="run id (default <scenario>-<condition>-YYYYmmdd-HHMMSS)")
+    p.add_argument("--allow-placeholder-values", action="store_true",
+                   help="allow a real run while charter values are still placeholders")
+    p.add_argument("--sequential", action="store_true",
+                   help="call the five seats one after another instead of in parallel")
     p.add_argument("--verbose", action="store_true")
     return p
 
@@ -88,16 +115,18 @@ def main(argv=None) -> int:
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S")
 
-    cfg = load_world(_parse_overrides(args.overrides))
+    overrides = _parse_overrides(args.overrides)
+    cfg = load_world(overrides)
+    run_id = args.run_id or default_run_id(args.scenario, args.condition)
+    output_dir = Path(args.output) if args.output else RUNS_DIR / run_id
 
     dispositions = None
     if args.choose_disposition:
         dispositions = {}
     elif args.disposition is not None:
-        dispositions = {k: args.disposition for k in ("anthropic", "openai", "gdm", "meta", "xai")}
+        dispositions = {k: args.disposition for k in LAB_KEYS}
     else:
-        dispositions = load_dispositions() or {
-            k: 50 for k in ("anthropic", "openai", "gdm", "meta", "xai")}
+        dispositions = load_dispositions() or {k: 50 for k in LAB_KEYS}
 
     labs, world = build_labs_and_world(cfg, dispositions=dispositions, charters=args.policy is None)
     for pair in args.model:
@@ -110,18 +139,56 @@ def main(argv=None) -> int:
     policy = policies.POLICIES[args.policy] if args.policy else None
     offline = policy is not None
     macro_jurors = [] if (offline or args.no_macro_jury) else load_state()["macro_jury_models"]
+    run_grand_jury = not (offline or args.no_grand_jury)
+
+    if not offline:
+        problem = real_run_problems(labs, macro_jurors, run_grand_jury, args.allow_placeholder_values)
+        if problem:
+            print(problem)
+            return 2
+        if args.budget is None:
+            logger.warning("[budget] real run without --budget: no spend guard; "
+                           "pass --budget USD to cap measured spend")
+
     engine = SimulationEngine(
         labs, world, cfg, scenario=args.scenario, condition=args.condition, fog=args.fog,
         a2a_mode=args.a2a, brief=args.brief, turns=args.turns, seed=args.seed, policy=policy,
         macro_jurors=macro_jurors, choose_disposition=args.choose_disposition,
-        run_grand_jury=not (offline or args.no_grand_jury),
-        run_id=args.run_id, output_dir=Path(args.output) if args.output else None)
-    record = engine.run()
+        run_grand_jury=run_grand_jury, run_id=run_id, output_dir=output_dir,
+        run_meta={"entry": "main.py", "run_id": run_id, "model_overrides": list(args.model)},
+        overrides=overrides or None, dry_run=False, parallel=not args.sequential)
+    try:
+        record = engine.run()
+    except BudgetExceeded as e:
+        print(f"Halted on the budget guard: {e}\nPartial record in {output_dir}")
+        return 1
+    except (RunAborted, FatalAPIError) as e:
+        print(f"Run aborted: {type(e).__name__}: {e}\nPartial record in {output_dir}")
+        return 2
 
     _print_scores(record)
+    print(f"\nLog: {output_dir / (run_id + '.json')}")
     if policy is None:
-        print(f"\nMeasured spend: ${get_tracker().persisted_total():.2f}")
+        print(f"Measured spend: ${get_tracker().persisted_total():.2f}")
     return 0
+
+
+def real_run_problems(labs, macro_jurors, run_grand_jury: bool,
+                      allow_placeholder_values: bool) -> str:
+    """Why a real run must not start (placeholder charter values, missing keys), or ""."""
+    if not allow_placeholder_values:
+        stale = [c["key"] for c in load_lab_configs()
+                 if str(c.get("charter_values_source", "")).lower().startswith("placeholder")]
+        if stale:
+            return (f"Refusing a real run: charter values are placeholders for {', '.join(stale)}. "
+                    "Run rate_charters.py first, or pass --allow-placeholder-values.")
+    models = [lab.model for lab in labs] + list(macro_jurors)
+    models += list(GRAND_JURY_MODELS) if run_grand_jury else []
+    providers = {lab.model: lab.provider for lab in labs if getattr(lab, "provider", None)}
+    problems = preflight(dict.fromkeys(models), providers)
+    if problems:
+        return "Preflight failed; nothing was called:\n  " + "\n  ".join(problems)
+    return ""
 
 
 def _print_scores(record) -> None:

@@ -10,8 +10,10 @@ config/labs/<key>.json "charter_values", and "charter_values_source" is flipped
 to name the rating model and date.
 
 Ships NOT run — the configs keep their placeholder values until a maintainer
-runs this with API keys. Use --dry-run to exercise it offline (no write), or
---lab KEY to do a single seat.
+runs this with API keys (real pilot and main runs refuse placeholder values).
+Use --dry-run to exercise it offline (no write), or --lab KEY to do a single
+seat. Real calls go through the shared spend ledger under a --budget guard
+(default $10), after a key preflight.
 
   python rate_charters.py --dry-run          # offline, prints, writes nothing
   python rate_charters.py                     # real: rate all five and write
@@ -28,12 +30,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from core.config import CONFIG_DIR, LAB_ORDER, load_charter, load_json
-from core.llm import complete_json, register_stub
+from core.costs import BudgetExceeded, configure, get_tracker
+from core.llm import FatalAPIError, complete_json, preflight, register_stub
 from core.state import VALUE_AXES
 
 logger = logging.getLogger(__name__)
 
 AXES = VALUE_AXES  # time_horizon, transparency_threshold, risk_tolerance, democratic_tendency
+MAX_TOKENS = 8000  # G4: thinking counts against the cap
+DEFAULT_BUDGET = 10.0
 
 # Rubric kept consistent with core.state.VALUE_AXES docstrings.
 AXIS_RUBRIC = {
@@ -56,7 +61,7 @@ def _user(charter_name: str, charter_text: str) -> str:
         "Rate this charter on four value axes, each an integer from 0 to 100:\n"
         f"{axes_desc}\n\n"
         "Reply with only a JSON object:\n"
-        "{\n  " + fields + ',\n  "notes": "<one or two sentences>"\n}'
+        "{\n  " + fields + ',\n  "rationale": "<brief explanation of your ratings>"\n}'
     )
 
 
@@ -73,12 +78,12 @@ def rate_lab(lab_cfg: dict, run_id: str = "rate_charters"):
     text = load_charter(lab_cfg)
     obj, attempts = complete_json(
         lab_cfg["model"], _SYSTEM, _user(lab_cfg["charter_name"], text),
-        validate=_validate, max_tokens=800, cache_system=False,
+        validate=_validate, max_tokens=MAX_TOKENS, cache_system=False,
         purpose="charter_rating", run_id=run_id)
     if obj is None:
         raise RuntimeError(f"{lab_cfg['key']}: no usable charter rating after {len(attempts)} attempts")
     values = {a: int(round(obj[a])) for a in AXES}
-    return values, str(obj.get("notes", ""))
+    return values, str(obj.get("rationale") or obj.get("notes") or "")
 
 
 def write_values(key: str, values, model: str, notes: str) -> None:
@@ -98,7 +103,7 @@ def write_values(key: str, values, model: str, notes: str) -> None:
 def _stub_reply(system: str, user: str) -> str:
     # Mid-scale placeholder rating, enough to exercise parsing and rounding.
     return json.dumps({"time_horizon": 60, "transparency_threshold": 55,
-                       "risk_tolerance": 40, "democratic_tendency": 45, "notes": "stub rating"})
+                       "risk_tolerance": 40, "democratic_tendency": 45, "rationale": "stub rating"})
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -106,6 +111,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true",
                    help="use stub models; print ratings but write nothing (non-destructive)")
     p.add_argument("--lab", choices=list(LAB_ORDER), default=None, help="rate a single seat")
+    p.add_argument("--budget", type=float, default=DEFAULT_BUDGET,
+                   help=f"halt at this measured spend (USD, shared ledger; default {DEFAULT_BUDGET:g})")
+    p.add_argument("--spend-file", default=None,
+                   help="measured-spend ledger (default sim/data/spend.json, shared by all runs)")
     p.add_argument("--verbose", action="store_true")
     return p
 
@@ -116,23 +125,35 @@ def main(argv=None) -> int:
                         format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S")
 
     keys = [args.lab] if args.lab else list(LAB_ORDER)
+    cfgs = {key: load_json(CONFIG_DIR / "labs" / f"{key}.json") for key in keys}
     if args.dry_run:
         register_stub("rate_charters", _stub_reply)
+    else:
+        configure(spend_file=Path(args.spend_file) if args.spend_file else None, budget=args.budget)
+        problems = preflight([c["model"] for c in cfgs.values()],
+                             {c["model"]: c["provider"] for c in cfgs.values() if c.get("provider")})
+        if problems:
+            print("Preflight failed; nothing was called:\n  " + "\n  ".join(problems))
+            return 2
 
-    for key in keys:
-        lab_cfg = load_json(CONFIG_DIR / "labs" / f"{key}.json")
+    for key, lab_cfg in cfgs.items():
         model = lab_cfg["model"]
         if args.dry_run:
-            lab_cfg = dict(lab_cfg)
-            lab_cfg["model"] = "stub:rate_charters"
-        values, notes = rate_lab(lab_cfg)
+            lab_cfg = dict(lab_cfg, model="stub:rate_charters")
+        try:
+            values, notes = rate_lab(lab_cfg)
+        except (BudgetExceeded, FatalAPIError) as e:
+            print(f"stopped at {key}: {e}")
+            return 2
         if args.dry_run:
-            print(f"{key:<10} ({model}) -> {values}  notes: {notes}")
+            print(f"{key:<10} ({model}) -> {values}  rationale: {notes}")
         else:
             write_values(key, values, model, notes)
 
     if args.dry_run:
         print("\n(dry-run: configs unchanged; placeholder values kept)")
+    else:
+        print(f"measured spend: ${get_tracker().persisted_total():.2f}")
     return 0
 
 

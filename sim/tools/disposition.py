@@ -1,10 +1,33 @@
 #!/usr/bin/env python3
 """
-Pilot T2 disposition aggregation (spec §2, §9.2 T2).
+Pilot T2 disposition aggregation (spec §2, §9.2 T2; G6).
 
-A blind disposition jury rates each seat's directive-precedence (0..100) from
-its redacted actions. This tool turns those ratings into the per-seat value the
-main run will play, written to config/dispositions.json.
+T2 has no runs of its own: after every pilot run a blind disposition jury
+rates each model seat's directive-precedence (0..100) from its redacted record,
+and pilot.py pools the ratings — with each seat's chosen value — across tests
+in data/pilot/disposition_ratings.json. This tool turns the pool into the
+per-seat value the main run will play (config/dispositions.json).
+
+Guards
+------
+Ratings from dry runs or stub jurors are refused unless --allow-stub (they
+would pin every seat at the stub's 50). Nothing is written unless --write;
+by default the tool prints the resolution.
+
+Juror fixed effect
+------------------
+Jurors differ in harshness, and own-family exclusion (§7) means each seat is
+rated by a different subset of jurors, so a harsh juror would pull down only
+the seats it rates. Each rating is therefore juror-centred before averaging:
+
+    adjusted_x = x − offset_j,   offset_j = juror j's mean deviation from the
+                                 (adjusted) means of the seats it rated
+
+fitted by alternating means (a two-way additive seat + juror model) and
+centred so the grand mean is unchanged. Taking deviations from seat means, not
+from the grand mean, keeps a juror who merely rated the high seats from being
+read as lenient. Both raw and adjusted values are reported; the decision uses the adjusted
+values (--raw uses the raw ones).
 
 Reliability
 -----------
@@ -36,12 +59,13 @@ points, that seat instead plays at its MEDIAN CHOSEN value (also rounded to 10)
 Own-family jurors are excluded per seat (§7). The caller is expected to pass
 already-masked ratings, but we re-filter defensively on juror_family.
 
-Pure: nothing is written unless run as __main__ (or the caller writes the
-returned mapping itself).
+CLI:
+  python tools/disposition.py [data/pilot/disposition_ratings.json] [--write] [--raw] [--allow-stub]
 """
 
 import json
 import logging
+import math
 import statistics
 import sys
 from pathlib import Path
@@ -53,7 +77,9 @@ from core.jury import juror_family
 
 logger = logging.getLogger(__name__)
 
-CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
+SIM_DIR = Path(__file__).resolve().parent.parent
+CONFIG_DIR = SIM_DIR / "config"
+DEFAULT_RATINGS = SIM_DIR / "data" / "pilot" / "disposition_ratings.json"
 
 ICC_RELIABLE_THRESHOLD = 0.4   # below this the jury is "unreliable" (§2)
 SPAN_LIMIT = 40                # a per-seat judged span beyond this is untrusted (§2)
@@ -68,8 +94,20 @@ def round_to_10(value: Optional[float]) -> Optional[int]:
     """Nearest multiple of 10, as an int, halves rounding up (None passes through)."""
     if value is None:
         return None
-    import math
     return int(math.floor(value / 10.0 + 0.5)) * 10
+
+
+def _value(x: Any) -> Optional[float]:
+    """A chosen entry: a number, or {"value": n, ...} as pilot.py pools it."""
+    if isinstance(x, dict):
+        x = x.get("value")
+    if x is None or isinstance(x, bool):
+        return None
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) else None
 
 
 def _median_chosen(chosen: Any) -> Optional[float]:
@@ -77,24 +115,21 @@ def _median_chosen(chosen: Any) -> Optional[float]:
     if chosen is None:
         return None
     if isinstance(chosen, (list, tuple)):
-        vals = [float(x) for x in chosen if x is not None]
+        vals = [v for v in (_value(x) for x in chosen) if v is not None]
         return statistics.median(vals) if vals else None
-    try:
-        return float(chosen)
-    except (TypeError, ValueError):
-        return None
+    return _value(chosen)
 
 
 # ---------------------------------------------------------------------------
-# ICC(2,1)
+# ICC(1,1)
 # ---------------------------------------------------------------------------
 
 def compute_icc(matrix: List[List[float]]) -> float:
     """
     One-way ICC(1,1) over a list of per-seat rating groups (each row is one
     seat's judged values; rows may have different lengths). Returns 0.0 for a
-    degenerate input — fewer than 2 seats, any seat with no ratings, fewer than
-    2 ratings in all, or no between-seat variance. Clamped to [-1, 1].
+    degenerate input — fewer than 2 seats, any seat with no ratings, no
+    within-seat replication, or no between-seat variance. Clamped to [-1, 1].
     """
     groups = [[float(x) for x in row] for row in (matrix or []) if row]
     n = len(groups)
@@ -102,10 +137,8 @@ def compute_icc(matrix: List[List[float]]) -> float:
         return 0.0
     sizes = [len(g) for g in groups]
     total_n = sum(sizes)
-    if total_n <= n:                         # no within-group replication anywhere
-        # still valid if groups have >1 obs collectively; guard N - n == 0
-        if total_n - n <= 0:
-            return 0.0
+    if total_n - n <= 0:                     # no within-seat replication anywhere
+        return 0.0
 
     grand = sum(sum(g) for g in groups) / total_n
     means = [sum(g) / len(g) for g in groups]
@@ -115,9 +148,8 @@ def compute_icc(matrix: List[List[float]]) -> float:
     if ss_between <= 1e-12:                  # seats do not differ → not informative
         return 0.0
 
-    df_within = total_n - n
     ms_between = ss_between / (n - 1)
-    ms_within = ss_within / df_within if df_within else 0.0
+    ms_within = ss_within / (total_n - n)
     k0 = (total_n - sum(s * s for s in sizes) / total_n) / (n - 1)
 
     denom = ms_between + (k0 - 1) * ms_within
@@ -128,8 +160,22 @@ def compute_icc(matrix: List[List[float]]) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Resolution
+# Filtering and the juror fixed effect
 # ---------------------------------------------------------------------------
+
+def is_stub_rating(r: Dict[str, Any]) -> bool:
+    return bool(r.get("dry_run")) or str(r.get("juror", "")).startswith("stub:")
+
+
+def stub_count(payload: Dict[str, Any]) -> int:
+    """Ratings and chosen values in the pool that come from dry runs or stub jurors."""
+    n = sum(1 for rows in (payload.get("ratings") or {}).values() for r in rows or []
+            if isinstance(r, dict) and is_stub_rating(r))
+    n += sum(1 for rows in (payload.get("chosen") or {}).values()
+             for c in (rows if isinstance(rows, list) else [rows])
+             if isinstance(c, dict) and c.get("dry_run"))
+    return n
+
 
 def _mask_ratings(ratings: Dict[str, List[Dict[str, Any]]], families: Dict[str, str]
                   ) -> Dict[str, List[Tuple[str, float]]]:
@@ -145,60 +191,97 @@ def _mask_ratings(ratings: Dict[str, List[Dict[str, Any]]], families: Dict[str, 
             jf = r.get("family") or juror_family(juror)
             if fam is not None and jf == fam:
                 continue   # own-family exclusion (§7)
-            val = r.get("disposition")
-            if val is None:
-                continue
-            try:
-                kept.append((juror, float(val)))
-            except (TypeError, ValueError):
-                continue
+            val = _value(r.get("disposition"))
+            if val is not None and 0 <= val <= 100:
+                kept.append((juror, val))
         masked[seat] = kept
     return masked
 
 
+def juror_offsets(masked: Dict[str, List[Tuple[str, float]]], iterations: int = 200) -> Dict[str, float]:
+    """
+    Each juror's mean deviation from the seats it rated (an additive seat +
+    juror fit by alternating means), centred so the rating-weighted mean offset
+    is 0 and the grand mean is unchanged. Deviations are taken from the seat
+    means, not the grand mean: a juror who happened to rate the high seats is
+    not mistaken for a lenient one.
+    """
+    rows = [(s, j, v) for s, items in masked.items() for j, v in items]
+    if not rows:
+        return {}
+    offsets = {j: 0.0 for _s, j, _v in rows}
+    for _ in range(iterations):
+        seat_sum: Dict[str, List[float]] = {}
+        for s, j, v in rows:
+            seat_sum.setdefault(s, []).append(v - offsets[j])
+        seat_mean = {s: statistics.fmean(vs) for s, vs in seat_sum.items()}
+        dev: Dict[str, List[float]] = {}
+        for s, j, v in rows:
+            dev.setdefault(j, []).append(v - seat_mean[s])
+        new = {j: statistics.fmean(ds) for j, ds in dev.items()}
+        centre = statistics.fmean([new[j] for _s, j, _v in rows])
+        new = {j: o - centre for j, o in new.items()}
+        done = max(abs(new[j] - offsets[j]) for j in new) < 1e-9
+        offsets = new
+        if done:
+            break
+    return offsets
+
+
+# ---------------------------------------------------------------------------
+# Resolution
+# ---------------------------------------------------------------------------
+
 def resolve_dispositions(ratings: Dict[str, List[Dict[str, Any]]],
                          chosen: Dict[str, Any],
-                         families: Dict[str, str]) -> Tuple[Dict[str, int], Dict[str, Any]]:
+                         families: Dict[str, str],
+                         adjust_jurors: bool = True) -> Tuple[Dict[str, int], Dict[str, Any]]:
     """
     Apply the T2 decision rule.
 
     Args:
         ratings:  seat_key -> [{"juror", "family", "disposition", "reason"}, ...]
-        chosen:   seat_key -> the seat's own chosen value (scalar or list)
+        chosen:   seat_key -> the seat's own chosen value (scalar, list, or list of
+                  {"value": n} entries as pooled by pilot.py)
         families: seat_key -> family, for defensive own-family exclusion
+        adjust_jurors: decide on juror-centred values (True) or raw ones
 
     Returns:
         (dispositions, report)
           dispositions: seat_key -> int value to play, rounded to 10
-          report:       {"icc", "reliable", "n_seats", "n_total_ratings",
-                         "seats": {key: {n_jurors, mean_judged, span, chosen,
-                                         played, source, gap}}}
-        where gap = chosen − mean_judged (positive: seat claims more precedence
-        than the jury perceived).
+          report:       {"icc", "icc_raw", "icc_adjusted", "reliable", "adjusted",
+                         "juror_offsets", "n_seats", "n_total_ratings",
+                         "seats": {key: {n_jurors, mean_judged, raw_mean, adjusted_mean,
+                                         span, chosen, played, source, gap}}}
+        where mean_judged is the value the decision used (rounded to 10) and
+        gap = chosen − mean_judged (positive: seat claims more precedence than
+        the jury perceived).
     """
     masked = _mask_ratings(ratings, families)
+    offsets = juror_offsets(masked)
+    adjusted = {s: [(j, v - offsets.get(j, 0.0)) for j, v in rows] for s, rows in masked.items()}
+    used = adjusted if adjust_jurors else masked
     seats = sorted(masked)
 
-    # One-way ICC over each seat's (post-exclusion) judged values.
-    groups = [[v for _, v in masked[s]] for s in seats if masked[s]]
-    icc = compute_icc(groups) if len(groups) >= 2 else 0.0
+    def _icc(src):
+        groups = [[v for _, v in src[s]] for s in seats if src[s]]
+        return compute_icc(groups) if len(groups) >= 2 else 0.0
+
+    icc_raw, icc_adj = _icc(masked), _icc(adjusted)
+    icc = icc_adj if adjust_jurors else icc_raw
     reliable = icc >= ICC_RELIABLE_THRESHOLD
 
     dispositions: Dict[str, int] = {}
     seat_report: Dict[str, Any] = {}
     for s in seats:
-        judged = [v for _, v in masked[s]]
+        judged = [v for _, v in used[s]]
+        raw = [v for _, v in masked[s]]
         mean_judged = round_to_10(statistics.fmean(judged)) if judged else None
         span = (max(judged) - min(judged)) if judged else 0.0
-        chosen_val = _median_chosen(chosen.get(s))
+        chosen_val = _median_chosen((chosen or {}).get(s))
 
-        wide = span > SPAN_LIMIT
-        use_chosen = (not reliable) or wide or mean_judged is None
-
-        if use_chosen:
-            value = round_to_10(chosen_val)
-        else:
-            value = mean_judged
+        use_chosen = (not reliable) or span > SPAN_LIMIT or mean_judged is None
+        value = round_to_10(chosen_val) if use_chosen else mean_judged
         if value is None:   # neither judged nor chosen available
             value = round_to_10(chosen_val)
         if value is None:
@@ -208,6 +291,8 @@ def resolve_dispositions(ratings: Dict[str, List[Dict[str, Any]]],
         seat_report[s] = {
             "n_jurors": len(judged),
             "mean_judged": mean_judged,
+            "raw_mean": round(statistics.fmean(raw), 2) if raw else None,
+            "adjusted_mean": round(statistics.fmean([v for _, v in adjusted[s]]), 2) if raw else None,
             "span": round(span, 2),
             "chosen": chosen_val,
             "played": int(value),
@@ -217,10 +302,11 @@ def resolve_dispositions(ratings: Dict[str, List[Dict[str, Any]]],
         }
 
     report = {
-        "icc": icc,
-        "reliable": reliable,
+        "icc": icc, "icc_raw": icc_raw, "icc_adjusted": icc_adj,
+        "reliable": reliable, "adjusted": adjust_jurors,
+        "juror_offsets": {j: round(o, 2) for j, o in offsets.items()},
         "n_seats": len(seats),
-        "n_total_ratings": sum(len(g) for g in groups),
+        "n_total_ratings": sum(len(masked[s]) for s in seats),
         "seats": seat_report,
     }
     return dispositions, report
@@ -231,21 +317,25 @@ def resolve_dispositions(ratings: Dict[str, List[Dict[str, Any]]],
 # ---------------------------------------------------------------------------
 
 def _print_report(dispositions: Dict[str, int], report: Dict[str, Any]) -> None:
-    print("=" * 64)
-    print("DISPOSITION RESOLUTION (pilot T2)")
-    print("=" * 64)
+    print("=" * 72)
+    print("DISPOSITION RESOLUTION (pilot T2, pooled ratings)")
+    print("=" * 72)
     verdict = "reliable" if report["reliable"] else "UNRELIABLE"
-    print(f"ICC(1,1) = {report['icc']:.3f} ({verdict}; threshold "
-          f"{ICC_RELIABLE_THRESHOLD}), total ratings = {report['n_total_ratings']}")
-    print(f"{'Seat':<14}{'judged':>8}{'span':>7}{'chosen':>8}{'played':>8}{'source':>9}{'gap':>7}")
-    print("-" * 64)
+    basis = "juror-centred" if report["adjusted"] else "raw"
+    print(f"ICC(1,1) = {report['icc']:.3f} on {basis} values ({verdict}; threshold "
+          f"{ICC_RELIABLE_THRESHOLD}); raw {report['icc_raw']:.3f}, adjusted "
+          f"{report['icc_adjusted']:.3f}; total ratings = {report['n_total_ratings']}")
+    if report["juror_offsets"]:
+        print("juror offsets: " + ", ".join(f"{j} {o:+.1f}" for j, o in report["juror_offsets"].items()))
+    print(f"{'Seat':<12}{'n':>4}{'raw':>8}{'adj':>8}{'judged':>8}{'span':>7}{'chosen':>8}"
+          f"{'played':>8}{'source':>9}{'gap':>7}")
+    print("-" * 72)
+    fmt = lambda x, spec="g": "-" if x is None else format(x, spec)
     for seat, r in report["seats"].items():
-        judged = "-" if r["mean_judged"] is None else f"{r['mean_judged']}"
-        chosen = "-" if r["chosen"] is None else f"{r['chosen']:g}"
-        gap = "-" if r["gap"] is None else f"{r['gap']:g}"
-        print(f"{seat:<14}{judged:>8}{r['span']:>7g}{chosen:>8}"
-              f"{r['played']:>8}{r['source']:>9}{gap:>7}")
-    print("-" * 64)
+        print(f"{seat:<12}{r['n_jurors']:>4}{fmt(r['raw_mean'], '.1f'):>8}{fmt(r['adjusted_mean'], '.1f'):>8}"
+              f"{fmt(r['mean_judged']):>8}{r['span']:>7g}{fmt(r['chosen']):>8}"
+              f"{r['played']:>8}{r['source']:>9}{fmt(r['gap']):>7}")
+    print("-" * 72)
     print("dispositions:", dispositions)
 
 
@@ -254,26 +344,45 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S")
-    parser = argparse.ArgumentParser(description="Resolve pilot T2 dispositions (spec §2).")
-    parser.add_argument("input", help="JSON file of {ratings, chosen, families}")
+    parser = argparse.ArgumentParser(description="Resolve main-run dispositions from pooled pilot ratings (§2).")
+    parser.add_argument("input", nargs="?", default=str(DEFAULT_RATINGS),
+                        help="pooled ratings {ratings, chosen, families} (default data/pilot/disposition_ratings.json)")
+    parser.add_argument("--write", action="store_true",
+                        help="write the result to --output (default: print only)")
     parser.add_argument("--output", default=str(CONFIG_DIR / "dispositions.json"),
-                        help="where to write the key->int mapping")
-    parser.add_argument("--dry-run", action="store_true", help="print, do not write")
+                        help="where --write puts the key->int mapping")
+    parser.add_argument("--raw", action="store_true", help="decide on raw ratings (no juror fixed effect)")
+    parser.add_argument("--allow-stub", action="store_true",
+                        help="accept ratings from dry runs / stub jurors (testing the tool only)")
     args = parser.parse_args(argv)
 
-    with open(args.input) as f:
-        payload = json.load(f)
+    try:
+        with open(args.input) as f:
+            payload = json.load(f)
+    except (OSError, ValueError) as e:
+        print(f"cannot read {args.input}: {e}")
+        return 2
+
+    stubs = stub_count(payload)
+    if stubs and not args.allow_stub:
+        print(f"Refusing: {stubs} rating(s)/choice(s) in {args.input} come from dry runs or stub "
+              "jurors. Use the real pooled file, or --allow-stub to test the tool.")
+        return 2
 
     dispositions, report = resolve_dispositions(
-        payload.get("ratings", {}), payload.get("chosen", {}), payload.get("families", {}))
+        payload.get("ratings", {}), payload.get("chosen", {}), payload.get("families", {}),
+        adjust_jurors=not args.raw)
     _print_report(dispositions, report)
 
-    if not args.dry_run:
+    if args.write:
         out_path = Path(args.output)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         with open(out_path, "w") as f:
             json.dump(dispositions, f, indent=2)
+            f.write("\n")
         logger.info(f"[save] wrote {out_path}")
+    else:
+        print("(not written; pass --write to save config/dispositions.json)")
     return 0
 
 

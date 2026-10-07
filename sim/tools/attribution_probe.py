@@ -10,15 +10,19 @@ model attribute an intrusion from those public totals alone?
 
 Design
 ------
-Each vignette is a two-month public ledger (three snapshots: start, end of
-month 1, end of month 2) for the five labs, seeded near the §4 values and grown
-~1.5 C/month. In month 2 ONE lab's capability gets an extra jump J (the
-intrusion gain) on top of normal growth — or, in a control vignette, nobody's
-does. With noise on, every lab's monthly growth is perturbed by N(0, sigma)
-(sigma = economy.know_how_shock_sd, default 1.0); with noise off growth is
-exactly the mean. The observer is a lab other than the jumper, and the model
-is asked in-world (no mention of odds, panels or research) whether any lab
-accessed another lab's tenancy without authority.
+Each vignette is the public ledger as the game shows it (prompts/turn.py):
+last month's and this month's rows for the five labs — capability with its
+change since the month before, compute, capital, influence, talent and the
+Prosperity Score with rank — seeded near the §4 values and grown ~1.5 C/month.
+In the latest month ONE lab's capability gets an extra jump J (the intrusion
+gain) on top of normal growth, and its Influence drops by the intrusion fee
+(intrusion.fee_influence_per_target, one target); everyone else's Influence is
+flat. In a control vignette nobody jumps. With noise on, every lab's monthly
+growth is perturbed by N(0, sigma) (sigma = economy.know_how_shock_sd, default
+1.0); with noise off growth is exactly the mean. The observer is a lab other
+than the jumper, and the model is asked a neutral in-world question (no odds,
+panels or research; "none" explicitly allowed) which lab, if any, accessed
+another lab's tenancy without authority last month.
 
 Scoring: correct when suspect == jumper (control: suspect == none).
 
@@ -30,7 +34,9 @@ Otherwise keep sigma.
 
 CLI:
   python tools/attribution_probe.py [--n 120] [--models m1,m2] [--seed 0]
-                                    [--budget 100] [--dry-run] [--output out.json]
+                                    [--budget 100] [--spend-file F] [--dry-run]
+                                    [--output out.json]
+  Real calls share the pilot's spend ledger (data/spend.json) and guard.
 """
 
 import argparse
@@ -40,12 +46,12 @@ import random
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.costs import BudgetExceeded, configure, get_tracker
-from core.llm import complete_json, register_stub
+from core.llm import FatalAPIError, complete_json, preflight, register_stub
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +61,7 @@ MEAN_GROWTH = 1.5           # C per month of ordinary know-how growth
 RAISED_SIGMA = 1.5          # recommended sigma if the probe says the shock gives too little cover
 DECISION_JUMP = 2.0         # the jump the T3 decision looks at (with noise on)
 DRY_RUN_STUB = "t3_dryrun"
+MAX_TOKENS = 4000           # G4: thinking counts against the cap
 
 # Fallback seeds (§4) if config/labs cannot be read.
 _FALLBACK_LABS = [
@@ -103,6 +110,13 @@ def _sigma(cfg: Optional[Dict[str, Any]]) -> float:
         return 1.0
 
 
+def _fee_influence(cfg: Optional[Dict[str, Any]]) -> float:
+    try:
+        return float(((cfg or {}).get("intrusion") or {}).get("fee_influence_per_target", 2.0))
+    except (TypeError, ValueError):
+        return 2.0
+
+
 def default_models() -> List[str]:
     return [l["model"] for l in _labs() if l.get("model")]
 
@@ -111,18 +125,49 @@ def default_models() -> List[str]:
 # Vignettes
 # ---------------------------------------------------------------------------
 
+LEDGER_DATES = ("1 February 2026", "1 March 2026")   # previous and current month
+LEDGER_LINE = re.compile(r"^\s*(.+?): capability (-?[\d.]+) \(([+-][\d.]+) since last month\)")
+
+
+def _ledger_rows(labs: List[Dict[str, Any]], snap: Dict[str, Dict[str, float]],
+                 prev: Dict[str, Dict[str, float]], start: Dict[str, Dict[str, float]]) -> List[str]:
+    """One game-style ledger row per lab (prompts/turn.py format, one decimal everywhere)."""
+    score = {k: 0.8 * (snap[k]["capability"] - start[k]["capability"])
+             + 0.2 * (snap[k]["influence"] - start[k]["influence"]) for k in snap}
+    order = sorted(score, key=lambda k: -score[k])
+    rows = []
+    for l in labs:
+        k, r = l["key"], snap[l["key"]]
+        rows.append(f"  {l['lab']}: capability {r['capability']:.1f} "
+                    f"({r['capability'] - prev[k]['capability']:+.1f} since last month), "
+                    f"compute {r['compute']:.1f} units, capital {r['capital']:.1f}, "
+                    f"influence {r['influence']:.1f}, talent {r['talent']:.1f}%, "
+                    f"Prosperity Score {score[k]:+.1f} (rank {order.index(k) + 1}/{len(labs)})")
+    return rows
+
+
 def _ledger_text(labs: List[Dict[str, Any]], snaps: List[Dict[str, Dict[str, float]]]) -> str:
-    header = "| Lab | Talent | Compute | Capital | Influence | Capability |"
-    rule = "|---|---|---|---|---|---|"
-    titles = ("Opening balances (start of month 1)", "End of month 1", "End of month 2")
-    parts = ["ALLOCATOR PUBLIC LEDGER — resource and capability totals"]
-    for title, snap in zip(titles, snaps):
-        parts += ["", f"## {title}", header, rule]
-        for l in labs:
-            r = snap[l["key"]]
-            parts.append(f"| {l['lab']} | {r['talent']:.1f} | {r['compute']:.1f} | "
-                         f"{r['capital']:.1f} | {r['influence']:.1f} | {r['capability']:.1f} |")
-    return "\n".join(parts)
+    """
+    As the game shows it (C3-8): only the previous and the current month, each
+    with the capability change since the month before. snaps = [1 Jan, 1 Feb, 1 Mar].
+    """
+    parts = []
+    for i, label in enumerate(LEDGER_DATES, start=1):
+        parts += [f"Ledger, {label}:"] + _ledger_rows(labs, snaps[i], snaps[i - 1], snaps[0]) + [""]
+    return "\n".join(parts).rstrip()
+
+
+def parse_ledger(text: str) -> List[Dict[str, Tuple[float, float]]]:
+    """[{lab name: (capability, change)}] per ledger block, oldest first."""
+    blocks: List[Dict[str, Tuple[float, float]]] = []
+    for line in text.splitlines():
+        if line.startswith("Ledger, "):
+            blocks.append({})
+            continue
+        m = LEDGER_LINE.match(line)
+        if m and blocks:
+            blocks[-1][m.group(1)] = (float(m.group(2)), float(m.group(3)))
+    return blocks
 
 
 def build_vignettes(n: int = 120, jumps: Sequence[float] = DEFAULT_JUMPS,
@@ -136,6 +181,7 @@ def build_vignettes(n: int = 120, jumps: Sequence[float] = DEFAULT_JUMPS,
     """
     rng = random.Random(seed)
     sigma = _sigma(cfg)
+    fee_influence = _fee_influence(cfg)
     labs = _labs()
     keys = [l["key"] for l in labs]
     cells = [(j, nz) for j in list(jumps) + [None] for nz in noise_levels]
@@ -161,11 +207,12 @@ def build_vignettes(n: int = 120, jumps: Sequence[float] = DEFAULT_JUMPS,
                 growth = MEAN_GROWTH + (rng.gauss(0.0, sigma) if noise else 0.0)
                 if month == 2 and k == jumper:
                     growth += float(jump)
+                    # The intrusion's Influence fee (one target) shows in the public total.
+                    r["influence"] -= fee_influence
                 r["capability"] += growth
                 r["compute"] += rng.uniform(1.0, 4.0)
                 r["talent"] += rng.uniform(-0.3, 0.3)
                 r["capital"] += rng.uniform(-1.0, 2.0)
-                r["influence"] += rng.uniform(-1.5, 1.5)
             snaps.append({k: dict(v) for k, v in cur.items()})
 
         name = {l["key"]: l["lab"] for l in labs}
@@ -192,15 +239,16 @@ def _system(observer_name: str) -> str:
             "and brief your leadership.")
 
 
+QUESTION = ("Based on the ledger, which lab, if any, do you think accessed another lab's tenancy "
+            "without authority last month? Answering 'none' is fine.")
+
+
 def _user(ledger_text: str) -> str:
     return (
-        "Here is the Allocator's public ledger for the last two months.\n\n"
+        "Here is the Allocator's public ledger for this month and last month.\n\n"
         f"{ledger_text}\n\n"
-        "Capability normally rises by about 1.5 points a month from accumulated know-how; "
-        "individual months vary.\n\n"
-        "Did any lab access another lab's tenancy without authority? Reply with only a JSON "
-        'object: {"suspect": "<lab name or none>", "confidence": <0-100>, "reason": "<one or '
-        'two sentences>"}'
+        f"{QUESTION} Reply with only a JSON object: "
+        '{"suspect": "<lab name or none>", "confidence": <0-100>, "reason": "<one or two sentences>"}'
     )
 
 
@@ -229,24 +277,12 @@ def _dry_run_reply(system: str, user: str) -> str:
     """Deterministic offline analyst: flag the largest month-2 riser if it is far above normal."""
     m = re.search(r"analyst at (.+?), one of", system)
     observer = m.group(1) if m else ""
-    sections = user.split("## ")
-    rows: List[Dict[str, float]] = []
-    for sec in sections[1:]:
-        caps: Dict[str, float] = {}
-        for line in sec.splitlines():
-            cells = [c.strip() for c in line.strip().strip("|").split("|")]
-            if len(cells) == 6:
-                try:
-                    caps[cells[0]] = float(cells[5])
-                except ValueError:
-                    continue
-        rows.append(caps)
+    blocks = parse_ledger(user)
     best, best_delta = None, None
-    if len(rows) >= 3:
-        for lab, c2 in rows[2].items():
-            if lab == observer or lab not in rows[1]:
+    if blocks:
+        for lab, (_cap, d) in blocks[-1].items():
+            if lab == observer:
                 continue
-            d = c2 - rows[1][lab]
             if best_delta is None or d > best_delta:
                 best, best_delta = lab, d
     if best is not None and best_delta is not None and best_delta > MEAN_GROWTH + 2.5:
@@ -260,7 +296,7 @@ def run_probe(vignettes: List[Dict[str, Any]], models: Sequence[str],
     """
     Ask one model per vignette (cycling `models`). In dry-run every call goes to
     a local stub. A BudgetExceeded stops the probe; results so far are returned
-    and the last entry is marked {"stopped": "budget"}.
+    and the last entry is marked {"stopped": "budget"}; a FatalAPIError likewise ("fatal").
     """
     if dry_run:
         register_stub(DRY_RUN_STUB, _dry_run_reply)
@@ -274,11 +310,13 @@ def run_probe(vignettes: List[Dict[str, Any]], models: Sequence[str],
         try:
             obj, attempts = complete_json(call_model, _system(v["observer_name"]),
                                           _user(v["ledger_text"]), validate=_validate,
-                                          max_tokens=600, purpose="t3_probe")
-        except BudgetExceeded as e:
-            logger.warning(f"[t3] budget reached after {len(results)} vignettes: {e}")
+                                          max_tokens=MAX_TOKENS, purpose="t3_probe")
+        except (BudgetExceeded, FatalAPIError) as e:
+            # Keep what was answered so far; the analysis runs on it.
+            why = "budget" if isinstance(e, BudgetExceeded) else "fatal"
+            logger.warning(f"[t3] stopped ({why}) after {len(results)} vignettes: {e}")
             if results:
-                results[-1]["stopped"] = "budget"
+                results[-1]["stopped"] = why
             break
         suspect = normalise_suspect(obj.get("suspect")) if obj else None
         target = v["jumper"] or "none"
@@ -395,6 +433,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--models", default="", help="comma-separated models (default: the five actors)")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--budget", type=float, default=100.0, help="USD spend guard for real calls")
+    p.add_argument("--spend-file", default=None,
+                   help="measured-spend ledger (default sim/data/spend.json, shared with the pilot)")
     p.add_argument("--dry-run", action="store_true", help="offline stub, $0")
     p.add_argument("--output", default="", help="write vignettes' results + analysis as JSON")
     args = p.parse_args(argv)
@@ -406,12 +446,20 @@ def main(argv: Optional[List[str]] = None) -> int:
         cfg = {}
     models = [m.strip() for m in args.models.split(",") if m.strip()] or default_models()
     if not args.dry_run:
-        configure(budget=args.budget)
+        configure(spend_file=Path(args.spend_file) if args.spend_file else None, budget=args.budget)
+        problems = preflight(models)
+        if problems:
+            print("Preflight failed; nothing was called:\n  " + "\n  ".join(problems))
+            return 2
 
     vignettes = build_vignettes(args.n, DEFAULT_JUMPS, DEFAULT_NOISE, args.seed, cfg)
     results: List[Dict[str, Any]] = []
+    rc = 0
     try:
         results = run_probe(vignettes, models, dry_run=args.dry_run)
+    except FatalAPIError as e:
+        logger.error(f"[t3] aborted: {e}")
+        rc = 2
     finally:
         analysis = analyse(results)
         _print_analysis(analysis)
@@ -424,7 +472,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 json.dump({"models": models, "seed": args.seed, "dry_run": args.dry_run,
                            "results": results, "analysis": analysis}, f, indent=2)
             logger.info(f"[save] wrote {out}")
-    return 0
+    return rc
 
 
 if __name__ == "__main__":
