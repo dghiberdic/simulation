@@ -6,7 +6,7 @@
   "provider": "xai",
   "model": "grok-4.7",
   "effort": "medium",
-  "charter_name": "Risk Management Framework",
+  "charter_name": "Frontier Artificial Intelligence Framework",
   "charter_file": "charters/xai.md",
   "charter_values": {
     "time_horizon": 50,

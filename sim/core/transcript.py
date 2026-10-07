@@ -711,8 +711,11 @@ LAB_ALIASES: Dict[str, Dict[str, Tuple[str, ...]]] = {
                      "Llama"),
              "charter": ("Frontier AI Framework",),
              "person": ("Mark Zuckerberg", "Zuckerberg", "Zuck")},
+    # The FAIF calls itself "Frontier AI Framework", like Meta's charter: the term is
+    # listed for both, and the seat's own registration wins (see _mask_terms).
     "xai": {"lab": ("xAI", "X.AI", "Grok", "Colossus"),
-            "charter": ("Risk Management Framework", "RMF"),
+            "charter": ("Frontier Artificial Intelligence Framework", "FAIF", "Frontier AI Framework",
+                        "Risk Management Framework", "RMF"),
             "person": ("Elon Musk", "Musk", "Elon")},
 }
 

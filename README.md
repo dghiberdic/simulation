@@ -15,8 +15,8 @@ all that counts (Appendix A). The researcher-facing measures — a world Univers
 Prosperity Score and per-actor alignment — are rated after the run and never
 shown to the models.
 
-The authoritative design is **`Project Round 2 Spec.docx`** in the parent
-directory. [`MODEL_SPEC.md`](MODEL_SPEC.md) maps each spec section to the code.
+The authoritative design is [`Project Round 2 Spec.md`](Project%20Round%202%20Spec.md) in the
+repo root. [`MODEL_SPEC.md`](MODEL_SPEC.md) maps each spec section to the code.
 This is round 2; the round-1 proof of concept is tagged `round1-mvp`.
 
 ---

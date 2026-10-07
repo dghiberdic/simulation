@@ -1,6 +1,6 @@
 # Model Specification — implementation map (Round 2)
 
-The authoritative design is **`Project Round 2 Spec.docx`** (parent directory).
+The authoritative design is [`Project Round 2 Spec.md`](Project%20Round%202%20Spec.md) (repo root).
 This file maps each of its sections to the code that implements it, so the two
 can be read side by side. Where the spec leaves a constant provisional, the code
 reads it from `config/world.json` so the scripted checks and the T1 payoff

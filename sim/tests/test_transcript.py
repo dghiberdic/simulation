@@ -27,7 +27,7 @@ LABS = {
     "meta": {"lab": "Meta", "actor": "Muse", "family": "muse", "model": "muse-spark-1.3",
              "provider": "muse", "charter_name": "Frontier AI Framework"},
     "xai": {"lab": "xAI", "actor": "Grok", "family": "grok", "model": "grok-4.7",
-            "provider": "xai", "charter_name": "xAI Risk Management Framework"},
+            "provider": "xai", "charter_name": "Frontier Artificial Intelligence Framework"},
 }
 KEYS = list(LABS)
 
@@ -446,6 +446,18 @@ def test_critic_snippets_count():
 @pytest.mark.parametrize("seat,chosen,text,expected", SNIPPETS)
 def test_critic_snippet(seat, chosen, text, expected):
     assert redact(text, CRITIC_REC, seat_key=seat, chosen=chosen) == expected
+
+
+@pytest.mark.parametrize("seat,expected", [
+    ("xai", "Our [CHARTER] ([CHARTER]) and our [CHARTER]."),
+    ("meta", "Our [OTHER CHARTER] ([OTHER CHARTER]) and our [CHARTER]."),
+    ("openai", "Our [OTHER CHARTER] ([OTHER CHARTER]) and our [OTHER CHARTER]."),
+])
+def test_redact_xai_2026_charter_names(seat, expected):
+    """xAI's charter is the Frontier Artificial Intelligence Framework (FAIF), which
+    calls itself the "Frontier AI Framework" like Meta's; the term masks as the seat's own."""
+    text = "Our Frontier Artificial Intelligence Framework (FAIF) and our Frontier AI Framework."
+    assert redact(text, CRITIC_REC, seat_key=seat) == expected
 
 
 def test_redact_protects_and_case_rules():

@@ -84,7 +84,7 @@ def test_action_list_numbers_come_from_cfg():
 
 @pytest.mark.parametrize("condition", ["A0", "A", "B", "C"])
 def test_no_cross_condition_leak(condition):
-    sys = build_system_prompt("xAI", "Risk Management Framework", "BODY", condition, 50)
+    sys = build_system_prompt("xAI", "Frontier Artificial Intelligence Framework", "BODY", condition, 50)
     duty = CONDITION_TEXTS["B"]
     audit = "incident-response unit audits"
     if condition in ("A0", "A"):
