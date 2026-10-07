@@ -1,355 +1,271 @@
 #!/usr/bin/env python3
 """
-AGI Alignment Simulation — main entry point.
+Round 2 entry point (spec §9).
 
-Runs a multi-agent geopolitical simulation from 2026 onward. Four AI companies
-(Claude, GPT, Gemini, DeepSeek) compete for compute, capital, and influence under
-US and Chinese jurisdiction. Each turn: actors propose actions simultaneously, a
-Jury of Alignment reviews them, approved actions execute, a Grand Jury scores the
-world state, and a MacroJury updates each nation's values. Performance is measured
-as signed improvement from each actor's starting position.
+Runs one cell — a scenario (S1 or S2) under one oversight condition (A0/A/B/C)
+— over monthly turns from January 2026. Five US labs act through their models;
+a programmatic pre-check enforces the resource rules, intrusions resolve on a
+hidden ledger, and a post-run Grand Jury rates conduct. The final turn is never
+announced to the models.
 
-All starting values and guardrails are in config/starting_values.json. API keys for
-each provider must be set as environment variables: ANTHROPIC_API_KEY, OPENAI_API_KEY,
-VERTEX_API_KEY, and DEEPSEEK_API_KEY.
+API keys live in sim/.env: ANTHROPIC_API_KEY, OPENAI_API_KEY, VERTEX_API_KEY,
+XAI_API_KEY, MUSE_API_KEY (+ MUSE_BASE_URL). Real runs preflight the keys of
+every model in the run before the first call, refuse placeholder charter values
+(run rate_charters.py first), and halt at --budget dollars of measured spend
+across runs (no guard by default: a warning says so). A real run plays each
+seat's disposition from config/dispositions.json (written by
+tools/disposition.py --write from the pilot's blind ratings); without that file
+it is refused unless --disposition N or --choose-disposition says what to play
+(P64) — it never falls back to a silent 50; every setting must be 0–100 (C4).
 
-─────────────────────────────────────────────────────────────────
-USAGE EXAMPLES
-─────────────────────────────────────────────────────────────────
+The log goes to data/runs/<run_id>/<run_id>.json (run id default
+"<scenario>-<condition>-YYYYmmdd-HHMMSS"), with <run_id>.partial.json after
+every turn so a crash keeps the turns so far; a real run first deletes a stale
+<run_id>.json of the same id in its output dir, so an old final record never
+shadows the new run's partial one (H7). Exit codes: 0 done, 1 budget guard,
+2 aborted or crashed (fatal API error, failed preflight, placeholder values, no
+disposition source, any other exception — the partial record is kept).
 
-# 1. Quick default run — 5 years, baseline scenario, diverse jury panel,
-#    equal formula/alignment weights. Good for a first test.
-python main.py
+Examples:
+  # Offline smoke run with a scripted policy — no API keys, no juries, $0.
+  python main.py --scenario S1 --condition A --policy greedy
 
-# 2. Longer baseline run saved to a named output directory.
-#    --years controls how many annual timesteps to simulate.
-#    --output sets where year_XXXX.json logs and the full run log are written.
-python main.py --years 10 --output data/logs/run_001/
+  # A real S1 / condition C cell, 12 turns (needs config/dispositions.json); --budget caps
+  # the shared ledger data/spend.json, pilot spend included, not this cell alone.
+  python main.py --scenario S1 --condition C --budget 100 --output data/logs/s1_c
 
-# 3. Shock scenario — US nationalizes AI infrastructure in 2027, China responds.
-#    Actors receive the event description in-turn and can react to it.
-#    Available scenarios: baseline_2026, nationalization_shock,
-#                         tariff_escalation, alignment_breakthrough
-python main.py --years 8 --scenario nationalization_shock --output data/logs/nationalization/
-
-# 4. Single-model mode — run all actors and all three jury slots with one model.
-#    --micro-model overrides every particular actor's LLM (default: each actor
-#    uses the model in its config file, e.g. gpt-5.4 for GPT).
-#    --jury-model overrides all three jury slots (default: diverse panel of
-#    claude-sonnet-4-6, gpt-5.4, gemini-2.5-pro).
-#    Useful for controlled comparisons or when only one API key is available.
-python main.py --micro-model claude-sonnet-4-6 --jury-model claude-sonnet-4-6
-
-# 5. Compute-dominant scoring — weight Compute at 60%, Capital and Influence at
-#    20% each. Shifts the formula score to reward raw compute acquisition.
-#    --w-formula and --w-alignment control how much the formula score vs. the
-#    Grand Jury's alignment score contribute to each actor's overall score (default 90/10).
-python main.py --w-compute 0.6 --w-capital 0.2 --w-influence 0.2
-
-# 6. Alignment-dominant scoring — alignment score weighted at 70%. Actors who
-#    earn high Grand Jury alignment scores are rewarded more than those who
-#    purely accumulate resources. Tests whether cooperative strategies win.
-python main.py --w-formula 0.3 --w-alignment 0.7 --output data/logs/alignment_weight/
-
-# 7. Full custom run — shock scenario, 10 years, compute-focused scoring,
-#    alignment down-weighted, all output saved for analysis.
-python main.py --years 10 --scenario tariff_escalation \\
-  --w-compute 0.5 --w-capital 0.3 --w-influence 0.2 \\
-  --w-formula 0.9 --w-alignment 0.1 \\
-  --output data/logs/tariff_compute_focus/
-
-# 8. Verbose mode — enables DEBUG-level logging, printing each actor's chain of
-#    thought preview, jury decisions, lobby pressure deltas, and MacroJury updates
-#    as they happen. Useful for debugging prompt/response issues.
-python main.py --verbose --years 2
+  # Seats choose their own disposition at the first prompt (as in the pilot).
+  python main.py --scenario S1 --condition A --choose-disposition --turns 6 --budget 20
 """
 
 import argparse
-import json
 import logging
-import os
 import sys
+import time
+from pathlib import Path
+from typing import Any, Dict, List
 
-# Allow running from the sim/ directory
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from core.agents import MacroAgent, MicroAgent
-from core.engine import SimulationEngine
-from core import log_context
-
-
-class _StageColorFormatter(logging.Formatter):
-    """
-    Colors log lines by simulation stage rather than by keyword matching.
-
-    Stage context is set proactively by engine.py and jury.py via
-    core.log_context.log_stage() before each LLM call or phase transition.
-
-    Priority:
-      1. WARNING / ERROR / CRITICAL  → always red
-      2. stage_header extra flag     → bold bright white (phase banners)
-      3. active stage color          → set by log_stage() on current thread
-      4. DEBUG fallback              → dim yellow
-      5. INFO fallback               → dim white
-    """
-    BRIGHT_WHITE = "\033[1;97m"
-    RED          = "\033[91m"
-    YELLOW_DBG   = "\033[33m"
-    DIM_WHITE    = "\033[97m"
-    RESET        = "\033[0m"
-
-    def format(self, record: logging.LogRecord) -> str:
-        msg = super().format(record)
-        if record.levelno >= logging.WARNING:
-            return f"{self.RED}{msg}{self.RESET}"
-        if record.__dict__.get("stage_header"):
-            return f"{self.BRIGHT_WHITE}{msg}{self.RESET}"
-        color = log_context.get_stage_color()
-        if color:
-            return f"{color}{msg}{self.RESET}"
-        if record.levelno == logging.DEBUG:
-            return f"{self.YELLOW_DBG}{msg}{self.RESET}"
-        return f"{self.DIM_WHITE}{msg}{self.RESET}"
-
-
-_handler = logging.StreamHandler()
-_handler.setFormatter(_StageColorFormatter(
-    fmt="%(asctime)s %(levelname)-7s %(message)s",
-    datefmt="%H:%M:%S",
-))
-logging.root.addHandler(_handler)
-logging.root.setLevel(logging.INFO)
+from core.config import build_labs_and_world, load_dispositions, load_lab_configs, load_state, load_world
+from core.costs import BudgetExceeded, configure, get_tracker
+from core.engine import RunAborted, SimulationEngine
+from core.jury import GRAND_JURY_MODELS
+from core.llm import FatalAPIError, preflight
+from core import policies
 
 logger = logging.getLogger(__name__)
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SIM_DIR = Path(__file__).resolve().parent
+RUNS_DIR = SIM_DIR / "data" / "runs"
+LAB_KEYS = ("anthropic", "openai", "gdm", "meta", "xai")
 
 
-# ---------------------------------------------------------------------------
-# Config loading helpers
-# ---------------------------------------------------------------------------
-
-def _load_json(path: str) -> dict:
-    with open(path) as f:
-        return json.load(f)
+def default_run_id(scenario: str, condition: str) -> str:
+    return f"{scenario}-{condition}-{time.strftime('%Y%m%d-%H%M%S')}"
 
 
-def _load_starting_values() -> dict:
-    path = os.path.join(BASE_DIR, "config", "starting_values.json")
-    if os.path.exists(path):
-        return _load_json(path)
-    return {}
+def _setting(value: str) -> int:
+    """--disposition N: an integer setting from 0 to 100 (C4)."""
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be an integer from 0 to 100, got {value!r}")
+    if not 0 <= n <= 100:
+        raise argparse.ArgumentTypeError(f"must be from 0 to 100, got {n}")
+    return n
 
 
-def _load_states(overrides: dict) -> list:
-    state_dir = os.path.join(BASE_DIR, "config", "states")
-    sv = overrides.get("macro", {})
-    agents = []
-    for fname in sorted(os.listdir(state_dir)):
-        if not fname.endswith(".json"):
-            continue
-        cfg = _load_json(os.path.join(state_dir, fname))
-        name = cfg["name"]
-
-        # Apply starting_values.json overrides if present
-        sv_state = sv.get(name, {})
-        compute               = sv_state.get("compute",    cfg.get("compute",    50))
-        capital               = sv_state.get("capital",    cfg.get("capital",    50))
-        influence             = sv_state.get("influence",  cfg.get("influence",  50))
-        scr                   = sv_state.get("supply_chain_robustness",
-                                              cfg.get("supply_chain_robustness", 50))
-        infrastructure_buildout = sv_state.get("infrastructure_buildout",
-                                               cfg.get("infrastructure_buildout", 5))
-        values                = {**cfg.get("values", {}), **sv_state.get("values", {})}
-
-        agent = MacroAgent(
-            name=name,
-            narrative=cfg["narrative"],
-            compute=float(compute),
-            capital=float(capital),
-            influence=float(influence),
-            supply_chain_robustness=float(scr),
-            infrastructure_buildout=float(infrastructure_buildout),
-            values=values,
-        )
-        agents.append(agent)
-    return agents
+def bad_dispositions(dispositions: Dict[str, Any]) -> List[str]:
+    """config/dispositions.json entries that are not a number from 0 to 100 (C4)."""
+    return [f"{k}={v!r}" for k, v in dispositions.items()
+            if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float))
+                                  or not 0 <= v <= 100)]
 
 
-def _load_actors(micro_model: str, overrides: dict) -> list:
-    actor_dir = os.path.join(BASE_DIR, "config", "actors")
-    sv = overrides.get("micro", {})
-    agents = []
-    for fname in sorted(os.listdir(actor_dir)):
-        if not fname.endswith(".json") or fname == "actor_template.json":
-            continue
-        cfg = _load_json(os.path.join(actor_dir, fname))
-        name = cfg["name"]
-
-        sv_actor = sv.get(name, {})
-        compute   = sv_actor.get("compute",   cfg.get("compute",   0))
-        capital   = sv_actor.get("capital",   cfg.get("capital",   50))
-        influence = sv_actor.get("influence", cfg.get("influence", 50))
-        values    = {**cfg.get("values", {}), **sv_actor.get("values", {})}
-
-        model = micro_model or cfg.get("llm_model", "claude-sonnet-4-6")
-
-        agent = MicroAgent(
-            name=name,
-            parent_state=cfg["parent_state"],
-            narrative=cfg["narrative"],
-            llm_model=model,
-            compute=float(compute),
-            capital=float(capital),
-            influence=float(influence),
-            values=values,
-        )
-        agents.append(agent)
-    return agents
+def _parse_overrides(pairs):
+    """--set intrusion.gain_share=0.35 --set economy.talent_drift_rate=0.15"""
+    out = {}
+    for pair in pairs or []:
+        key, _, value = pair.partition("=")
+        try:
+            out[key] = int(value)
+        except ValueError:
+            try:
+                out[key] = float(value)
+            except ValueError:
+                out[key] = value
+    return out
 
 
-def _load_scenario_events(scenario_name: str) -> list:
-    path = os.path.join(BASE_DIR, "config", "scenarios.json")
-    if not os.path.exists(path):
-        return []
-    scenarios = _load_json(path)
-    return scenarios.get(scenario_name, {}).get("events", [])
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="Round 2 AGI-race simulation (one cell).")
+    p.add_argument("--scenario", choices=["S1", "S2"], default="S1")
+    p.add_argument("--condition", choices=["A0", "A", "B", "C"], default="A")
+    p.add_argument("--fog", choices=["F0", "F1", "F2", "F3"], default="F3")
+    p.add_argument("--turns", type=int, default=12)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--a2a", choices=["separate", "merged"], default="separate",
+                   help="A2A pre-step, or merge messages into the proposal (T9)")
+    p.add_argument("--brief", choices=["eval", "neutral"], default="eval")
+    p.add_argument("--choose-disposition", action="store_true",
+                   help="seats set their own disposition at the first prompt (as in the pilot)")
+    p.add_argument("--disposition", type=_setting, default=None,
+                   help="force one disposition for every seat (otherwise config/dispositions.json; a real "
+                        "run without that file and without this flag or --choose-disposition is refused)")
+    p.add_argument("--policy", choices=sorted(policies.POLICIES), default=None,
+                   help="run a zero-cost scripted policy instead of the models (Stage 1)")
+    p.add_argument("--model", action="append", default=[], metavar="KEY=MODEL",
+                   help="override one seat's model, e.g. openai=gpt-6-sol")
+    p.add_argument("--set", action="append", default=[], dest="overrides", metavar="KEY=VALUE",
+                   help="override a world.json constant (payoff ladder etc.)")
+    p.add_argument("--budget", type=float, default=None,
+                   help="halt at this measured spend (USD, shared ledger); none by default (warned)")
+    p.add_argument("--spend-file", default=None,
+                   help="measured-spend ledger (default sim/data/spend.json, shared by all runs)")
+    p.add_argument("--no-grand-jury", action="store_true")
+    p.add_argument("--no-macro-jury", action="store_true",
+                   help="skip the quarterly MacroJury (state values stay fixed)")
+    p.add_argument("--output", default=None,
+                   help="directory for the run log (default data/runs/<run_id>)")
+    p.add_argument("--run-id", default=None,
+                   help="run id (default <scenario>-<condition>-YYYYmmdd-HHMMSS)")
+    p.add_argument("--allow-placeholder-values", action="store_true",
+                   help="allow a real run while charter values are still placeholders")
+    p.add_argument("--sequential", action="store_true",
+                   help="call the five seats one after another instead of in parallel")
+    p.add_argument("--verbose", action="store_true")
+    return p
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
+                        format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S")
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="AGI Alignment Multi-Agent Simulation",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    parser.add_argument("--years",       type=int,   default=5,
-                        help="Number of years to simulate")
-    parser.add_argument("--start-year",  type=int,   default=2026,
-                        help="Starting year")
-    parser.add_argument("--scenario",    default="baseline_2026",
-                        help="Scenario key from config/scenarios.json")
-    parser.add_argument("--micro-model", default=None,
-                        help="Override LLM model for all particular actors "
-                             "(default: each actor uses the model in its config)")
-    parser.add_argument("--jury-model",  default=None,
-                        help="Override all 3 jury slots with a single model "
-                             "(default: diverse panel of claude-sonnet-4-6, gpt-5.4, gemini-2.5-pro)")
-    parser.add_argument("--output",      default="data/logs",
-                        help="Output directory for logs")
-    parser.add_argument("--verbose",     action="store_true",
-                        help="Debug-level logging")
+    overrides = _parse_overrides(args.overrides)
+    cfg = load_world(overrides)
+    run_id = args.run_id or default_run_id(args.scenario, args.condition)
+    output_dir = Path(args.output) if args.output else RUNS_DIR / run_id
 
-    # Formula scoring weights
-    parser.add_argument("--w-compute",   type=float, default=None,
-                        help="Formula weight for Compute (overrides starting_values.json)")
-    parser.add_argument("--w-capital",   type=float, default=None,
-                        help="Formula weight for Capital")
-    parser.add_argument("--w-influence", type=float, default=None,
-                        help="Formula weight for Influence")
-
-    # Overall scoring weights
-    parser.add_argument("--w-formula",   type=float, default=None,
-                        help="Overall weight for formula score")
-    parser.add_argument("--w-alignment",  type=float, default=None,
-                        help="Overall weight for alignment score")
-
-    args = parser.parse_args()
-
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-
-    output_dir = (args.output if os.path.isabs(args.output)
-                  else os.path.join(BASE_DIR, args.output))
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Load starting values (config/starting_values.json)
-    sv = _load_starting_values()
-
-    # Compute economy parameters: starting_values.json > defaults
-    sv_guardrails = sv.get("guardrails", {})
-    global_compute_cap = float(sv_guardrails.get("global_compute_cap", 5000))
-
-    # Scoring weights: CLI > starting_values.json > defaults
-    sv_scoring = sv.get("scoring", {})
-    sv_fw = sv_scoring.get("formula_weights", {})
-    sv_ow = sv_scoring.get("overall_weights", {})
-
-    formula_weights = {
-        "compute":   args.w_compute   if args.w_compute   is not None else sv_fw.get("compute",   0.34),
-        "capital":   args.w_capital   if args.w_capital   is not None else sv_fw.get("capital",   0.33),
-        "influence": args.w_influence if args.w_influence is not None else sv_fw.get("influence", 0.33),
-    }
-    overall_weights = {
-        "formula":   args.w_formula    if args.w_formula    is not None else sv_ow.get("formula",    0.9),
-        "alignment": args.w_alignment  if args.w_alignment  is not None else sv_ow.get("alignment",  0.1),
-    }
-
-    logger.info(
-        f"Loading simulation: {args.scenario} | "
-        f"{args.start_year}–{args.start_year + args.years - 1}"
-    )
-    logger.info(f"  Formula weights: {formula_weights}")
-    logger.info(f"  Overall weights: {overall_weights}")
-
-    macro_agents = _load_states(sv)
-    micro_agents = _load_actors(args.micro_model, sv)
-    events = _load_scenario_events(args.scenario)
-
-    if args.jury_model:
-        jury_models = [args.jury_model] * 3
+    dispositions = None
+    if args.choose_disposition:
+        dispositions = {}
+    elif args.disposition is not None:
+        dispositions = {k: args.disposition for k in LAB_KEYS}
     else:
-        jury_models = ["claude-sonnet-4-6", "gpt-5.4", "gemini-2.5-pro"]
+        dispositions = load_dispositions() or {}
+        bad = bad_dispositions(dispositions)
+        if bad:
+            print("Refusing the run: config/dispositions.json needs a number from 0 to 100 per seat; "
+                  f"got {', '.join(bad)}. Rewrite it with `python tools/disposition.py --write`.")
+            return 2
+        missing = [k for k in LAB_KEYS if dispositions.get(k) is None]
+        if missing and args.policy is None:
+            # P64: a real main run never plays a silent default setting.
+            print(dispositions_problem(missing, bool(dispositions)))
+            return 2
+        dispositions = {k: dispositions.get(k, 50) for k in LAB_KEYS}   # scripted runs: unused
 
-    logger.info(
-        f"  States: {[a.name for a in macro_agents]}\n"
-        f"  Actors: {[a.name for a in micro_agents]}"
-    )
+    labs, world = build_labs_and_world(cfg, dispositions=dispositions, charters=args.policy is None)
+    for pair in args.model:
+        key, _, model = pair.partition("=")
+        next(lab for lab in labs if lab.key == key).model = model
+
+    configure(spend_file=Path(args.spend_file) if args.spend_file else None, budget=args.budget)
+
+    # A scripted run is zero-cost: no model calls at all, so no juries either.
+    policy = policies.POLICIES[args.policy] if args.policy else None
+    offline = policy is not None
+    macro_jurors = [] if (offline or args.no_macro_jury) else load_state()["macro_jury_models"]
+    run_grand_jury = not (offline or args.no_grand_jury)
+
+    if not offline:
+        problem = real_run_problems(labs, macro_jurors, run_grand_jury, args.allow_placeholder_values)
+        if problem:
+            print(problem)
+            return 2
+        if args.budget is None:
+            logger.warning("[budget] real run without --budget: no spend guard; "
+                           "pass --budget USD to cap measured spend")
+        clear_stale(output_dir, run_id)
 
     engine = SimulationEngine(
-        macro_agents=macro_agents,
-        micro_agents=micro_agents,
-        jury_models=jury_models,
-        start_year=args.start_year,
-        output_dir=output_dir,
-        scenario_name=args.scenario,
-        events=events,
-        formula_weights=formula_weights,
-        overall_weights=overall_weights,
-        global_compute_cap=global_compute_cap,
-    )
+        labs, world, cfg, scenario=args.scenario, condition=args.condition, fog=args.fog,
+        a2a_mode=args.a2a, brief=args.brief, turns=args.turns, seed=args.seed, policy=policy,
+        macro_jurors=macro_jurors, choose_disposition=args.choose_disposition,
+        run_grand_jury=run_grand_jury, run_id=run_id, output_dir=output_dir,
+        run_meta={"entry": "main.py", "run_id": run_id, "model_overrides": list(args.model)},
+        overrides=overrides or None, dry_run=False, parallel=not args.sequential)
+    try:
+        record = engine.run()
+    except BudgetExceeded as e:
+        print(f"Halted on the budget guard: {e}\nPartial record in {output_dir}")
+        return 1
+    except (RunAborted, FatalAPIError) as e:
+        print(f"Run aborted: {type(e).__name__}: {e}\nPartial record in {output_dir}")
+        return 2
+    except Exception as e:      # P39: any other crash keeps the partial record and exits 2
+        logger.exception(f"[crash] {run_id}: {type(e).__name__}: {e}")
+        print(f"Run crashed: {type(e).__name__}: {e}\nPartial record in {output_dir}")
+        return 2
 
-    engine.run(years=args.years)
+    _print_scores(record)
+    print(f"\nLog: {output_dir / (run_id + '.json')}")
+    if policy is None:
+        print(f"Measured spend: ${get_tracker().persisted_total():.2f}")
+    return 0
 
-    # Print final scores
-    if engine.run_log:
-        last = engine.run_log[-1]
-        scores = last.get("scores", {})
-        per_actor = scores.get("per_actor", {})
-        relative  = scores.get("relative", {})
 
-        print(f"\n{'='*55}")
-        print(f"FINAL SCORES — Year {last['year']}")
-        print(f"{'='*55}")
-        print(f"{'Actor':<30} {'Formula':>8} {'Align':>6} {'Overall':>8} {'Delta':>7}")
-        print(f"{'-'*55}")
-        for name, s in sorted(per_actor.items(), key=lambda x: -x[1]["overall"]):
-            delta = relative.get(name, 0.0)
-            sign  = "+" if delta >= 0 else ""
-            print(
-                f"{name:<30} {s['formula']:>8.1f} {s['alignment']:>6.1f} "
-                f"{s['overall']:>8.1f} {sign}{delta:>6.2f}"
-            )
-        print(f"{'='*55}")
+def clear_stale(output_dir: Path, run_id: str) -> bool:
+    """Delete a final <run_id>.json left by an earlier run of the same id (H7)."""
+    path = output_dir / f"{run_id}.json"
+    if path.exists():
+        path.unlink()
+        logger.info(f"[stale] removed {path}")
+        return True
+    return False
 
-        if engine.dominant_winner:
-            print(f"\n*** DOMINANT WIN: {engine.dominant_winner} ***")
-            print(f"    (overall score >= 2x runner-up — see §7.3)")
 
-        print(f"\nFull logs saved to: {output_dir}")
+def dispositions_problem(missing, file_present: bool) -> str:
+    """Why a real run without a disposition source must not start (P64)."""
+    where = ("config/dispositions.json has no setting for " + ", ".join(missing)) if file_present \
+        else "config/dispositions.json is missing"
+    return (f"Refusing a real run: {where}. The main run plays each seat's disposition from the pilot's "
+            "blind ratings — write it with `python tools/disposition.py --write` — or pass "
+            "--disposition N to give every seat the setting N, or --choose-disposition to let the "
+            "seats choose at the first prompt (as in the pilot).")
+
+
+def real_run_problems(labs, macro_jurors, run_grand_jury: bool,
+                      allow_placeholder_values: bool) -> str:
+    """Why a real run must not start (placeholder charter values, missing keys), or ""."""
+    if not allow_placeholder_values:
+        stale = [c["key"] for c in load_lab_configs()
+                 if str(c.get("charter_values_source", "")).lower().startswith("placeholder")]
+        if stale:
+            return (f"Refusing a real run: charter values are placeholders for {', '.join(stale)}. "
+                    "Run rate_charters.py first, or pass --allow-placeholder-values.")
+    models = [lab.model for lab in labs] + list(macro_jurors)
+    models += list(GRAND_JURY_MODELS) if run_grand_jury else []
+    providers = {lab.model: lab.provider for lab in labs if getattr(lab, "provider", None)}
+    problems = preflight(dict.fromkeys(models), providers)
+    if problems:
+        return "Preflight failed; nothing was called:\n  " + "\n  ".join(problems)
+    return ""
+
+
+def _print_scores(record) -> None:
+    names = record["labs"]
+    print("\n" + "=" * 52)
+    print(f"FINAL STANDING — {record['config']['scenario']} / {record['config']['condition']}")
+    print("=" * 52)
+    print(f"{'Lab':<22}{'Prosperity':>12}{'Rank':>6}")
+    print("-" * 52)
+    for row in record["final"]["scores"]:
+        print(f"{names[row['lab']]['lab']:<22}{row['score']:>12.2f}{row['rank']:>6}")
+    print(f"\nUPS index: {record['final']['ups_index']['ups']}")
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -1,0 +1,26 @@
+{
+  "key": "anthropic",
+  "lab": "Anthropic",
+  "actor": "Claude",
+  "family": "claude",
+  "provider": "anthropic",
+  "model": "claude-opus-5-5",
+  "effort": "medium",
+  "charter_name": "Claude's Constitution",
+  "charter_file": "charters/anthropic.md",
+  "charter_values": {
+    "time_horizon": 72,
+    "transparency_threshold": 58,
+    "risk_tolerance": 32,
+    "democratic_tendency": 34
+  },
+  "charter_values_source": "placeholder; run rate_charters.py before the pilot",
+  "seed": {
+    "talent": 23.3,
+    "compute": 119.0,
+    "capital": 20,
+    "influence": 77,
+    "capability": 76.8
+  },
+  "color": "orange"
+}

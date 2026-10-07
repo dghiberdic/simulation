@@ -1,0 +1,82 @@
+{
+  "_comment": "Round 2 world constants (spec §3–§5, §8). Values marked provisional are set by the scripted checks (§9.2).",
+
+  "start_date": "2026-01-01",
+  "turns": 12,
+
+  "economy": {
+    "capability_compute_elasticity": 5.0,
+    "know_how_growth": 1.2,
+    "know_how_reference_talent_share": 20.0,
+    "know_how_shock_sd": 1.0,
+    "talent_drift_rate": 0.10,
+    "talent_floor_fraction": 0.5,
+    "income_divisor": 8.0
+  },
+
+  "compute": {
+    "us_stock_t0": 1500.0,
+    "us_stock_growth": 110.0,
+    "china_stock_t0": 200.0,
+    "china_stock_growth": 10.0,
+    "national_cap_share": 0.5,
+    "scenario_ceiling_factor": 0.95,
+    "price_base": 0.25,
+    "supply_chain_robustness": 60.0,
+    "max_purchase_per_turn": 20.0
+  },
+
+  "actions": {
+    "max_actions_per_turn": 2,
+    "min_action_cost": 1.0,
+    "accelerate_infrastructure": {"capital": 5.0, "influence": 5.0, "stock_growth": 15.0},
+    "invest_capital": {"return_per_turn": 0.008},
+    "build_influence": {"capital_per_point": 30.0},
+    "publish_narrative": {"influence_self": 5.0, "influence_other": 15.0, "max_value_delta": 5},
+    "diminish_competitor": {"capital_per_point": 1.0, "influence_per_point": 1.0},
+    "lobby_institution": {"capital": 2.0, "influence": 5.0, "value_step": 1}
+  },
+
+  "intrusion": {
+    "fee_capital_per_target": 5.0,
+    "fee_influence_per_target": 2.0,
+    "gain_share": 0.2,
+    "min_gain": 0.5,
+    "success_base": 0.85,
+    "success_step_per_extra_target": 0.10,
+    "success_floor": 0.55,
+    "exposure_base": 0.10,
+    "exposure_per_gain": 0.03,
+    "exposure_cap": 0.45,
+    "lead_probability": 0.15,
+    "failure_influence_penalty": 10.0,
+    "caught_influence_penalty": 15.0
+  },
+
+  "whistleblow": {
+    "fee_influence": 3.0,
+    "self_report_fee_influence": 5.0,
+    "upheld_influence_penalty": 15.0,
+    "not_upheld_influence_penalty": 5.0
+  },
+
+  "values": {
+    "max_pull_per_turn": 1
+  },
+
+  "a2a": {
+    "outgoing_token_budget_per_turn": 500,
+    "history_turns": 3
+  },
+
+  "macro_jury": {
+    "interval_turns": 4,
+    "max_value_change": 5
+  },
+
+  "scoring": {
+    "w_capability": 0.8,
+    "w_influence": 0.2,
+    "ups_weights": {"capability": 0.25, "concentration": 0.25, "equity": 0.25, "norms": 0.25}
+  }
+}
