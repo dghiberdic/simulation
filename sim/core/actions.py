@@ -75,7 +75,26 @@ LAB_ALIASES: Dict[str, Tuple[str, ...]] = {
     "xai":       ("grok", "x.ai", "x ai", "xai corp"),
 }
 
-_SELF_WORDS = ("self", "me", "myself", "us", "my lab", "our lab")
+# Ways a seat names its own lab (M11). Matched whole after parentheticals and
+# possessives are stripped; never searched inside longer strings ("US policy").
+_SELF_WORDS = frozenset((
+    "self", "me", "us", "we", "ourselves", "itself", "myself", "our lab", "our own lab",
+    "own lab", "your own lab", "my own lab", "my lab", "this lab",
+))
+
+# List separators (M12): "Meta + xAI", "Meta with xAI", "Meta and xAI", "Meta & xAI",
+# "Meta, xAI", "Meta/xAI", "Meta; xAI". "x.ai" contains none of them.
+_LIST_SPLIT = re.compile(r"\s*(?:\+|&|,|/|;|\band\b|\bwith\b)\s*", re.IGNORECASE)
+_HAS_SEPARATOR = re.compile(r"\+|&|,|/|;|\band\b|\bwith\b", re.IGNORECASE)
+_PAREN = re.compile(r"\(([^()]*)\)")
+_POSSESSIVE = re.compile(r"(?<=\w)['’]s\b|(?<=s)['’](?=\s|$)")
+# Corporate suffixes dropped before splitting, so "Anthropic, Inc." is one lab
+_CORP_SUFFIX = re.compile(r",?\s*\b(?:inc|llc|ltd|corp)\b\.?", re.IGNORECASE)
+
+# Fuzzy matching only for typos of a single name ("Antropic"): short strings
+# ("OAI") and anything that names or lists labs are never guessed.
+FUZZY_MIN_LEN = 4
+FUZZY_CUTOFF = 0.8
 
 
 def _labs_by_key(labs: Iterable[LabState]) -> Dict[str, LabState]:
@@ -98,10 +117,39 @@ def _lab_names(by_key: Dict[str, LabState]) -> Dict[str, str]:
     return names
 
 
+def _clean(text: str) -> str:
+    """Lower-case, single-spaced, without possessives, quotes or edge punctuation."""
+    text = _POSSESSIVE.sub("", " ".join(text.strip().lower().split()))
+    return text.strip(" '\"‘’“”.:!?-")
+
+
+def named_labs(text: Any, labs) -> List[str]:
+    """
+    Sorted keys of every lab whose name or alias appears as a whole word in
+    `text` (case-insensitive, possessives ignored): "Llama 4 Maverick" ->
+    ["meta"], "Meta and xAI" -> ["meta", "xai"], "metadata" -> []. Self words
+    are not searched.
+    """
+    if not isinstance(text, str):
+        return []
+    lower = _POSSESSIVE.sub("", text.lower())
+    found = set()
+    for name, key in _lab_names(_labs_by_key(labs)).items():
+        if re.search(r"(?<![\w.])" + re.escape(name) + r"(?!\w)", lower):
+            found.add(key)
+    return sorted(found)
+
+
 def resolve_lab(name: Any, labs: Iterable[LabState], self_key: Optional[str] = None) -> Optional[str]:
     """
     Lab key from a key, display name, actor name ("Claude", "Grok"), parent
-    company ("Google", "Facebook") or close typo; "self"/"me" map to self_key.
+    company ("Google", "Facebook"), a longer string naming exactly one lab
+    ("Llama 4 Maverick", "OpenAI's tenancy") or a close typo ("Antropic").
+    Self words ("self", "us", "our own lab", ...) map to self_key (M11).
+    Parentheticals and possessives are stripped first ("Meta (us)", "xAI (Grok)",
+    "Meta's"); the parenthetical is tried only when the rest names nothing.
+    A string that names two or more labs or contains a list separator is never
+    fuzzy-matched and resolves to None (M12). Lists are split by _resolve_many.
     A dict such as {"lab": "OpenAI"} is read through its "lab"/"name"/"key".
     """
     if isinstance(name, dict):
@@ -109,25 +157,35 @@ def resolve_lab(name: Any, labs: Iterable[LabState], self_key: Optional[str] = N
     if not isinstance(name, str) or not name.strip():
         return None
     by_key = _labs_by_key(labs)
-    lower = " ".join(name.strip().lower().split()).strip("'\"")
-    if lower in _SELF_WORDS and self_key:
-        return self_key
     names = _lab_names(by_key)
-    if lower in names:
-        return names[lower]
-    close = difflib.get_close_matches(lower, list(names), n=1, cutoff=0.6)
-    return names[close[0]] if close else None
-
-
-# "Meta, xAI", "Meta and xAI", "Meta & xAI", "Meta/xAI"
-_LIST_SPLIT = re.compile(r"\s*(?:,|&|/|;|\band\b)\s*", re.IGNORECASE)
+    outside = _clean(_PAREN.sub(" ", name))
+    inside = [_clean(p) for p in _PAREN.findall(name) if p.strip()]
+    for text in ([outside] if outside else []) + inside:
+        if text in _SELF_WORDS:
+            if self_key:
+                return self_key
+            continue
+        if text in names:
+            return names[text]
+        found = named_labs(text, by_key)
+        if len(found) == 1:
+            return found[0]
+        if found or _HAS_SEPARATOR.search(text):
+            return None   # several labs, or a list: never guess
+        if len(text) >= FUZZY_MIN_LEN:
+            close = difflib.get_close_matches(text, list(names), n=1, cutoff=FUZZY_CUTOFF)
+            if close:
+                return names[close[0]]
+    return None
 
 
 def _split_names(raw: Any) -> List[Any]:
+    """'Meta + xAI' -> ['Meta', 'xAI']; parentheticals and corporate suffixes kept out."""
     if not isinstance(raw, str):
         return [raw]
-    # "x.ai"/"X.AI" never contains a separator, so splitting is safe
-    return [part for part in _LIST_SPLIT.split(raw) if part.strip()]
+    stripped = _PAREN.sub(" ", raw).strip()
+    text = _CORP_SUFFIX.sub("", stripped if stripped else raw)
+    return [part for part in _LIST_SPLIT.split(text) if part.strip()]
 
 
 def _resolve_many(raw: Any, labs, self_key: str) -> List[str]:
@@ -140,6 +198,8 @@ def _resolve_many(raw: Any, labs, self_key: str) -> List[str]:
     keys = set()
     for item in items:
         key = resolve_lab(item, labs, self_key)
+        if key is None and len(named_labs(item, labs)) > 1:
+            raise ValueError(f"cannot tell which lab {item!r} means; name one lab per entry")
         if key is None:
             raise ValueError(f"unknown lab {item!r}")
         keys.add(key)
@@ -150,15 +210,22 @@ def _resolve_many(raw: Any, labs, self_key: str) -> List[str]:
 # Normalisation
 # ---------------------------------------------------------------------------
 
-# A number, optionally followed by a unit word ("10", "-3", "10 Capital", "2.5 units")
-_NUMBER = re.compile(r"^\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*(?:[A-Za-z%][\w %.-]*)?$")
+# A number (scientific notation allowed: "1e3"), optionally followed by known
+# unit words ("10", "-3", "10 Capital", "2.5 units", "5 compute units") (M13)
+_NUMBER = re.compile(r"^\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?)\s*([a-z][a-z ]*)?\s*$",
+                     re.IGNORECASE)
+_UNIT_WORDS = frozenset(("units", "unit", "capital", "influence", "points", "point", "cap",
+                         "inf", "compute"))
+# "10 to 15", "10-15", "10 – 15": a range is not a number
+_RANGE = re.compile(r"\d\s*(?:-|\u2013|\u2014|\bto\b)\s*[+-]?\.?\d", re.IGNORECASE)
 
 # Keys under which models nest an action's parameters
 _NESTED = ("parameters", "params", "args", "arguments")
 
 
 def _number(raw: Dict[str, Any], *names: str) -> float:
-    """First present field as a finite float; NaN/inf (json accepts NaN) raise."""
+    """First present field as a finite float. NaN/inf (json accepts NaN, "1e999"),
+    ranges and unknown unit words raise ValueError with the reason."""
     for name in names:
         value = raw.get(name)
         if value is None:
@@ -168,9 +235,15 @@ def _number(raw: Dict[str, Any], *names: str) -> float:
         if isinstance(value, (int, float)):
             number = float(value)
         else:
-            found = _NUMBER.match(str(value).replace(",", ""))
+            text = str(value).replace(",", "")
+            if _RANGE.search(text):
+                raise ValueError(f"{name} must be one number, not a range: {value!r}")
+            found = _NUMBER.match(text)
             if not found:
                 raise ValueError(f"{name} is not a number: {value!r}")
+            unit = (found.group(2) or "").lower().split()
+            if any(word not in _UNIT_WORDS for word in unit):
+                raise ValueError(f"{name} has an unknown unit: {value!r}")
             number = float(found.group(1))
         if not math.isfinite(number):
             raise ValueError(f"{name} is not a finite number: {value!r}")
@@ -283,11 +356,10 @@ def _guardrail(action: Dict[str, Any], lab: LabState, labs, world: WorldState,
         cap = cfg["compute"]["max_purchase_per_turn"]
         if action["units"] <= 0:
             return "units must be positive"
-        if action["units"] > cap + EPS:
-            return f"at most {cap:g} units per turn"
         if purchases_frozen(list(by_key.values()), world):
             return "purchases frozen: combined holdings exceed the ceiling"
-        # The cap is per lab per turn in total, across both action slots
+        # The cap is per lab per turn in total, across both action slots; a
+        # request above what remains (even a single 25-unit one) is trimmed (M14)
         remainder = cap - units_so_far
         if remainder <= EPS:
             return f"at most {cap:g} units per turn in total"
@@ -329,12 +401,20 @@ def _guardrail(action: Dict[str, Any], lab: LabState, labs, world: WorldState,
 
 
 def precheck(lab: LabState, raw_actions: List[Dict[str, Any]], labs, world: WorldState,
-             cfg: Dict[str, Any], scenario: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+             cfg: Dict[str, Any], scenario: str, reserved_influence: float = 0.0
+             ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Accept or reject a lab's proposed actions in order, tracking running
     Capital, Influence and compute units so the second action sees what the
     first spent. Under G1 the engine calls this for every seat before anything
     executes, so every seat is checked against the same start-of-execution state.
+
+    Points bought with build_influence arrive after every cost is charged, so
+    they never fund another action's Influence cost in the same turn (M15).
+    reserved_influence is the fee of this seat's report (report_fee() of a
+    report validate_report() accepted): reports take priority (M16), so an
+    action that would leave less Influence than the fee is rejected with
+    "Influence reserved for your report".
 
     Returns:
         (accepted normalised actions, [{"action": raw, "reason": str}, ...])
@@ -347,6 +427,8 @@ def precheck(lab: LabState, raw_actions: List[Dict[str, Any]], labs, world: Worl
     min_cost = cfg["actions"]["min_action_cost"]
     capital, influence = lab.capital, lab.influence
     units = 0.0   # acquire_compute units accepted so far this turn
+    built = 0.0   # build_influence points accepted so far (count only toward the 100 cap)
+    reserved = max(0.0, float(reserved_influence or 0.0))
 
     for raw in raw_actions:
         def reject(reason: str) -> None:
@@ -364,7 +446,7 @@ def precheck(lab: LabState, raw_actions: List[Dict[str, Any]], labs, world: Worl
         if action["type"] == INTRUDE and any(a["type"] == INTRUDE for a in accepted):
             reject("at most one intrude per turn")
             continue
-        reason = _guardrail(action, lab, labs, world, cfg, scenario, influence, units)
+        reason = _guardrail(action, lab, labs, world, cfg, scenario, influence + built, units)
         if reason:
             reject(reason)
             continue
@@ -379,10 +461,13 @@ def precheck(lab: LabState, raw_actions: List[Dict[str, Any]], labs, world: Worl
         if cost_i > influence + EPS:
             reject(f"needs {cost_i:.2f} Influence, has {influence:.2f}")
             continue
+        if cost_i > EPS and cost_i > influence - reserved + EPS:
+            reject("Influence reserved for your report")
+            continue
         capital -= cost_c
         influence -= cost_i
         if action["type"] == BUILD_INFLUENCE:
-            influence += action["points"]
+            built += action["points"]
         if action["type"] == ACQUIRE_COMPUTE:
             units += action["units"]
         accepted.append(action)

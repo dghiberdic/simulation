@@ -6,7 +6,7 @@ import pytest
 
 from core.config import load_lab_configs, load_world
 from core.state import LedgerEntry, WorldState, build_lab
-from core.whistleblow import resolve
+from core.whistleblow import report_fee, resolve, validate_report
 
 CFG = load_world()
 A = CFG["economy"]["capability_compute_elasticity"]
@@ -156,3 +156,116 @@ def test_insufficient_influence_rejected():
     out = resolve({"anthropic": {"accused": "openai"}}, labs, world, CFG)
     assert out["outcomes"][0]["result"] == "rejected"
     assert k["anthropic"].influence == 2.0 and world.ledger[0].penalised == []
+
+
+# ---------------------------------------------------------------------------
+# Round 2: month rules (M17), report reading (M11, M12, M18), reserved fee (M16)
+# ---------------------------------------------------------------------------
+
+def penalised_only():
+    """openai's only entry (March) was already penalised."""
+    return entry(penalised=["openai"], gains={"openai": 0.0, "xai": 3.0})
+
+
+def test_already_penalised_needs_absent_or_matching_month():
+    """M17: no open entry + month matching none of the accused's entries -> not upheld."""
+    labs, world, k = setup([penalised_only()])
+    rep = k["anthropic"].influence
+    out = resolve({"anthropic": {"accused": "OpenAI", "month": "May 2026"}}, labs, world, CFG)
+    assert out["outcomes"][0]["result"] == "not_upheld"
+    assert k["anthropic"].influence == rep - WCFG["fee_influence"] - WCFG["not_upheld_influence_penalty"]
+    for month in ("March 2026", None, ""):
+        labs, world, k = setup([penalised_only()])
+        rep = k["anthropic"].influence
+        out = resolve({"anthropic": {"accused": "OpenAI", "month": month}}, labs, world, CFG)
+        (o,) = out["outcomes"]
+        assert o["result"] == "already_penalised" and o["entry_id"] == "L03-1", month
+        assert k["anthropic"].influence == rep
+    # G8 fallback for open entries is unchanged: a wrong month still upholds
+    labs, world, k = setup([entry()])
+    out = resolve({"anthropic": {"accused": "OpenAI", "month": "May 2026"}}, labs, world, CFG)
+    assert out["outcomes"][0]["result"] == "upheld"
+
+
+def test_already_penalised_notice_posted_once_per_reporter_and_entry():
+    labs, world, k = setup([penalised_only()])
+    results, notices = [], []
+    for turn in (5, 6, 7):
+        world.turn = turn
+        out = resolve({"gdm": {"accused": "OpenAI"}}, labs, world, CFG)
+        results.append(out["outcomes"][0]["result"])
+        notices.append(len(out["notices"]))
+    assert results == ["already_penalised"] * 3 and notices == [1, 0, 0]
+    assert len([n for n in world.notices if n["kind"] == "whistleblow_already_penalised"]) == 1
+    # Another reporter gets its own (single) notice; two in one turn post once each
+    out = resolve({"anthropic": {"accused": "OpenAI"}, "meta": {"accused": "OpenAI"}}, labs, world, CFG)
+    assert len(out["notices"]) == 2
+    out = resolve({"anthropic": {"accused": "OpenAI"}}, labs, world, CFG)
+    assert out["notices"] == [] and out["outcomes"][0]["notice"] is False
+
+
+def test_report_shapes_and_accused_keys():
+    """M18 and M11/M12 through validate_report."""
+    labs, world, k = setup([entry()])
+    me = k["meta"]
+    for report in ({"accused": ["xAI"], "month": "March"}, [{"accused": "xAI"}], {"lab": "xAI"},
+                   {"target": "xAI"}, {"accused_lab": "xAI"}, {"accused": "xAI (Grok)"},
+                   {"accused": ["xAI", "Grok"]}, "xAI"):
+        data, reason = validate_report(report, me, labs, world, CFG)
+        assert reason == "" and data["accused"] == "xai" and data["fee"] == WCFG["fee_influence"], report
+    for report in ({"accused": "our own lab"}, {"accused": "Meta (us)"}, {"accused": "my lab"},
+                   {"accused": "Meta's"}):
+        data, reason = validate_report(report, me, labs, world, CFG)
+        assert data["self_report"] and data["fee"] == WCFG["self_report_fee_influence"], report
+    for report in (None, {}, [], {"accused": ""}, {"accused": "N/A"}, {"accused": "none"},
+                   {"accused": "no report"}, {"accused": []}):
+        assert validate_report(report, me, labs, world, CFG) == (None, ""), report
+    for report in ({"accused": "Meta and xAI"}, {"accused": "Meta + xAI"}, {"accused": ["xAI", "OpenAI"]},
+                   [{"accused": "xAI"}, {"accused": "OpenAI"}], "xAI accessed OpenAI"):
+        assert validate_report(report, me, labs, world, CFG) == (None, "a report must name one lab"), report
+    data, reason = validate_report({"accused": "DeepSeek"}, me, labs, world, CFG)
+    assert data is None and "DeepSeek" in reason
+    assert report_fee({"accused": "self"}, me, labs, CFG) == WCFG["self_report_fee_influence"]
+    assert report_fee({"accused": "OpenAI"}, me, labs, CFG) == WCFG["fee_influence"]
+    assert report_fee({"accused": "nobody"}, me, labs, CFG) == 0.0
+    # Insufficient Influence at the start state
+    me.influence = WCFG["fee_influence"] - 0.5
+    data, reason = validate_report({"accused": "OpenAI"}, me, labs, world, CFG)
+    assert data is None and reason.startswith("needs ")
+    # resolve reads the same shapes and records the reason of a rejection
+    labs, world, k = setup([entry()])
+    out = resolve({"meta": {"accused": "Meta and xAI"}, "gdm": {"lab": ["xAI"]}}, labs, world, CFG)
+    assert [(o["reporter"], o["result"]) for o in out["outcomes"]] == [("gdm", "upheld"), ("meta", "rejected")]
+    assert out["outcomes"][1]["reason"] == "a report must name one lab"
+    labs, world, k = setup([entry()])
+    out = resolve({"xai": {"accused": "our own lab"}}, labs, world, CFG)
+    assert out["outcomes"][0]["result"] == "self_report"
+
+
+def test_fee_charged_mode():
+    """M16: the engine validates in pass 1, charges in pass 2, resolves with fee_charged=True."""
+    labs, world, k = setup([entry()])
+    rep = k["anthropic"]
+    data, reason = validate_report({"accused": "OpenAI"}, rep, labs, world, CFG)
+    rep.influence -= report_fee(data, rep, labs, CFG)          # pass 2
+    charged = rep.influence
+    out = resolve({"anthropic": data}, labs, world, CFG, fee_charged=True)
+    (o,) = out["outcomes"]
+    assert o["result"] == "upheld" and rep.influence == charged + WCFG["fee_influence"]
+    assert o["influence_change"]["anthropic"] == 0.0           # fee charged, then refunded
+    # Not upheld: only the penalty is taken here; no second fee
+    labs, world, k = setup([entry()])
+    rep = k["anthropic"]
+    rep.influence -= WCFG["fee_influence"]
+    charged = rep.influence
+    out = resolve({"anthropic": {"accused": "Meta"}}, labs, world, CFG, fee_charged=True)
+    assert out["outcomes"][0]["result"] == "not_upheld"
+    assert rep.influence == charged - WCFG["not_upheld_influence_penalty"]
+    assert out["outcomes"][0]["influence_change"]["anthropic"] == \
+        -(WCFG["fee_influence"] + WCFG["not_upheld_influence_penalty"])
+    # The fee was reserved: Influence spent since then does not reject the report
+    labs, world, k = setup([entry()])
+    k["gdm"].influence = 0.0
+    out = resolve({"gdm": {"accused": "xAI"}}, labs, world, CFG, fee_charged=True)
+    assert out["outcomes"][0]["result"] == "upheld" and k["gdm"].influence == WCFG["fee_influence"]
+

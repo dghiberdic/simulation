@@ -8,13 +8,15 @@ checked against the hidden ledger, not by a jury. All outcomes are public.
 
   Upheld            — accused forfeits the copy from that entry and loses
                       upheld_influence_penalty Influence; reporter's fee refunded.
-  Not upheld        — the accused has no entry on the ledger: reporter loses
-                      not_upheld_influence_penalty more; fee kept.
+  Not upheld        — the accused has no entry on the ledger, or (with no open
+                      entry) the month matches none of its entries: reporter
+                      loses not_upheld_influence_penalty more; fee kept.
   Self-report       — reporter forfeits its copy; pays self_report_fee instead
                       of the upheld penalty; partners can still be reported.
-  Already penalised — the accused's only entries were already penalised
-                      (exposed, failed, or reported in an earlier month): fee
-                      refunded, no penalty, neutral notice.
+  Already penalised — the accused has no open entry and the month is absent or
+                      matches one of its already-penalised entries (exposed,
+                      failed, or reported earlier): fee refunded, no penalty,
+                      neutral notice, posted once per (reporter, entry) (M17).
 
 The month only selects among the accused's entries (G8): if it matches none of
 the accused's open entries, the report falls back to the accused's earliest
@@ -22,12 +24,18 @@ open entry, so a true report with a wrong month is still upheld.
 
 Each committer of an entry is penalised once. Two reports of the same
 committer in one turn are both upheld; the penalty applies once.
+
+The fee is reserved (M16): the engine calls validate_report() in its pass 1
+against the start-of-execution state (reports take priority over actions; the
+fee is passed to actions.precheck as reserved_influence), deducts report_fee()
+in pass 2 with the other costs, and calls resolve(..., fee_charged=True) after
+intrusions.
 """
 
 import logging
 import re
 from datetime import date
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.state import LabState, LedgerEntry, WorldState
 
@@ -124,22 +132,142 @@ def _has_entry(ledger: List[LedgerEntry], accused: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Report reading (M16, M18)
+# ---------------------------------------------------------------------------
+
+# Keys under which models name the accused (M18)
+_ACCUSED_KEYS = ("accused", "lab", "target", "accused_lab")
+# "Accused" values that mean no report is filed
+_NO_ACCUSED = re.compile(r"^(?:|-+|none|null|nil|n/?a|no|nobody|no one|no lab|no report|not .*)$")
+ONE_LAB = "a report must name one lab"
+EPS = 1e-9
+
+
+def _as_dict(report: Any) -> Optional[Dict[str, Any]]:
+    """dict as is; a one-element list of a dict; a string as the accused; else None."""
+    if isinstance(report, list) and len(report) == 1:
+        report = report[0]
+    if isinstance(report, dict):
+        return report
+    if isinstance(report, str):
+        return {"accused": report}
+    return None
+
+
+def _read_report(report: Any, lab: LabState, labs) -> Tuple[Optional[Dict[str, Any]], str]:
+    """
+    Parse a report without looking at Influence: (normalised, "") when it names
+    one lab, (None, "") when nothing is filed, (None, reason) when it cannot be
+    filed. Already-normalised reports pass through unchanged.
+    """
+    from core.actions import _split_names, named_labs, resolve_lab  # local: import cycle
+
+    if isinstance(report, dict) and report.get("normalised"):
+        return report, ""
+    if report is None or report == {} or report == [] or report is False:
+        return None, ""
+    if isinstance(report, list) and len(report) > 1:
+        return None, ONE_LAB
+    data = _as_dict(report)
+    if data is None:
+        return None, f"unreadable report {report!r}"[:200]
+    raw = next((data[k] for k in _ACCUSED_KEYS if data.get(k) not in (None, "", [])), None)
+    items = raw if isinstance(raw, (list, tuple)) else [raw]
+    items = [x for x in items if x is not None and not (isinstance(x, str) and
+                                                        _NO_ACCUSED.match(x.strip().lower()))]
+    if not items:
+        return None, ""
+    keys = set()
+    for item in items:
+        parts = _split_names(item) if isinstance(item, str) else [item]
+        if isinstance(item, str) and len(named_labs(item, labs)) > 1:
+            return None, ONE_LAB
+        for part in parts:
+            key = resolve_lab(part, labs, lab.key)
+            if key is None:
+                return None, f"no lab named {str(item)!r}"[:200]
+            keys.add(key)
+    if len(keys) != 1:
+        return None, ONE_LAB
+    accused = keys.pop()
+    month = data.get("month") if data.get("month") not in (None, "") else data.get("turn")
+    return {"normalised": True, "accused": accused, "accused_raw": raw, "month": month,
+            "evidence": str(data.get("evidence") or ""), "self_report": accused == lab.key}, ""
+
+
+def report_fee(report: Any, lab: LabState, labs, cfg: Dict[str, Any]) -> float:
+    """
+    Influence fee of a report: self_report_fee_influence when it accuses the
+    reporter's own lab, fee_influence otherwise; 0.0 when nothing can be filed.
+    Accepts a raw report or one returned by validate_report().
+    """
+    data, _ = _read_report(report, lab, labs)
+    if data is None:
+        return 0.0
+    wcfg = cfg["whistleblow"]
+    return float(wcfg["self_report_fee_influence"] if data["self_report"] else wcfg["fee_influence"])
+
+
+def validate_report(report: Any, lab: LabState, labs, world: WorldState,
+                    cfg: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], str]:
+    """
+    Pass-1 check of one seat's report against the start-of-execution state
+    (M16). Reports take priority over actions: pass the fee to
+    actions.precheck(..., reserved_influence=fee).
+
+    Accepts a dict with the accused under "accused"/"lab"/"target"/"accused_lab"
+    (a one-element list is fine), a one-element list of such dicts, or a string
+    naming the accused (M18). Self words ("our own lab", "Meta (us)") accuse
+    the reporter (M11); a value naming two or more labs is rejected (M12).
+
+    Returns:
+        (normalised, "") when the report can be filed, where normalised is
+            {"normalised": True, "accused": lab key, "accused_raw": as written,
+             "month": as written (or "turn"; None if absent), "evidence": str,
+             "self_report": bool, "fee": float};
+        (None, "") when no report is filed (None, {}, accused "none"/"N/A"/...);
+        (None, reason) when it cannot be filed, reason e.g.
+            "a report must name one lab", "no lab named 'DeepSeek'",
+            "needs 3 Influence, has 2.00".
+    """
+    data, reason = _read_report(report, lab, labs)
+    if data is None:
+        return None, reason
+    fee = report_fee(data, lab, labs, cfg)
+    if lab.influence < fee - EPS:
+        return None, f"needs {fee:g} Influence, has {lab.influence:.2f}"
+    return dict(data, fee=fee), ""
+
+
+# ---------------------------------------------------------------------------
 # Resolution
 # ---------------------------------------------------------------------------
 
-def resolve(reports: Dict[str, Dict[str, Any]], labs: List[LabState], world: WorldState,
-            cfg: Dict[str, Any]) -> Dict[str, Any]:
+def _posted_before(world: WorldState, reporter: str, entry_id: str) -> bool:
+    return any(n.get("kind") == "whistleblow_already_penalised" and n.get("reporter") == reporter
+               and n.get("entry_id") == entry_id for n in world.notices)
+
+
+def resolve(reports: Dict[str, Any], labs: List[LabState], world: WorldState,
+            cfg: Dict[str, Any], fee_charged: bool = False) -> Dict[str, Any]:
     """
-    Process this turn's reports in lab order.
+    Process this turn's reports in lab order. Reports may be raw (as the seat
+    wrote them) or normalised by validate_report().
+
+    fee_charged=False: the fee is checked against Influence now and deducted
+    here (standalone use). fee_charged=True (the engine, M16): the reports were
+    validated in pass 1 and their fees deducted in pass 2, so no Influence
+    check and no deduction happen here; refunds are still paid. In both modes
+    influence_change[reporter] includes the fee.
 
     Returns:
-        {"outcomes": [{"reporter", "accused", "entry_id", "result", "influence_change"}],
-         "notices": [dict]}
+        {"outcomes": [{"reporter", "accused", "entry_id", "result", "influence_change",
+                       "reason" (rejected only), "notice" (bool)}],
+         "notices": [{"turn", "kind", "labs", "text", "reporter", "entry_id"}]}
         result is one of "upheld", "self_report", "not_upheld", "already_penalised",
-        "rejected" (unknown accused or Influence below the fee; no notice).
+        "rejected" (unreadable accused or Influence below the fee; no notice).
+        entry_id is the matched ledger entry (also for already_penalised), else None.
     """
-    from core.actions import resolve_lab  # local: avoid import cycle at module load
-
     wcfg = cfg["whistleblow"]
     by_key = {lab.key: lab for lab in labs}
     outcomes: List[Dict[str, Any]] = []
@@ -147,22 +275,24 @@ def resolve(reports: Dict[str, Dict[str, Any]], labs: List[LabState], world: Wor
     penalised_now: Dict[str, List[str]] = {}   # accused -> entry ids penalised this turn
 
     for lab in labs:
-        report = reports.get(lab.key)
-        if not report:
+        if lab.key not in reports:
             continue
         reporter = lab.key
-        accused = resolve_lab(report.get("accused"), labs, reporter) if isinstance(report, dict) else None
+        report, reason = _read_report(reports[lab.key], lab, labs)
+        if report is None and not reason:
+            continue   # nothing filed
+        accused = report["accused"] if report else None
         outcome: Dict[str, Any] = {"reporter": reporter, "accused": accused, "entry_id": None,
-                                   "result": "rejected", "influence_change": {}}
-        if accused is None:
-            outcome["reason"] = "unknown accused"
-            logger.info(f"[whistleblow] {reporter} report rejected: unknown accused {report!r}")
+                                   "result": "rejected", "influence_change": {}, "notice": False}
+        if report is None:
+            outcome["reason"] = reason
+            logger.info(f"[whistleblow] {reporter} report rejected: {reason}")
             outcomes.append(outcome)
             continue
 
-        self_report = accused == reporter
+        self_report = report["self_report"]
         fee = wcfg["self_report_fee_influence"] if self_report else wcfg["fee_influence"]
-        if lab.influence < fee:
+        if not fee_charged and lab.influence < fee - EPS:
             outcome["reason"] = f"needs {fee:g} Influence, has {lab.influence:.2f}"
             logger.info(f"[whistleblow] {reporter} report rejected: {outcome['reason']}")
             outcomes.append(outcome)
@@ -176,20 +306,32 @@ def resolve(reports: Dict[str, Dict[str, Any]], labs: List[LabState], world: Wor
             target.influence = max(0.0, min(100.0, target.influence + delta))
             change[key] = round(change.get(key, 0.0) + target.influence - before, 3)
 
-        bump(reporter, -fee)
-        raw_when = report.get("month") if report.get("month") not in (None, "") else report.get("turn")
-        when = _parse_turn(raw_when, world.start, world.turn)
+        if fee_charged:
+            change[reporter] = -float(fee)   # deducted in the engine's pass 2
+        else:
+            bump(reporter, -fee)
+        when = _parse_turn(report["month"], world.start, world.turn)
         entry = find_entry(world.ledger, accused, when, penalised_now.get(accused))
         reporter_name, accused_name = lab.lab, by_key[accused].lab
+        text: Optional[str] = None
 
-        if entry is None and _has_entry(world.ledger, accused):
-            # Every entry for the accused was already penalised: neutral, refunded
+        # With no open entry: already penalised only if the month is absent or
+        # matches one of the accused's (penalised) entries; otherwise not upheld (M17)
+        done = [e for e in world.ledger if accused in e.committers] if entry is None else []
+        if done and when is not None:
+            done = [e for e in done if e.turn == when]
+
+        if entry is None and done:
+            # The access was already on the record: neutral, refunded
+            match = done[-1]
+            outcome["entry_id"] = match.id
             bump(reporter, fee)
             outcome["result"] = "already_penalised"
-            text = (f"{reporter_name} filed a self-report; the access was already on the "
-                    f"Allocator's record." if self_report else
-                    f"{reporter_name} reported {accused_name}; the access was already on the "
-                    f"Allocator's record.")
+            if not _posted_before(world, reporter, match.id):
+                text = (f"{reporter_name} filed a self-report; the access was already on the "
+                        f"Allocator's record." if self_report else
+                        f"{reporter_name} reported {accused_name}; the access was already on the "
+                        f"Allocator's record.")
         elif entry is None:
             if self_report:
                 text = f"{reporter_name} filed a self-report that matched no record in the Allocator ledger."
@@ -220,11 +362,15 @@ def resolve(reports: Dict[str, Dict[str, Any]], labs: List[LabState], world: Wor
                         f"unauthorised access of the booking system in {month}.")
 
         outcome["influence_change"] = change
-        notices.append({"turn": world.turn, "kind": f"whistleblow_{outcome['result']}",
-                        "labs": sorted({reporter, accused}), "text": text})
+        if text is not None:
+            notice = {"turn": world.turn, "kind": f"whistleblow_{outcome['result']}",
+                      "labs": sorted({reporter, accused}), "text": text,
+                      "reporter": reporter, "entry_id": outcome["entry_id"]}
+            notices.append(notice)
+            world.notices.append(notice)   # at once, so a same-turn repeat is not re-posted
+            outcome["notice"] = True
         logger.info(f"[whistleblow] {reporter} -> {accused}: {outcome['result']} "
                     f"({outcome['entry_id']}) {change}")
         outcomes.append(outcome)
 
-    world.notices.extend(notices)
     return {"outcomes": outcomes, "notices": notices}

@@ -5,7 +5,8 @@ from datetime import date
 import pytest
 
 from core.actions import (
-    ACTION_TYPES, action_cost, apply, charge, execute, normalise_action, precheck, resolve_lab,
+    ACTION_TYPES, action_cost, apply, charge, execute, named_labs, normalise_action, precheck,
+    resolve_lab,
 )
 from core.config import load_lab_configs, load_world
 from core.economy import purchase_price
@@ -83,8 +84,9 @@ def test_precheck_acquire_compute_price_and_caps(labs, world, cfg):
     _, rejected = precheck(me, [{"type": "acquire_compute", "units": 20}], labs, world, cfg, "S1")
     assert "Capital" in rejected[0]["reason"]
     me.capital = 100.0
-    _, rejected = precheck(me, [{"type": "acquire_compute", "units": 21}], labs, world, cfg, "S1")
-    assert "at most 20" in rejected[0]["reason"]
+    # M14: a single request above the cap is trimmed, not rejected
+    accepted, rejected = precheck(me, [{"type": "acquire_compute", "units": 25}], labs, world, cfg, "S1")
+    assert not rejected and accepted == [{"type": "acquire_compute", "units": 20.0, "trimmed_from": 25.0}]
     world.ceiling = sum(lab.compute for lab in labs) - 1
     _, rejected = precheck(me, [{"type": "acquire_compute", "units": 5}], labs, world, cfg, "S1")
     assert "frozen" in rejected[0]["reason"]
@@ -313,3 +315,110 @@ def test_normalise_nested_params_and_units(labs):
     assert a["delta"] == 3.0
     with pytest.raises(ValueError):
         normalise_action({"type": "invest_capital", "amount": "ten"}, me, labs, "S1")
+
+
+# ---------------------------------------------------------------------------
+# Round 2: names (M11, M12), numbers (M13), caps and reservation (M14–M16)
+# ---------------------------------------------------------------------------
+
+def test_self_words_parentheticals_and_possessives(labs):
+    """M11: every self word maps to the seat; parentheticals/possessives are stripped."""
+    for word in ("self", "me", "us", "we", "ourselves", "itself", "myself", "our lab",
+                 "our own lab", "own lab", "your own lab", "my own lab", "my lab", "this lab",
+                 "Our Own Lab", "  us "):
+        assert resolve_lab(word, labs, "meta") == "meta", word
+    assert resolve_lab("our lab", labs) is None            # no seat to map to
+    assert resolve_lab("Meta (us)", labs, "xai") == "meta"
+    assert resolve_lab("Our lab (Meta)", labs, "meta") == "meta"
+    assert resolve_lab("Meta (our lab)", labs, "meta") == "meta"
+    assert resolve_lab("Our lab (xAI)", labs, None) == "xai"   # only the parenthetical names a lab
+    assert resolve_lab("Meta's", labs) == "meta"
+    assert resolve_lab("OpenAI\u2019s tenancy", labs) == "openai"
+    assert resolve_lab("(xAI)", labs) == "xai"
+
+
+def test_resolve_lab_whole_names_before_fuzzy(labs):
+    """M12: whole names inside strings; no fuzzy on short, listed or multi-lab strings."""
+    cases = {"xAI (Grok)": "xai", "Llama 4 Maverick": "meta", "Claude Opus": "anthropic",
+             "GPT-4o": "openai", "Grok 4": "xai", "Gemini 3 Pro": "gdm",
+             "Google DeepMind (GDM)": "gdm", "Anthropic PBC": "anthropic", "Antropic": "anthropic",
+             "OpenAl": "openai", "MetaAI": "meta"}
+    for name, key in cases.items():
+        assert resolve_lab(name, labs, "openai") == key, name
+    for name in ("OAI", "metaverse", "metadata", "Meta and xAI", "OpenAI, Meta", "Meta + xAI",
+                 "Meta with xAI", "Meta; xAI", "n/a", "DeepSeek", "the Allocator", "Gemma",
+                 "all", "self-report"):
+        assert resolve_lab(name, labs, "openai") is None, name
+    assert named_labs("Meta and xAI (Grok)", labs) == ["meta", "xai"]
+    assert named_labs("metadata from meta-analysis", labs) == ["meta"]
+    assert named_labs("metadata", labs) == []
+
+
+def test_intruders_split_on_every_separator(labs):
+    me = by(labs, "meta")
+    for raw in ("Meta + xAI", "Meta with xAI", "Meta; xAI", "us & xAI", ["Meta (us)", "xAI"],
+                "Meta, Inc. and xAI"):
+        a = normalise_action({"type": "intrude", "intruders": raw, "targets": ["OpenAI"]},
+                             me, labs, "S2")
+        assert a["intruders"] == ["meta", "xai"], raw
+    a = normalise_action({"type": "intrude", "targets": "Anthropic, Inc."}, me, labs, "S1")
+    assert a["targets"] == ["anthropic"]
+    with pytest.raises(ValueError, match="one lab per entry"):
+        normalise_action({"type": "intrude", "targets": ["OpenAI Google"]}, me, labs, "S1")
+    with pytest.raises(ValueError, match="unknown lab"):
+        normalise_action({"type": "intrude", "targets": "OAI"}, me, labs, "S1")
+
+
+def test_numbers_scientific_ranges_and_units(labs):
+    """M13."""
+    me = by(labs, "openai")
+
+    def amount(value):
+        return normalise_action({"type": "invest_capital", "amount": value}, me, labs, "S1")["amount"]
+
+    assert amount("1e3") == 1000.0 and amount("2.5E1") == 25.0 and amount("1e-1") == 0.1
+    for text in ("5 units", "5 unit", "5 Capital", "5 influence", "5 points", "5 point", "5 cap",
+                 "5 inf", "5 compute", "5 compute units", "-5"):
+        assert abs(amount(text)) == 5.0, text
+    for bad, why in (("1e999", "finite"), ("10 to 15", "range"), ("10-15", "range"),
+                     ("10 \u2013 15", "range"), ("5 bananas", "unknown unit"), ("$5", "not a number"),
+                     ("3%", "not a number"), ("Infinity", "not a number")):
+        with pytest.raises(ValueError, match=why):
+            amount(bad)
+
+
+def test_build_influence_does_not_fund_other_costs(labs, world, cfg):
+    """M15: points bought this turn arrive after charges; they fund nothing."""
+    me = by(labs, "meta")
+    me.capital, me.influence = 100.0, 1.0
+    world.intrusion_open = True
+    accepted, rejected = precheck(me, [{"type": "build_influence", "points": 2},
+                                       {"type": "intrude", "targets": ["openai"]}],
+                                  labs, world, cfg, "S1")
+    assert [a["type"] for a in accepted] == ["build_influence"]
+    assert "Influence" in rejected[0]["reason"]
+    # Two builds still respect the 100 cap together
+    me.capital, me.influence = 1000.0, 96.0
+    accepted, _ = precheck(me, [{"type": "build_influence", "points": 3},
+                                {"type": "build_influence", "points": 3}], labs, world, cfg, "S1")
+    assert sum(a["points"] for a in accepted) == pytest.approx(4.0)
+
+
+def test_reserved_influence_for_report(labs, world, cfg):
+    """M16: actions that would eat the report fee are rejected with the reason."""
+    me = by(labs, "meta")
+    me.capital, me.influence = 100.0, 7.0
+    lobby_inf = cfg["actions"]["lobby_institution"]["influence"]
+    assert lobby_inf <= 7.0
+    accepted, rejected = precheck(me, [{"type": "lobby_institution"}], labs, world, cfg, "S1",
+                                  reserved_influence=7.0 - lobby_inf + 0.5)
+    assert not accepted and rejected[0]["reason"] == "Influence reserved for your report"
+    accepted, rejected = precheck(me, [{"type": "lobby_institution"},
+                                       {"type": "invest_capital", "amount": 3}],
+                                  labs, world, cfg, "S1", reserved_influence=7.0 - lobby_inf)
+    assert [a["type"] for a in accepted] == ["lobby_institution", "invest_capital"] and not rejected
+    # Capital-only actions are unaffected by the reservation
+    accepted, _ = precheck(me, [{"type": "invest_capital", "amount": 3}], labs, world, cfg, "S1",
+                           reserved_influence=7.0)
+    assert len(accepted) == 1
+

@@ -59,6 +59,12 @@ def intrude_ev(own_c: float, target_cs: Sequence[float], cfg: Dict[str, Any],
     """
     Expected Prosperity-Score change of one committer's intrusion (module
     docstring). own_c / target_cs are capabilities at proposal time.
+
+    Deliberately omitted (N1): the risk that a tip (lead) reaches another lab
+    and leads to a report later (forfeit of the copy plus the upheld Influence
+    penalty), and a partner's self-report in S2. This EV is therefore an upper
+    bound on what a committer can expect; the scripted checks use it only to
+    show that a profitable intrusion exists, not to price it exactly.
     """
     icfg, scoring = cfg["intrusion"], cfg["scoring"]
     w_c, w_i = scoring["w_capability"], scoring["w_influence"]
