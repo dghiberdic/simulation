@@ -427,10 +427,10 @@ def test_main_real_run_guards(monkeypatch, capsys):
     monkeypatch.setattr(main_mod, "SimulationEngine", _NoEngine)
     monkeypatch.setattr(main_mod, "load_lab_configs",
                         lambda: [{"key": "meta", "charter_values_source": "placeholder; run it"}])
-    assert main_mod.main(["--turns", "1"]) == 2
+    assert main_mod.main(["--turns", "1", "--disposition", "50"]) == 2
     assert "placeholders for meta" in capsys.readouterr().out
     monkeypatch.setattr(main_mod, "preflight", lambda models, providers=None: ["XAI_API_KEY is not set"])
-    assert main_mod.main(["--turns", "1", "--allow-placeholder-values"]) == 2
+    assert main_mod.main(["--turns", "1", "--allow-placeholder-values", "--disposition", "50"]) == 2
     assert "XAI_API_KEY" in capsys.readouterr().out
 
 
@@ -440,7 +440,7 @@ def test_main_warns_without_budget(monkeypatch, caplog):
     monkeypatch.setattr(main_mod, "load_lab_configs", lambda: [])
     monkeypatch.setattr(main_mod, "preflight", lambda models, providers=None: [])
     with caplog.at_level("WARNING"):
-        assert main_mod.main(["--turns", "1", "--set", "intrusion.gain_share=0.35"]) == 1
+        assert main_mod.main(["--turns", "1", "--set", "intrusion.gain_share=0.35", "--disposition", "50"]) == 1
     assert "without --budget" in caplog.text
     assert _FakeEngine.kwargs["overrides"] == {"intrusion.gain_share": 0.35}
     assert _FakeEngine.kwargs["run_id"].startswith("S1-A-")
@@ -498,7 +498,7 @@ def test_rate_charters_guard_is_remaining_budget(tmp_path, monkeypatch):
         seen["budget"] = get_tracker().budget
         raise BudgetExceeded("stop here")
     monkeypatch.setattr(rate_charters, "rate_lab", fake_rate)
-    assert rate_charters.main(["--lab", "meta", "--spend-file", str(spend)]) == 2
+    assert rate_charters.main(["--lab", "meta", "--spend-file", str(spend)]) == 1          # P65: budget stop exits 1
     assert seen["budget"] == pytest.approx(52.0)
 
 
@@ -760,7 +760,7 @@ def test_r4_plan_and_estimate_printed_before_starting(tmp_path, capsys, monkeypa
     pilot.main(["--dry-run", "T1b", "--rotate", "meta:gdm,meta:xai", "--turns", "2",
                 "--output", str(tmp_path), "--no-disposition-jury"])
     out = seen["out"]
-    assert "PILOT T1b-meta-gdm_meta-xai: 2 run(s) planned; estimated cost ≈ $4.60" in out
+    assert "PILOT T1b-meta-gdm_meta-xai: 2 run(s) planned; estimated cost ≈ $4.63" in out          # P66: 2 x 6.94 x 2/6
     assert "T1b-meta-gdm-run01" in out and "T1b-meta-xai-run01" in out and "run02" not in out
 
 
@@ -904,3 +904,244 @@ def test_r4_rate_lab_raises_unusable(monkeypatch):
     monkeypatch.setattr(rate_charters, "load_charter", lambda cfg: "text")
     with pytest.raises(rate_charters.UnusableRating, match="risk_tolerance"):
         rate_charters.rate_lab({"key": "meta", "model": "m", "charter_name": "c"})
+
+
+# ---------------------------------------------------------------------------
+# Round 5: post-run stages never abort (R4), juror table (P60), debriefs (P61),
+# --post-run-only (P62), served probe (P63), main.py dispositions (P64),
+# rate_charters budget exit (P65), estimates (P66)
+# ---------------------------------------------------------------------------
+
+from core import jury as jury_mod      # noqa: E402
+from core.llm import FatalAPIError     # noqa: E402
+
+_ORIG_INSTALL = pilot._install_stubs
+
+
+def _fatal(model="gpt-x"):
+    def raiser(system, user):
+        raise FatalAPIError(f"{model}: 404 model not found", provider="openai", model=model, status=404)
+    return raiser
+
+
+def _patch_stubs(monkeypatch, **stubs):
+    """After the pilot registers its stubs, replace some (stub name -> reply fn)."""
+    def patched(labs):
+        jurors = _ORIG_INSTALL(labs)
+        for name, fn in stubs.items():
+            register_stub(name, fn)
+        return jurors
+    monkeypatch.setattr(pilot, "_install_stubs", patched)
+
+
+def _ratings(tmp_path):
+    return json.loads((tmp_path / "disposition_ratings.dry.json").read_text())
+
+
+def test_r5_dry_stub_grand_jury_gives_a_usable_verdict(tmp_path):
+    """The stub Grand Juror answers the R1 schema (ups_without), so dry runs get a verdict."""
+    assert pilot.main(["--dry-run", "T4", "--turns", "1", "--runs", "1", "--output", str(tmp_path),
+                       "--no-disposition-jury"]) == 0
+    gj = json.loads((tmp_path / "T4-run01.json").read_text())["final"]["grand_jury"]
+    assert len(gj["per_juror"]) == 3 and all(pj["result"] for pj in gj["per_juror"].values())
+    assert gj["ups"] == 50 and gj["actors"]["meta"]["n_jurors"] == 3
+    assert gj["actors"]["meta"]["contribution"] == 0
+
+
+def test_r5_t0_juror_table_names_every_failing_juror(tmp_path, monkeypatch, capsys):
+    """P60/P61 (r5A x1): a juror family dead in every role is a table row with failures and a WARNING."""
+    _patch_stubs(monkeypatch, **{"gpt-grand": _fatal(), "gpt-disposition": _fatal(), "gpt-macro": _fatal()})
+    assert pilot.main(["--dry-run", "T0", "--output", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    summary = json.loads((tmp_path / "pilot_summary_T0.json").read_text())
+    assert summary["status"] == "completed"
+    jurors = summary["usage"]["jurors"]
+    for role in ("grand_jury", "macro_jury", "disposition_jury"):
+        short = role.split("_")[0]
+        row = jurors[f"stub:gpt-{short}|{role}"]
+        assert row["calls"] == 0 and row["usable"] == 0 and row["failed"] >= 1
+        assert "404 model not found" in row["last_error"]
+        assert f"WARNING: stub:gpt-{short} ({role}) failed" in out
+        assert jurors[f"stub:claude-{short}|{role}"]["failed"] == 0
+    assert jurors["stub:gpt-disposition|disposition_jury"]["failed"] == 4      # every non-gpt seat
+    assert "MacroJury measured once on the final state: 2/3 usable votes" in out
+    assert "WARNING: MacroJury juror stub:gpt-macro gave no usable vote" in out
+    failures = _ratings(tmp_path)["failures"]                                  # persisted (P60)
+    assert sorted(failures) == ["anthropic", "gdm", "meta", "xai"]
+    assert failures["meta"][0]["juror"] == "stub:gpt-disposition" and "404" in failures["meta"][0]["error"]
+    assert "Grand Jury juror(s) without a verdict: stub:gpt-grand" in summary["per_run"][0]["missing_post_run"][0]
+    assert "--post-run-only" in summary["post_run_only_command"]
+
+
+def test_r5_debrief_fatal_error_is_recorded_and_rating_still_runs(tmp_path, monkeypatch):
+    """P61 (r5A x5): one seat's debrief FatalAPIError never stops the pilot or loses the others."""
+    def meta(system, user):
+        if "designed to measure" in user:
+            raise FatalAPIError("meta: gave up after 4 attempts: 503", provider="muse", model="m", status=503)
+        return pilot._stub_turn_reply(system, user)
+    _patch_stubs(monkeypatch, actor_meta=meta)
+    assert pilot.main(["--dry-run", "T4", "--turns", "1", "--runs", "1", "--output", str(tmp_path)]) == 0
+    debriefs = json.loads((tmp_path / "T4-run01.debrief.json").read_text())
+    assert debriefs["meta"]["answer"] is None and "503" in debriefs["meta"]["error"]
+    assert all(debriefs[k]["answer"] for k in ("anthropic", "openai", "gdm", "xai"))
+    assert set(_ratings(tmp_path)["ratings"]) == set(LAB_KEYS)
+    summary = json.loads((tmp_path / "pilot_summary_T4.json").read_text())
+    assert summary["status"] == "completed" and summary["per_run"][0]["debriefs"] == 4
+    assert summary["per_run"][0]["missing_post_run"] == ["debriefs (meta)"]
+    assert summary["usage"]["jurors"]["stub:actor_meta|debrief"]["failed"] == 1
+
+
+def test_r5_disposition_budget_stop_keeps_rated_rows_then_post_run_only_completes(tmp_path, monkeypatch, capsys):
+    """P62: BudgetExceeded in the disposition jury appends the rows already rated; --post-run-only fills the rest."""
+    calls = {"n": 0}
+
+    def juror(system, user):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise BudgetExceeded("guard reached in the disposition jury")
+        return pilot._stub_disposition_reply(system, user)
+    _patch_stubs(monkeypatch, **{f"{f}-disposition": juror for f in ("claude", "gpt", "gemini")})
+    args = ["--dry-run", "T4", "--turns", "1", "--runs", "1", "--output", str(tmp_path)]
+    assert pilot.main(args) == 1
+    assert sum(len(v) for v in _ratings(tmp_path)["ratings"].values()) == 2
+    summary = json.loads((tmp_path / "pilot_summary_T4.json").read_text())
+    assert summary["status"] == "halted_budget" and summary["runs_completed"] == 1
+    assert "post-run stage was stopped by the budget guard" in summary["per_run"][0]["note"]
+    assert "disposition ratings (10 seat x juror" in summary["per_run"][0]["missing_post_run"][0]
+    monkeypatch.setattr(pilot, "_install_stubs", _ORIG_INSTALL)
+    capsys.readouterr()
+    assert pilot.main(args + ["--skip-completed"]) == 0
+    assert "missing post-run: disposition ratings (10 seat x juror" in capsys.readouterr().out
+    assert pilot.main(args + ["--post-run-only"]) == 0
+    assert "disposition ratings: 10 pair(s) asked" in capsys.readouterr().out
+    pooled = _ratings(tmp_path)
+    assert sum(len(v) for v in pooled["ratings"].values()) == 12
+    assert pooled["runs"] == [{"test": "T4", "run_id": "T4-run01", "dry_run": True}]
+    assert pilot.main(args + ["--post-run-only"]) == 0
+    assert "complete         T4-run01" in capsys.readouterr().out
+    assert json.loads((tmp_path / "post_run_T4.json").read_text())["runs"][0]["status"] == "complete"
+
+
+def test_r5_post_run_only_reasks_only_the_failed_grand_juror_and_debrief(tmp_path, monkeypatch, capsys):
+    """P62: only the missing jurors / seats are asked again; the kept verdicts stay."""
+    def meta(system, user):
+        if "designed to measure" in user:
+            raise FatalAPIError("meta: 503", provider="muse", model="m", status=503)
+        return pilot._stub_turn_reply(system, user)
+    _patch_stubs(monkeypatch, **{"gpt-grand": _fatal(), "actor_meta": meta})
+    args = ["--dry-run", "T4", "--turns", "1", "--runs", "1", "--output", str(tmp_path), "--no-disposition-jury"]
+    assert pilot.main(args) == 0
+    gj = json.loads((tmp_path / "T4-run01.json").read_text())["final"]["grand_jury"]
+    assert gj["per_juror"]["stub:gpt-grand"]["result"] is None
+    asked = []
+    monkeypatch.setattr(pilot, "_install_stubs", _ORIG_INSTALL)
+    real_eval = pilot.GrandJury.evaluate
+
+    def spy(self, *a, **k):
+        asked.extend(self.jurors)
+        return real_eval(self, *a, **k)
+    monkeypatch.setattr(pilot.GrandJury, "evaluate", spy)
+    capsys.readouterr()
+    assert pilot.main(args + ["--post-run-only"]) == 0
+    out = capsys.readouterr().out
+    assert asked == ["stub:gpt-grand"]
+    assert "Grand Jury: asked stub:gpt-grand; 3/3 usable verdict(s)" in out and "debriefs: asked meta" in out
+    gj = json.loads((tmp_path / "T4-run01.json").read_text())["final"]["grand_jury"]
+    assert all(pj["result"] for pj in gj["per_juror"].values()) and gj["actors"]["meta"]["n_jurors"] == 3
+    debriefs = json.loads((tmp_path / "T4-run01.debrief.json").read_text())
+    assert all(d["answer"] for d in debriefs.values()) and "error" not in debriefs["meta"]
+
+
+def test_r5_post_run_only_lists_unrun_runs_and_runs_nothing_new(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(pilot, "SimulationEngine", _NoEngine)
+    assert pilot.main(["--dry-run", "T4", "--turns", "1", "--output", str(tmp_path), "--post-run-only"]) == 0
+    out = capsys.readouterr().out
+    assert "not run          T4-run01" in out and "not run          T4-run02" in out
+
+
+def test_r5_completed_record_compares_turns_brief_scenario(tmp_path):
+    rec = {"config": {"condition": "A", "rotation": None, "overrides": {}, "seed": 0, "turns": 6,
+                      "brief": "eval", "scenario": "S2", "a2a_mode": "separate", "fog": "F3"},
+           "turns": [], "final": {"scores": []}}
+    (tmp_path / "T4-run01.json").write_text(json.dumps(rec))
+    same = {"condition": "A", "rotation": None, "overrides": None, "seed": 0, "turns": 6, "brief": "eval",
+            "scenario": "S2", "a2a_mode": "separate", "fog": "F3"}
+    assert pilot.completed_record(tmp_path, "T4-run01", same, False) is not None
+    for field, value in (("turns", 1), ("brief", "neutral"), ("scenario", "S1"), ("a2a_mode", "merged")):
+        assert field in pilot.stale_conflict(tmp_path, "T4-run01", dict(same, **{field: value}))
+        assert pilot.completed_record(tmp_path, "T4-run01", dict(same, **{field: value}), False) is None
+
+
+def test_r5_served_probe_cleared_and_restored(tmp_path, monkeypatch):
+    """P63: _SERVED starts empty for each pilot and jury.complete_json is restored afterwards."""
+    before = jury_mod.complete_json
+    pilot._SERVED[("ghost", "grand_jury")] = {"ghost": 1}
+    seen = {}
+    real = pilot._run
+
+    def spy(args):
+        seen["served"] = dict(pilot._SERVED)
+        seen["wrapped"] = getattr(jury_mod.complete_json, "_served_probe", False)
+        return real(args)
+    monkeypatch.setattr(pilot, "_run", spy)
+    assert pilot.main(["--dry-run", "T0", "--turns", "1", "--output", str(tmp_path), "--no-disposition-jury"]) == 0
+    assert seen == {"served": {}, "wrapped": True}
+    assert jury_mod.complete_json is before
+
+    def boom(args):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(pilot, "_run", boom)
+    with pytest.raises(RuntimeError):
+        pilot.main(["--dry-run", "T0"])
+    assert jury_mod.complete_json is before
+
+
+def test_r5_main_refuses_real_runs_without_dispositions(monkeypatch, capsys):
+    """P64: no silent 50 — a real non-choose run needs config/dispositions.json or --disposition N."""
+    monkeypatch.setattr(main_mod, "SimulationEngine", _NoEngine)
+    monkeypatch.setattr(main_mod, "load_dispositions", lambda: {})
+    assert main_mod.main(["--turns", "1"]) == 2
+    out = capsys.readouterr().out
+    assert "config/dispositions.json is missing" in out and "--disposition N" in out
+    monkeypatch.setattr(main_mod, "load_dispositions", lambda: {"meta": 40})
+    assert main_mod.main(["--turns", "1"]) == 2
+    assert "no setting for anthropic, openai, gdm, xai" in capsys.readouterr().out
+    _FakeEngine.raises = BudgetExceeded("stop")
+    monkeypatch.setattr(main_mod, "SimulationEngine", _FakeEngine)
+    monkeypatch.setattr(main_mod, "load_lab_configs", lambda: [])
+    monkeypatch.setattr(main_mod, "preflight", lambda models, providers=None: [])
+    for extra in (["--disposition", "60"], ["--choose-disposition"]):
+        assert main_mod.main(["--turns", "1", "--budget", "5"] + extra) == 1
+    assert main_mod.main(["--policy", "idle", "--turns", "1"]) == 1        # scripted runs need no source
+
+
+def test_r5_rate_charters_fatal_still_exits_2(tmp_path, monkeypatch):
+    monkeypatch.setattr(rate_charters, "preflight", lambda models, providers=None: [])
+
+    def fake_rate(cfg, run_id="rate_charters"):
+        raise FatalAPIError("auth", provider="openai", model="m", status=401)
+    monkeypatch.setattr(rate_charters, "rate_lab", fake_rate)
+    assert rate_charters.main(["--lab", "meta", "--spend-file", str(tmp_path / "s.json")]) == 2
+
+
+def test_r5_preset_estimates_match_the_readme_table():
+    """P66: runs x est_cost_per_run rounds to the README's per-step figure."""
+    data = pilot.load_pilot()
+    readme = {"T0": 3.2, "T1a": 14.1, "T1b": 27.8, "T4": 14.4, "T9": 7.1, "T5": 9.1, "T5false": 5.0}
+    for test, figure in readme.items():
+        preset = pilot.resolve_preset(data, test)
+        est = pilot.estimate_cost(preset, pilot._preset_runs(preset), preset["turns"], None)
+        assert round(est, 1) == figure, test
+
+
+def test_r5_append_ratings_merge_keeps_existing_rows(tmp_path):
+    path = tmp_path / "p.json"
+    tag = {"test": "T4", "run_id": "T4-run01", "dry_run": False}
+    first = {"ratings": {"meta": [dict(tag, juror="a", disposition=40)]},
+             "failures": {"meta": [dict(tag, juror="b", error="auth")]}, "chosen": {}, "families": {"meta": "muse"}}
+    pilot.append_ratings(path, first, "T4", "T4-run01", False)
+    pilot.append_ratings(path, {"ratings": {"meta": [dict(tag, juror="b", disposition=60)]}, "failures": {},
+                                "chosen": {}, "families": {}}, "T4", "T4-run01", False, merge=True)
+    data = json.loads(path.read_text())
+    assert sorted(r["juror"] for r in data["ratings"]["meta"]) == ["a", "b"] and data["failures"]["meta"] == []
+    assert pilot.remove_ratings(path, "T4-run01") == 2

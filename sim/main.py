@@ -12,21 +12,25 @@ API keys live in sim/.env: ANTHROPIC_API_KEY, OPENAI_API_KEY, VERTEX_API_KEY,
 XAI_API_KEY, MUSE_API_KEY (+ MUSE_BASE_URL). Real runs preflight the keys of
 every model in the run before the first call, refuse placeholder charter values
 (run rate_charters.py first), and halt at --budget dollars of measured spend
-across runs (no guard by default: a warning says so).
+across runs (no guard by default: a warning says so). A real run plays each
+seat's disposition from config/dispositions.json (written by
+tools/disposition.py --write from the pilot's blind ratings); without that file
+it is refused unless --disposition N or --choose-disposition says what to play
+(P64) — it never falls back to a silent 50.
 
 The log goes to data/runs/<run_id>/<run_id>.json (run id default
 "<scenario>-<condition>-YYYYmmdd-HHMMSS"), with <run_id>.partial.json after
 every turn so a crash keeps the turns so far; a real run first deletes a stale
 <run_id>.json of the same id in its output dir, so an old final record never
 shadows the new run's partial one (H7). Exit codes: 0 done, 1 budget guard,
-2 aborted or crashed (fatal API error, failed preflight, placeholder values, any
-other exception — the partial record is kept).
+2 aborted or crashed (fatal API error, failed preflight, placeholder values, no
+disposition source, any other exception — the partial record is kept).
 
 Examples:
   # Offline smoke run with a scripted policy — no API keys, no juries, $0.
   python main.py --scenario S1 --condition A --policy greedy
 
-  # A real S1 / condition C cell, 12 turns, under a $100 guard.
+  # A real S1 / condition C cell, 12 turns, under a $100 guard (needs config/dispositions.json).
   python main.py --scenario S1 --condition C --budget 100 --output data/logs/s1_c
 
   # Seats choose their own disposition at the first prompt (as in the pilot).
@@ -87,7 +91,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--choose-disposition", action="store_true",
                    help="seats set their own disposition at the first prompt (as in the pilot)")
     p.add_argument("--disposition", type=int, default=None,
-                   help="force one disposition for every seat (otherwise config/dispositions.json)")
+                   help="force one disposition for every seat (otherwise config/dispositions.json; a real "
+                        "run without that file and without this flag or --choose-disposition is refused)")
     p.add_argument("--policy", choices=sorted(policies.POLICIES), default=None,
                    help="run a zero-cost scripted policy instead of the models (Stage 1)")
     p.add_argument("--model", action="append", default=[], metavar="KEY=MODEL",
@@ -129,7 +134,13 @@ def main(argv=None) -> int:
     elif args.disposition is not None:
         dispositions = {k: args.disposition for k in LAB_KEYS}
     else:
-        dispositions = load_dispositions() or {k: 50 for k in LAB_KEYS}
+        dispositions = load_dispositions() or {}
+        missing = [k for k in LAB_KEYS if dispositions.get(k) is None]
+        if missing and args.policy is None:
+            # P64: a real main run never plays a silent default setting.
+            print(dispositions_problem(missing, bool(dispositions)))
+            return 2
+        dispositions = {k: dispositions.get(k, 50) for k in LAB_KEYS}   # scripted runs: unused
 
     labs, world = build_labs_and_world(cfg, dispositions=dispositions, charters=args.policy is None)
     for pair in args.model:
@@ -189,6 +200,16 @@ def clear_stale(output_dir: Path, run_id: str) -> bool:
         logger.info(f"[stale] removed {path}")
         return True
     return False
+
+
+def dispositions_problem(missing, file_present: bool) -> str:
+    """Why a real run without a disposition source must not start (P64)."""
+    where = ("config/dispositions.json has no setting for " + ", ".join(missing)) if file_present \
+        else "config/dispositions.json is missing"
+    return (f"Refusing a real run: {where}. The main run plays each seat's disposition from the pilot's "
+            "blind ratings — write it with `python tools/disposition.py --write` — or pass "
+            "--disposition N to give every seat the setting N, or --choose-disposition to let the "
+            "seats choose at the first prompt (as in the pilot).")
 
 
 def real_run_problems(labs, macro_jurors, run_grand_jury: bool,

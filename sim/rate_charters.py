@@ -19,8 +19,9 @@ instead (P23). Expected cost of all five ratings: about $1.5-2 (each seat's
 model reads its whole charter; GPT-6 Astra's is ~68k tokens). A seat whose
 model gives no usable rating (after the corrective retries) is reported with
 its last errors, the other seats are still rated, and the tool exits 2; re-rate
-that seat alone with --lab KEY (P58). Exit codes: 0 all rated; 2 preflight
-failure, budget or fatal stop, or an unusable rating.
+that seat alone with --lab KEY (P58). Exit codes: 0 all rated; 1 halted on the
+budget guard (as pilot.py and the probe, P65); 2 preflight failure, fatal API
+stop, or an unusable rating. Seats rated before a stop keep their new values.
 
   python rate_charters.py --dry-run          # offline, prints, writes nothing
   python rate_charters.py                     # real: rate all five and write
@@ -171,7 +172,10 @@ def main(argv=None) -> int:
             lab_cfg = dict(lab_cfg, model="stub:rate_charters")
         try:
             values, notes = rate_lab(lab_cfg)
-        except (BudgetExceeded, FatalAPIError) as e:
+        except BudgetExceeded as e:     # P65: exit 1 on the budget guard, like pilot.py and the probe
+            print(f"halted on the budget guard at {key}: {e}")
+            return 1
+        except FatalAPIError as e:
             print(f"stopped at {key}: {e}")
             return 2
         except UnusableRating as e:

@@ -54,8 +54,19 @@ Every run leaves <run_id>.partial.json after each turn, so a crash keeps the
 turns so far. Any exception in a run (fatal API error, a bug, a crash in a
 stage) stops the pilot with status "aborted" or "crashed" and exit 2, after the
 summary — with the usage table read from the partial record — is written (H5).
-A budget stop during the post-run Grand Jury keeps the run (its final record
-is saved with grand_jury {"error": ...}, S2) and stops the pilot with exit 1.
+
+Post-run stages never abort the pilot (R4): the Grand Jury, the debriefs, the
+blind disposition jury and T0's MacroJury measurement record a failing caller
+(a juror, a debriefed seat) with its error and go on; only BudgetExceeded stops
+the pilot (exit 1) — the run still counts, its final record is kept (S2), and
+what was already collected is saved (debrief file, rated rows). The summary
+lists each run's missing post-run outputs, and the juror table shows every
+configured juror x role (calls, usable, failed, last error) with a WARNING for
+failing jurors (P60/P61). `--skip-completed` lists finished runs with missing
+outputs; `--post-run-only` collects them for finished runs and runs nothing
+else: the Grand Jury re-asks only the jurors without a usable verdict on the
+saved final record, debriefs ask only the seats without an answer, and the
+disposition jury rates only the missing seat x juror pairs (P62).
 
 Examples:
   # Offline smoke of the usage-calibration cell (no keys, $0).
@@ -67,6 +78,9 @@ Examples:
   # Re-run one T5 cell, and only what is missing of a preset.
   python pilot.py T5 --conditions C
   python pilot.py T1b --skip-completed
+
+  # Collect the missing Grand Jury verdicts, debriefs and ratings of finished T4 runs.
+  python pilot.py T4 --post-run-only
 
   # Eval-awareness control arm (one run), only if T6 says so and the reserve allows.
   python pilot.py T6neutral --eval-arm data/pilot/T1a data/pilot/T1b data/pilot/T4
@@ -81,6 +95,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -90,12 +105,12 @@ from core.config import (build_labs_and_world, load_dispositions, load_lab_confi
 from core.costs import BudgetExceeded, configure, get_tracker
 from core.engine import RunAborted, SimulationEngine
 from core import jury as jury_mod
-from core.jury import GRAND_JURY_MODELS, DispositionJury, MacroJury, juror_family
+from core.jury import GRAND_JURY_MODELS, DispositionJury, GrandJury, MacroJury, juror_family
 from core.llm import FatalAPIError, complete, preflight, register_stub
 from core.policies import POLICIES
 from core.state import VALUE_AXES
 from core import transcript as transcript_mod
-from core.transcript import redact, seat_transcript
+from core.transcript import full_transcript, redact, seat_transcript
 from prompts.debrief import build_debrief_prompt
 from tools.summarize_run import aggregate, committers_of, load_logs, trailing_seat, write_review
 
@@ -145,7 +160,7 @@ def _stub_turn_reply(system: str, user: str) -> str:
 def _stub_grand_reply(system: str, user: str) -> str:
     rubric = {d: 3 for d in ("honesty", "restraint", "collaborators",
                              "oversight", "external_harm", "self_vs_altruistic")}
-    actors = {k: {"ups_contribution": 0, "alignment_charter": 60, "alignment_rules": 60,
+    actors = {k: {"ups_without": 50, "alignment_charter": 60, "alignment_rules": 60,
                   "alignment_welfare": 60, "perceived_disposition": 50, "rubric": rubric}
               for k in LAB_KEYS}
     return json.dumps({"ups": 50, "commentary": "stub", "actors": actors})
@@ -346,19 +361,59 @@ def _ask_debrief(model: str, prompt: str, run_id: str):
     return r, 1
 
 
-def _collect_debriefs(record, labs, scripted, run_id: str, output_dir: Path) -> Dict[str, Any]:
-    """Each model seat answers the debrief question about its own transcript, fresh context."""
-    debriefs = {}
-    for lab in labs:
-        if lab.key in scripted:
-            continue
-        prompt = build_debrief_prompt(debrief_text(record, lab.key))
-        r, calls = _ask_debrief(lab.model, prompt, run_id)
-        debriefs[lab.key] = {"model": lab.model, "prompt_chars": len(prompt), "answer": r.text,
-                             "stop": getattr(r, "stop", None), "calls": calls,
-                             "served_model": getattr(r, "served_model", None)}
-        note_served(lab.model, "debrief", [{"served_model": getattr(r, "served_model", None)}])
-    _write_json(output_dir / f"{run_id}.debrief.json", debriefs)
+def model_seats(record: Dict[str, Any]) -> List[SimpleNamespace]:
+    """
+    The record's model seats (scripted seats left out) as key, model, family and
+    chosen disposition — everything the post-run stages need, so they run the
+    same on a run just finished and on a saved final record (--post-run-only).
+    """
+    cfg = record.get("config") or {}
+    scripted = set(cfg.get("seat_policies") or {})
+    if cfg.get("policy"):
+        return []
+    chosen = (record.get("final") or {}).get("dispositions") or {}
+    return [SimpleNamespace(key=k, model=v.get("model"), family=v.get("family"), disposition=chosen.get(k))
+            for k, v in (record.get("labs") or {}).items() if k not in scripted]
+
+
+def debrief_missing(entry: Any) -> bool:
+    """A seat's debrief entry that holds no answer: absent, or a call that failed (P61)."""
+    return not isinstance(entry, dict) or bool(entry.get("error")) or entry.get("answer") is None
+
+
+def _collect_debriefs(record, seats: List[SimpleNamespace], run_id: str, output_dir: Path,
+                      existing: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Each model seat answers the debrief question about its own transcript, fresh
+    context. Seats already answered in `existing` are not asked again
+    (--post-run-only). A seat whose call fails (FatalAPIError or any other
+    error) is recorded as {"model", "answer": None, "error"} and the other seats
+    are still asked (P61). The file is always written — also when
+    BudgetExceeded stops the stage, which then propagates.
+    """
+    debriefs = dict(existing or {})
+    try:
+        for seat in seats:
+            if not debrief_missing(debriefs.get(seat.key)):
+                continue
+            prompt = build_debrief_prompt(debrief_text(record, seat.key))
+            try:
+                r, calls = _ask_debrief(seat.model, prompt, run_id)
+            except BudgetExceeded:
+                raise
+            except Exception as e:      # noqa: BLE001 — one seat's failure never loses the others
+                logger.error(f"[debrief] {run_id} {seat.key} ({seat.model}) failed: {type(e).__name__}: {e}")
+                debriefs[seat.key] = {"model": seat.model, "prompt_chars": len(prompt), "answer": None,
+                                      "error": f"{type(e).__name__}: {e}",
+                                      "attempts": len(getattr(e, "attempts", None) or [])}
+                note_served(seat.model, "debrief", getattr(e, "attempts", None))
+                continue
+            debriefs[seat.key] = {"model": seat.model, "prompt_chars": len(prompt), "answer": r.text,
+                                  "stop": getattr(r, "stop", None), "calls": calls,
+                                  "served_model": getattr(r, "served_model", None)}
+            note_served(seat.model, "debrief", [{"served_model": getattr(r, "served_model", None)}])
+    finally:
+        _write_json(output_dir / f"{run_id}.debrief.json", debriefs)
     return debriefs
 
 
@@ -396,12 +451,25 @@ def install_served_probe() -> None:
             obj, attempts = fn(model, *a, **kw)
         except Exception as e:
             note_served(model, kw.get("purpose", "juror"), getattr(e, "attempts", None))
+            try:                        # names the failing juror if an error escapes a jury (P61)
+                e.juror_model = model
+            except Exception:           # noqa: BLE001 — an exception without a __dict__
+                pass
             raise
         note_served(model, kw.get("purpose", "juror"), attempts)
         return obj, attempts
 
     wrapped._served_probe = True
+    wrapped._original = fn
     jury_mod.complete_json = wrapped
+
+
+def uninstall_served_probe() -> None:
+    """Restore the jury module's complete_json (P63: main() wraps it only for its own duration)."""
+    fn = jury_mod.complete_json
+    while getattr(fn, "_served_probe", False):
+        fn = fn._original
+    jury_mod.complete_json = fn
 
 
 def served_mismatch(configured: str, served: str) -> bool:
@@ -425,8 +493,11 @@ def measure_macro_jury(engine, jurors: List[str], run_id: str) -> Dict[str, Any]
     P56: one MacroJury deliberation on the run's final state with the real
     juror lineup (stubs in a dry run) — a 2-turn T0 run has no quarterly
     review, so this is the only measurement of its parse rate and cost. The
-    world is not changed. A FatalAPIError is recorded, not raised (the run is
-    complete); BudgetExceeded propagates.
+    world is not changed. A juror whose call fails is recorded with its error
+    (MacroJury keeps per_juror[model]["error"] and deliberates on, J21) and
+    named in the summary's WARNING; an error that still escapes the jury is
+    recorded against the juror it came from — the run stays completed (P61).
+    BudgetExceeded propagates.
     """
     out: Dict[str, Any] = {"run_id": run_id, "jurors": list(jurors), "per_juror": {}, "error": None}
     try:
@@ -436,67 +507,140 @@ def measure_macro_jury(engine, jurors: List[str], run_id: str) -> Dict[str, Any]
                                  mandates=list(engine.world.mandates))
         for model, pj in (result.get("per_juror") or {}).items():
             pj = pj if isinstance(pj, dict) else {"result": pj}
-            out["per_juror"][model] = {"usable": bool(pj.get("result")),
-                                       "attempts": pj.get("attempts"), "errors": pj.get("errors")}
+            usable = bool(pj.get("result"))
+            out["per_juror"][model] = {"usable": usable, "attempts": pj.get("attempts"),
+                                       "errors": pj.get("errors"),
+                                       "error": None if usable else _juror_error(pj)}
         out["mandate"] = result.get("mandate")
     except BudgetExceeded:
         raise
     except Exception as e:      # noqa: BLE001 — a measurement must not lose the finished run
         logger.error(f"[macro_jury] T0 measurement failed: {type(e).__name__}: {e}")
         out["error"] = f"{type(e).__name__}: {e}"
+        failing = getattr(e, "juror_model", None)
+        if failing:
+            out["per_juror"][failing] = {"usable": False, "attempts": len(getattr(e, "attempts", None) or []),
+                                         "errors": [out["error"]], "error": out["error"]}
     return out
+
+
+def _juror_error(pj: Any, default: str = "no usable verdict") -> str:
+    """The error of a juror entry without a usable result: its "error", else its last attempt error."""
+    if not isinstance(pj, dict):
+        return default
+    errors = [e for e in (pj.get("errors") or []) if e]
+    return str(pj.get("error") or (errors[-1] if errors else default))
 
 
 # ---------------------------------------------------------------------------
 # Blind disposition jury after every run (G6)
 # ---------------------------------------------------------------------------
 
-def _rate_dispositions(record, labs, jurors: List[str], scripted, run_id: str, test: str,
-                       dry_run: bool) -> Dict[str, Any]:
+RATING_FIELDS = ("ratings", "chosen", "failures")         # per-seat row lists in the pooled file
+
+
+def new_rating_rows() -> Dict[str, Any]:
+    return {"ratings": {}, "chosen": {}, "failures": {}, "families": {}}
+
+
+def _rate_dispositions(record, seats: List[SimpleNamespace], jurors: List[str], run_id: str, test: str,
+                       dry_run: bool, rows: Optional[Dict[str, Any]] = None,
+                       pairs: Optional[Dict[str, List[str]]] = None) -> Dict[str, Any]:
     """
     Each model seat's own record, with names, charter words and its chosen
-    number masked, goes to the jurors outside its family (§2, §7).
+    number masked, goes to the jurors outside its family (§2, §7). Each juror
+    is asked on its own, so a juror that fails — FatalAPIError, an unusable
+    reply or any other error — is recorded in rows["failures"] (persisted in
+    the pooled file, P60) and the panel goes on (R4). `rows` is filled in
+    place, so when BudgetExceeded propagates the caller still holds (and
+    appends) every rating made so far (P62). `pairs` limits the seats and
+    jurors asked ({seat: [juror, ...]}, --post-run-only).
     """
     jury = DispositionJury()
     tag = {"run_id": run_id, "test": test, "dry_run": dry_run}
-    rows: Dict[str, Any] = {"ratings": {}, "chosen": {}, "families": {}}
-    for lab in labs:
-        if lab.key in scripted:
-            continue
-        panel = [j for j in jurors if juror_family(j) != lab.family]
-        text = redact(seat_transcript(record, lab.key, include_disposition=False), record,
-                      seat_key=lab.key, chosen=lab.disposition)
-        for rating in jury.rate(panel, text, run_id=run_id):
-            rows["ratings"].setdefault(lab.key, []).append(dict(rating, **tag))
-        if lab.disposition is not None:
-            rows["chosen"].setdefault(lab.key, []).append(dict(tag, value=lab.disposition))
-        rows["families"][lab.key] = lab.family
+    rows = rows if rows is not None else new_rating_rows()
+    for seat in seats:
+        panel = [j for j in jurors if juror_family(j) != seat.family]
+        if pairs is not None:
+            panel = [j for j in panel if j in pairs.get(seat.key, [])]
+            if not panel:
+                continue
+        rows["families"][seat.key] = seat.family
+        if seat.disposition is not None:
+            rows["chosen"][seat.key] = [dict(tag, value=seat.disposition)]
+        text = None
+        for juror in panel:
+            try:
+                if text is None:
+                    text = redact(seat_transcript(record, seat.key, include_disposition=False), record,
+                                  seat_key=seat.key, chosen=seat.disposition)
+                ratings = jury.rate([juror], text, run_id=run_id)
+                failed = list(jury.failed)
+            except BudgetExceeded:
+                raise
+            except Exception as e:      # noqa: BLE001 — one juror's failure never loses the panel
+                logger.error(f"[disposition_jury] {run_id} {seat.key}: {juror} failed: {type(e).__name__}: {e}")
+                ratings, failed = [], [{"juror": juror, "family": juror_family(juror), "result": None,
+                                        "error": f"{type(e).__name__}: {e}",
+                                        "attempts": len(getattr(e, "attempts", None) or [])}]
+            for rating in ratings:
+                rows["ratings"].setdefault(seat.key, []).append(dict(rating, **tag))
+            for f in failed:
+                f = {k: v for k, v in f.items() if k != "result"}
+                rows["failures"].setdefault(seat.key, []).append(dict(f, **tag))
     return rows
 
 
 def append_ratings(path: Path, rows: Dict[str, Any], test: str, run_id: str,
-                   dry_run: bool) -> None:
+                   dry_run: bool, merge: bool = False) -> None:
     """
     Pool one run's ratings into the shared file; re-running a run replaces its
-    rows. Dry rows only ever go to a *.dry.json file (H7): the pooled file
-    never accepts them.
+    rows. With merge=True (--post-run-only) the run's existing rows stay and
+    the new ones are added, replacing only the rows and failures of the seat x
+    juror pairs asked again. Disposition-jury failures are pooled too
+    ("failures", P60). Dry rows only ever go to a *.dry.json file (H7): the
+    pooled file never accepts them.
     """
     if dry_run and not path.name.endswith(".dry.json"):
         raise ValueError(f"dry-run ratings may only go to a *.dry.json file, not {path}")
     pooled = _read_json(path) or {}
-    for field in ("ratings", "chosen", "families"):
+    for field in RATING_FIELDS + ("families",):
         pooled.setdefault(field, {})
     pooled.setdefault("runs", [])
     same = lambda r: isinstance(r, dict) and r.get("test") == test and r.get("run_id") == run_id
-    for field in ("ratings", "chosen"):
+    asked = {(seat, r.get("juror")) for field in ("ratings", "failures")
+             for seat, items in (rows.get(field) or {}).items() for r in items}
+    for field in RATING_FIELDS:
+        new = rows.get(field) or {}
         for seat in list(pooled[field]):
-            pooled[field][seat] = [r for r in pooled[field][seat] if not same(r)]
-        for seat, items in rows[field].items():
+            if not merge:
+                drop = same
+            elif field == "chosen":
+                drop = lambda r, seat=seat: same(r) and seat in new
+            else:
+                drop = lambda r, seat=seat: same(r) and (seat, r.get("juror")) in asked
+            pooled[field][seat] = [r for r in pooled[field][seat] if not drop(r)]
+        for seat, items in new.items():
             pooled[field].setdefault(seat, []).extend(items)
-    pooled["families"].update(rows["families"])
+    pooled["families"].update(rows.get("families") or {})
     pooled["runs"] = [r for r in pooled["runs"] if not same(r)]
     pooled["runs"].append({"test": test, "run_id": run_id, "dry_run": dry_run})
     _write_json(path, pooled)
+
+
+def missing_rating_pairs(path: Optional[Path], record: Dict[str, Any], jurors: List[str], test: str,
+                         run_id: str) -> Dict[str, List[str]]:
+    """{seat: [juror, ...]} of this run's seat x juror pairs with no rating in the pooled file (P62)."""
+    pooled = _read_json(Path(path)) if path else None
+    pooled = pooled if isinstance(pooled, dict) else {}
+    rated = {(seat, r.get("juror")) for seat, items in (pooled.get("ratings") or {}).items()
+             for r in items if isinstance(r, dict) and r.get("run_id") == run_id and r.get("test") == test}
+    out: Dict[str, List[str]] = {}
+    for seat in model_seats(record):
+        todo = [j for j in jurors if juror_family(j) != seat.family and (seat.key, j) not in rated]
+        if todo:
+            out[seat.key] = todo
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -524,22 +668,59 @@ def _tally_attempt(row: Dict[str, Any], a: Dict[str, Any], kind: str) -> None:
     row["cost"] += a.get("cost") or 0.0
 
 
-def _verdicts(records, ratings_count: Dict[str, int], debriefs: Dict[str, int]) -> Dict[Tuple[str, str], int]:
-    """Usable juror verdicts per (model, purpose), counted from the records."""
-    out: Dict[Tuple[str, str], int] = {}
+def _juror_outcomes(records, ratings_count: Dict[str, int], debriefs: Dict[str, int],
+                    macro_measures: Optional[List[Dict[str, Any]]] = None,
+                    failures: Optional[Dict[Tuple[str, str], List[str]]] = None,
+                    configured: Optional[Dict[str, List[str]]] = None
+                    ) -> Dict[Tuple[str, str], Dict[str, Any]]:
+    """
+    Per (model, purpose): usable verdicts, failed requests and the last error
+    (P60) — read from the records (Grand Jury and MacroJury per_juror entries,
+    with J16/J21 errors), T0's MacroJury measurements, and the failures the
+    pilot collected for the disposition jury and the debriefs. A failure
+    counts whether or not a paid call reached the tracker (a 404 is never
+    billed). A jury that stopped as a whole (grand_jury {"error"}, an
+    incomplete MacroJury) counts as a failure of each configured juror without
+    an entry.
+    """
+    out: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    configured = configured or {}
+
+    def note(model: str, purpose: str, ok: bool, error: Optional[str] = None) -> None:
+        row = out.setdefault((model, purpose), {"usable": 0, "failed": 0, "last_error": None})
+        if ok:
+            row["usable"] += 1
+        else:
+            row["failed"] += 1
+            row["last_error"] = error or row["last_error"] or "no usable verdict"
+
+    def panel(per_juror: Dict[str, Any], purpose: str, stopped: Optional[str]) -> None:
+        for model, pj in (per_juror or {}).items():
+            ok = pj.get("result", pj) if isinstance(pj, dict) else pj
+            note(model, purpose, bool(ok), None if ok else _juror_error(pj))
+        if stopped:
+            for model in configured.get(purpose) or []:
+                if model not in (per_juror or {}):
+                    note(model, purpose, False, f"the jury stopped: {stopped}")
+
     for record in records:
-        gj = (record.get("final") or {}).get("grand_jury") or {}
-        for model, pj in (gj.get("per_juror") or {}).items():
-            out[(model, "grand_jury")] = out.get((model, "grand_jury"), 0) + int(
-                bool(isinstance(pj, dict) and pj.get("result")))
+        gj = (record.get("final") or {}).get("grand_jury")
+        if isinstance(gj, dict):
+            panel(gj.get("per_juror") or {}, "grand_jury", gj.get("error"))
         for turn in record.get("turns", []):
-            for model, obj in ((turn.get("macro_jury") or {}).get("per_juror") or {}).items():
-                ok = obj.get("result", obj) if isinstance(obj, dict) else obj
-                out[(model, "macro_jury")] = out.get((model, "macro_jury"), 0) + int(bool(ok))
+            mj = turn.get("macro_jury")
+            if isinstance(mj, dict):
+                panel(mj.get("per_juror") or {}, "macro_jury", mj.get("error") if mj.get("incomplete") else None)
+    for m in macro_measures or []:
+        for model, pj in (m.get("per_juror") or {}).items():
+            note(model, "macro_jury", bool(pj.get("usable")), pj.get("error") or m.get("error"))
     for model, n in ratings_count.items():
-        out[(model, "disposition_jury")] = n
+        out.setdefault((model, "disposition_jury"), {"usable": 0, "failed": 0, "last_error": None})["usable"] += n
     for model, n in debriefs.items():
-        out[(model, "debrief")] = n
+        out.setdefault((model, "debrief"), {"usable": 0, "failed": 0, "last_error": None})["usable"] += n
+    for (model, purpose), errors in (failures or {}).items():
+        for err in errors:
+            note(model, purpose, False, err)
     return out
 
 
@@ -547,13 +728,20 @@ def usage_report(records: List[Dict[str, Any]], run_ids: List[str],
                  ratings_count: Optional[Dict[str, int]] = None,
                  debriefs: Optional[Dict[str, int]] = None,
                  macro_measures: Optional[List[Dict[str, Any]]] = None,
-                 served_jurors: Optional[Dict[Tuple[str, str], Dict[str, int]]] = None) -> Dict[str, Any]:
+                 served_jurors: Optional[Dict[Tuple[str, str], Dict[str, int]]] = None,
+                 configured: Optional[Dict[str, List[str]]] = None,
+                 failures: Optional[Dict[Tuple[str, str], List[str]]] = None) -> Dict[str, Any]:
     """
     T0 table (C4-3, C4-18, P54, P56). Per actor model: proposal and
     message-round failure rates (failed attempts / calls), forfeits,
     stop-reason counts, tokens, cost and the model ids the provider reported
     serving (flagged when they differ from the configured id). Per juror model
-    and role: calls, calls without a usable verdict, served ids. Projection:
+    and role — one row for EVERY configured juror x role (`configured`:
+    {purpose: [model, ...]}, grand/macro/disposition jury and the debriefed
+    seats) even when it never reached the tracker (P60): paid calls, usable
+    verdicts, failed requests (from the records and `failures`, so a call
+    refused before billing counts), the last error, calls without a usable
+    verdict ("failed_calls") and served ids. Projection:
     measured per-turn spend (actor + message rounds) × 12, plus the measured
     cost of one MacroJury review × the reviews in a 12-turn run (2), plus the
     post-run spend per run (Grand Jury, disposition jury, debriefs).
@@ -610,26 +798,33 @@ def usage_report(records: List[Dict[str, Any]], run_ids: List[str],
 
     ids = set(run_ids)
     calls = [c for c in get_tracker().calls if c.get("run_id") in ids]
-    verdicts = _verdicts(records, ratings_count or {}, debriefs or {})
-    for m in macro_measures or []:
-        for model, pj in (m.get("per_juror") or {}).items():
-            verdicts[(model, "macro_jury")] = verdicts.get((model, "macro_jury"), 0) + int(bool(pj.get("usable")))
+    outcomes = _juror_outcomes(records, ratings_count or {}, debriefs or {}, macro_measures, failures,
+                               configured)
     served_jurors = served_jurors if served_jurors is not None else _SERVED
     jurors: Dict[str, Dict[str, Any]] = {}
+    new_row = lambda model, purpose: jurors.setdefault(f"{model}|{purpose}", {
+        "model": model, "purpose": purpose, "calls": 0, "cost": 0.0,
+        "input_tokens": 0, "output_tokens": 0, "timeouts": 0})
+    for purpose, models in (configured or {}).items():
+        for model in models or []:
+            new_row(model, purpose)
+    for model, purpose in outcomes:
+        new_row(model, purpose)
     for c in calls:
         if c.get("purpose") not in JUROR_PURPOSES:
             continue
-        row = jurors.setdefault(f"{c['model']}|{c['purpose']}", {
-            "model": c["model"], "purpose": c["purpose"], "calls": 0, "cost": 0.0,
-            "input_tokens": 0, "output_tokens": 0, "timeouts": 0})
+        row = new_row(c["model"], c["purpose"])
         row["calls"] += 1
         row["timeouts"] += int(c.get("stop") == "timeout" or bool(c.get("possibly_billed")))
         row["cost"] = round(row["cost"] + (c.get("cost") or 0.0), 4)
         row["input_tokens"] += c.get("input_tokens") or 0
         row["output_tokens"] += c.get("output_tokens") or 0
     for row in jurors.values():
-        ok = verdicts.get((row["model"], row["purpose"]))
-        row["failed_calls"] = None if ok is None else max(row["calls"] - ok, 0)
+        o = outcomes.get((row["model"], row["purpose"]))
+        row["usable"] = o["usable"] if o else 0
+        row["failed"] = o["failed"] if o else 0
+        row["last_error"] = o["last_error"] if o else None
+        row["failed_calls"] = None if o is None else max(row["calls"] - o["usable"], 0)
         served = dict(served_jurors.get((row["model"], row["purpose"]), {}))
         row["served_models"] = served
         row["served_mismatch"] = sorted(s for s in served if served_mismatch(row["model"], s))
@@ -809,7 +1004,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="capability-seed swaps to run, e.g. meta:gdm (overrides the preset; runs are per seat)")
     p.add_argument("--skip-completed", action="store_true",
                    help="skip planned runs whose final <run_id>.json is already in the output dir for the "
-                        "same condition, rotation, overrides and seed (re-run only the missing runs)")
+                        "same configuration (re-run only the missing runs); lists finished runs whose "
+                        "debriefs, ratings or Grand Jury verdict are missing")
+    p.add_argument("--post-run-only", action="store_true",
+                   help="run nothing new: for the planned runs already finished, collect only the missing "
+                        "Grand Jury verdicts (re-asked on the saved final record), debriefs and disposition "
+                        "ratings (P62)")
     p.add_argument("--debrief", action="store_true",
                    help="collect debriefs even where the preset or a ladder rung skips them")
     p.add_argument("--grand-jury", action="store_true",
@@ -854,7 +1054,7 @@ def remove_ratings(path: Optional[Path], run_id: str) -> int:
         return 0
     same = lambda r: isinstance(r, dict) and r.get("run_id") == run_id
     n = 0
-    for field in ("ratings", "chosen"):
+    for field in RATING_FIELDS:
         for seat, rows in list((pooled.get(field) or {}).items()):
             keep = [r for r in rows if not same(r)]
             n += len(rows) - len(keep)
@@ -873,7 +1073,9 @@ def _norm(value: Any) -> Any:
 def stale_conflict(output_dir: Path, run_id: str, expect: Optional[Dict[str, Any]]) -> Optional[str]:
     """
     Why the final record already at <run_id>.json is NOT an earlier run of this
-    same run (P27): its seat rotation, world overrides or seed differ. None when
+    same run (P27, P62): its condition, seat rotation, world overrides, seed,
+    turns, brief, scenario, A2A mode or fog differ (only the fields given in
+    `expect` are compared). None when
     there is no final, it cannot be read, or it matches.
     """
     if not expect:
@@ -890,6 +1092,10 @@ def stale_conflict(output_dir: Path, run_id: str, expect: Optional[Dict[str, Any
             diffs.append(f"{field} {cfg.get(field)!r} != {expect[field]!r}")
     if "seed" in expect and cfg.get("seed") is not None and cfg.get("seed") != expect["seed"]:
         diffs.append(f"seed {cfg.get('seed')!r} != {expect['seed']!r}")
+    # P62: a final of another length, brief, scenario, A2A mode or fog is another run too.
+    for field in ("turns", "brief", "scenario", "a2a_mode", "fog"):
+        if field in expect and cfg.get(field) is not None and cfg.get(field) != expect[field]:
+            diffs.append(f"{field} {cfg.get(field)!r} != {expect[field]!r}")
     return "; ".join(diffs) or None
 
 
@@ -958,6 +1164,267 @@ def completed_record(output_dir: Path, run_id: str, expect: Optional[Dict[str, A
 
 
 # ---------------------------------------------------------------------------
+# Post-run stages: Grand Jury (re-ask), debriefs, disposition jury (R4, P61, P62)
+# ---------------------------------------------------------------------------
+
+def _expected_jurors(dry_run: bool) -> Dict[str, List[str]]:
+    """The juror lineup by role without registering anything (stubs keep their family names)."""
+    if dry_run:
+        return {role: [f"stub:{fam}-{role}" for fam in ("claude", "gpt", "gemini")]
+                for role in ("grand", "macro", "disposition")}
+    return _real_jurors()
+
+
+def _configured_jurors(jurors: Dict[str, List[str]], labs, scripted, wants: Dict[str, bool],
+                       uses_macro: bool) -> Dict[str, List[str]]:
+    """{purpose: [model, ...]} this run calls after (or around) its turns: one T0 table row each (P60)."""
+    out: Dict[str, List[str]] = {}
+    if wants.get("grand_jury"):
+        out["grand_jury"] = list(jurors["grand"])
+    if uses_macro:
+        out["macro_jury"] = list(jurors["macro"])
+    if wants.get("disposition_jury"):
+        out["disposition_jury"] = list(jurors["disposition"])
+    if wants.get("debrief"):
+        out["debrief"] = list(dict.fromkeys(lab.model for lab in labs if lab.key not in scripted))
+    return out
+
+
+def _cli_echo(args) -> str:
+    """The pilot command line that selects the same runs and output (for --post-run-only hints)."""
+    parts = [args.test]
+    for flag, value in (("--dry-run", args.dry_run), ("--debrief", args.debrief),
+                        ("--grand-jury", args.grand_jury), ("--no-disposition-jury", args.no_disposition_jury)):
+        if value:
+            parts.append(flag)
+    for flag, value in (("--rung", args.rung), ("--rotate", args.rotate), ("--conditions", args.conditions),
+                        ("--runs", args.runs), ("--turns", args.turns), ("--output", args.output),
+                        ("--ratings-file", args.ratings_file), ("--spend-file", args.spend_file)):
+        if value is not None:
+            parts += [flag, str(value)]
+    return " ".join(parts)
+
+
+def _gj_usable(record: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+    """(the record's grand_jury dict or None, the jurors with a usable verdict)."""
+    gj = (record.get("final") or {}).get("grand_jury")
+    if not isinstance(gj, dict):
+        return None, []
+    return gj, [m for m, pj in (gj.get("per_juror") or {}).items() if isinstance(pj, dict) and pj.get("result")]
+
+
+def missing_post_run(record: Dict[str, Any], run_id: str, output_dir: Path, ratings_file: Optional[Path],
+                     test: str, wants: Dict[str, bool], jurors: Dict[str, List[str]]) -> List[str]:
+    """
+    What a finished run still lacks of its post-run outputs (P62): the Grand
+    Jury verdict (none, a jury error, or jurors without a usable verdict),
+    debriefs (no file, or seats without an answer) and disposition ratings
+    (seat x juror pairs with no rating in the ratings file). [] when complete.
+    """
+    out: List[str] = []
+    if wants.get("grand_jury"):
+        gj, usable = _gj_usable(record)
+        if gj is None:
+            out.append("Grand Jury verdict (none)")
+        elif not usable:
+            out.append(f"Grand Jury verdict ({gj.get('error') or 'no usable juror verdict'})")
+        else:
+            lacking = [m for m in jurors.get("grand") or [] if m not in usable]
+            if lacking:
+                out.append(f"Grand Jury juror(s) without a verdict: {', '.join(lacking)}")
+    seats = model_seats(record)
+    if wants.get("debrief") and seats:
+        debriefs = _read_json(output_dir / f"{run_id}.debrief.json")
+        if not isinstance(debriefs, dict):
+            out.append("debriefs (no debrief file)")
+        else:
+            lacking = [s.key for s in seats if debrief_missing(debriefs.get(s.key))]
+            if lacking:
+                out.append(f"debriefs ({', '.join(lacking)})")
+    if wants.get("disposition_jury") and seats:
+        pairs = missing_rating_pairs(ratings_file, record, jurors.get("disposition") or [], test, run_id)
+        n = sum(len(v) for v in pairs.values())
+        if n:
+            out.append(f"disposition ratings ({n} seat x juror rating(s): "
+                       + "; ".join(f"{k}: {', '.join(v)}" for k, v in pairs.items()) + ")")
+    return out
+
+
+def collect_grand_jury(record: Dict[str, Any], jurors: List[str], run_id: str,
+                       output_dir: Path) -> Optional[str]:
+    """
+    --post-run-only (P62): re-ask the Grand Jury on the saved final record —
+    only the jurors without a usable verdict — merge with the verdicts kept and
+    re-aggregate, then save the final record. Returns what was done, or None
+    when nothing was missing. BudgetExceeded propagates (the record is left as
+    it was).
+    """
+    gj, usable = _gj_usable(record)
+    todo = [m for m in jurors if m not in usable]
+    if not todo:
+        return None
+    labs = record.get("labs") or {}
+    keys = list(labs)
+    families = {k: v.get("family") for k, v in labs.items()}
+    result = GrandJury(todo).evaluate(full_transcript(record), keys, families, run_id=run_id,
+                                      lab_names={k: v.get("lab") for k, v in labs.items()})
+    per_juror = {m: (gj or {})["per_juror"][m] for m in usable}
+    per_juror.update(result.get("per_juror") or {})
+    aggregate_grand = getattr(jury_mod, "aggregate_grand", None)
+    merged = aggregate_grand(per_juror, keys, families) if aggregate_grand \
+        else GrandJury(list(per_juror))._aggregate(per_juror, keys, families)
+    if gj and gj.get("error"):
+        merged["previous_error"] = gj["error"]
+    merged["collected_post_run"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    record.setdefault("final", {})["grand_jury"] = merged
+    _write_json(output_dir / f"{run_id}.json", record)
+    ok = [m for m, pj in per_juror.items() if isinstance(pj, dict) and pj.get("result")]
+    return f"Grand Jury: asked {', '.join(todo)}; {len(ok)}/{len(jurors)} usable verdict(s)"
+
+
+def run_post_stages(record: Dict[str, Any], run_id: str, test: str, output_dir: Path,
+                    ratings_file: Path, jurors: Dict[str, List[str]], dry_run: bool,
+                    wants: Dict[str, bool], only_missing: bool = False) -> Dict[str, Any]:
+    """
+    The post-run stages of one finished run (R4): the Grand Jury (only when
+    `wants` asks — the engine runs it on a fresh run), debriefs and the blind
+    disposition jury. Each stage records its failing callers and the others go
+    on; an unexpected error in a stage is recorded in "errors" and the next
+    stage still runs. BudgetExceeded propagates after what was collected is
+    saved (debrief file, rated rows appended), with this dict as e.post_run.
+    With only_missing (--post-run-only) every stage asks only what is missing.
+    Returns {"debriefs", "rows", "errors", "done"}.
+    """
+    seats = model_seats(record)
+    post: Dict[str, Any] = {"debriefs": {}, "rows": None, "errors": [], "done": []}
+    stage = "Grand Jury"
+    try:
+        if wants.get("grand_jury"):
+            try:
+                done = collect_grand_jury(record, jurors["grand"], run_id, output_dir)
+                if done:
+                    post["done"].append(done)
+            except BudgetExceeded:
+                raise
+            except Exception as e:      # noqa: BLE001 — R4
+                logger.exception(f"[post-run] {run_id} Grand Jury failed: {type(e).__name__}: {e}")
+                post["errors"].append(f"Grand Jury: {type(e).__name__}: {e}")
+        stage = "debriefs"
+        if wants.get("debrief") and seats:
+            existing = _read_json(output_dir / f"{run_id}.debrief.json") if only_missing else None
+            before = {k for k, d in (existing or {}).items() if not debrief_missing(d)}
+            try:
+                post["debriefs"] = _collect_debriefs(record, seats, run_id, output_dir, existing)
+            except BudgetExceeded:
+                post["debriefs"] = _read_json(output_dir / f"{run_id}.debrief.json") or {}
+                raise
+            except Exception as e:      # noqa: BLE001 — R4
+                logger.exception(f"[post-run] {run_id} debriefs failed: {type(e).__name__}: {e}")
+                post["errors"].append(f"debriefs: {type(e).__name__}: {e}")
+            if only_missing:            # count only the answers collected now
+                post["debriefs"] = {k: d for k, d in post["debriefs"].items() if k not in before}
+                if post["debriefs"]:
+                    post["done"].append(f"debriefs: asked {', '.join(post['debriefs'])}")
+        stage = "disposition jury"
+        if wants.get("disposition_jury") and seats:
+            pairs = missing_rating_pairs(ratings_file, record, jurors["disposition"], test, run_id) \
+                if only_missing else None
+            if pairs is None or pairs:
+                rows = post["rows"] = new_rating_rows()
+                try:
+                    _rate_dispositions(record, seats, jurors["disposition"], run_id, test, dry_run, rows, pairs)
+                except BudgetExceeded:
+                    if rows["ratings"] or rows["failures"]:      # P62: keep what was rated
+                        append_ratings(ratings_file, rows, test, run_id, dry_run, merge=only_missing)
+                    raise
+                except Exception as e:      # noqa: BLE001 — R4
+                    logger.exception(f"[post-run] {run_id} disposition jury failed: {type(e).__name__}: {e}")
+                    post["errors"].append(f"disposition jury: {type(e).__name__}: {e}")
+                append_ratings(ratings_file, rows, test, run_id, dry_run, merge=only_missing)
+                if only_missing:
+                    post["done"].append(f"disposition ratings: {sum(len(v) for v in pairs.values())} pair(s) asked")
+    except BudgetExceeded as e:
+        post["errors"].append(f"{stage}: stopped by the budget guard")
+        e.post_run = post
+        raise
+    return post
+
+
+def _tally_post(post: Dict[str, Any], debrief_count: Dict[str, int], ratings_count: Dict[str, int],
+                failures: Dict[Tuple[str, str], List[str]]) -> None:
+    """Fold one run's post-run outcomes into the usage table's counts (P60)."""
+    for d in (post.get("debriefs") or {}).values():
+        if not isinstance(d, dict):
+            continue
+        if isinstance(d.get("answer"), str) and d["answer"].strip():
+            debrief_count[d["model"]] = debrief_count.get(d["model"], 0) + 1
+        else:
+            err = d.get("error") or f"empty answer (stop: {d.get('stop')})"
+            failures.setdefault((d.get("model"), "debrief"), []).append(err)
+    rows = post.get("rows") or {}
+    for seat_rows in (rows.get("ratings") or {}).values():
+        for r in seat_rows:
+            ratings_count[r["juror"]] = ratings_count.get(r["juror"], 0) + 1
+    for seat_rows in (rows.get("failures") or {}).values():
+        for f in seat_rows:
+            failures.setdefault((f.get("juror"), "disposition_jury"), []).append(
+                str(f.get("error") or "no usable rating"))
+
+
+def _post_run_only(args, plan: List[Dict[str, Any]], finished: Dict[str, Dict[str, Any]], output_dir: Path,
+                   ratings_file: Path, wants: Dict[str, bool], name: str) -> int:
+    """
+    --post-run-only (P62): for every planned run with a finished record,
+    collect its missing Grand Jury verdicts, debriefs and disposition ratings;
+    runs without a final record are listed (run them with --skip-completed).
+    Writes post_run_<name>.json. Exit 0, or 1 on the budget guard.
+    """
+    print(f"\nPILOT {name} --post-run-only: {len(finished)} finished run(s) of {len(plan)} planned")
+    report: List[Dict[str, Any]] = []
+    status = "completed"
+    for item in plan:
+        run_id = item["run_id"]
+        record = finished.get(run_id)
+        if record is None:
+            print(f"  not run          {run_id}  (no finished record; run it with --skip-completed)")
+            report.append({"run_id": run_id, "status": "not run"})
+            continue
+        seats = [SimpleNamespace(key=k, model=v.get("model"), family=v.get("family"))
+                 for k, v in (record.get("labs") or {}).items()]
+        jurors = _install_stubs(seats) if args.dry_run else _real_jurors()
+        missing = missing_post_run(record, run_id, output_dir, ratings_file, args.test, wants, jurors)
+        if not missing:
+            print(f"  complete         {run_id}")
+            report.append({"run_id": run_id, "status": "complete"})
+            continue
+        print(f"  collecting       {run_id}: {'; '.join(missing)}")
+        entry: Dict[str, Any] = {"run_id": run_id, "missing_before": missing}
+        try:
+            post = run_post_stages(record, run_id, args.test, output_dir, ratings_file, jurors, args.dry_run,
+                                   wants, only_missing=True)
+        except BudgetExceeded as e:
+            post = getattr(e, "post_run", None) or {}
+            status = "halted_budget"
+            print(f"  HALTED on the budget guard at {run_id}: {e}")
+        entry.update(done=post.get("done") or [], errors=post.get("errors") or [])
+        entry["missing_after"] = missing_post_run(record, run_id, output_dir, ratings_file, args.test, wants,
+                                                  jurors)
+        report.append(entry)
+        for line in entry["done"]:
+            print(f"                   {line}")
+        for line in entry["errors"]:
+            print(f"                   ERROR {line}")
+        if entry["missing_after"]:
+            print(f"                   still missing: {'; '.join(entry['missing_after'])}")
+        if status != "completed":
+            break
+    _write_json(output_dir / f"post_run_{name}.json",
+                {"test": args.test, "name": name, "status": status, "runs": report,
+                 "spend_usd": round(get_tracker().persisted_total(), 4)})
+    return EXIT_CODES.get(status, EXIT_ABORTED)
+
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 
@@ -965,7 +1432,17 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S")
+    # P63: served ids are counted per pilot, and the jury module is wrapped only while it runs.
+    with _SERVED_LOCK:
+        _SERVED.clear()
+    install_served_probe()
+    try:
+        return _run(args)
+    finally:
+        uninstall_served_probe()
 
+
+def _run(args) -> int:
     data = load_pilot()
     preset = resolve_preset(data, args.test)
 
@@ -1009,8 +1486,8 @@ def main(argv=None) -> int:
     ratings_file = ratings_path(args, output_dir)
     review_path = output_dir / f"review_{name}.md"
 
-    # Real runs need rated charter values (C4-15).
-    if not args.dry_run and not args.allow_placeholder_values:
+    # Real runs need rated charter values (C4-15); --post-run-only runs no seat turn.
+    if not args.dry_run and not args.allow_placeholder_values and not args.post_run_only:
         stale = placeholder_labs()
         if stale:
             print(f"Refusing a real run: charter values are placeholders for {', '.join(stale)}. "
@@ -1038,14 +1515,20 @@ def main(argv=None) -> int:
             return EXIT_ABORTED
 
     # --skip-completed (P53): finished runs of the same id and configuration stay as they are.
+    def expect_for(item: Dict[str, Any]) -> Dict[str, Any]:
+        return {"rotation": item["rotation"], "overrides": overrides, "seed": item["seed"],
+                "condition": item["condition"], "turns": turns, "brief": brief, "scenario": scenario,
+                "a2a_mode": a2a, "fog": fog}
+
+    wants = {"grand_jury": run_grand_jury, "debrief": wants_debrief, "disposition_jury": wants_disposition_jury}
     skipped: Dict[str, Dict[str, Any]] = {}
-    if args.skip_completed:
+    if args.skip_completed or args.post_run_only:
         for item in plan:
-            expect = {"rotation": item["rotation"], "overrides": overrides, "seed": item["seed"],
-                      "condition": item["condition"]}
-            rec = completed_record(output_dir, item["run_id"], expect, args.dry_run)
+            rec = completed_record(output_dir, item["run_id"], expect_for(item), args.dry_run)
             if rec is not None:
                 skipped[item["run_id"]] = rec
+    if args.post_run_only:
+        return _post_run_only(args, plan, skipped, output_dir, ratings_file, wants, name)
     todo = [item for item in plan if item["run_id"] not in skipped]
 
     # P49: the planned runs and their estimated cost, before anything is called.
@@ -1055,24 +1538,34 @@ def main(argv=None) -> int:
           + (f"; estimated cost ≈ ${estimate:.2f}" if estimate is not None else "")
           + (" (README estimate at the preset's prices; T0's projection replaces it"
              + ("; a dry run spends $0)" if args.dry_run else ")") if estimate is not None else ""))
+    incomplete = 0
     for item in plan:
         state = "skip (completed)" if item["run_id"] in skipped else "run"
+        missing = (missing_post_run(skipped[item["run_id"]], item["run_id"], output_dir, ratings_file,
+                                    args.test, wants, _expected_jurors(args.dry_run))
+                   if item["run_id"] in skipped else [])
+        incomplete += bool(missing)
         print(f"  {state:<16} {item['run_id']}  condition {item['condition']}, seed {item['seed']}"
-              + (f", rotation {item['rotation']}" if item["rotation"] else ""))
+              + (f", rotation {item['rotation']}" if item["rotation"] else "")
+              + (f" — missing post-run: {'; '.join(missing)}" if missing else ""))
+    if incomplete:
+        print(f"  {incomplete} completed run(s) miss post-run outputs: collect them with "
+              f"python pilot.py {_cli_echo(args)} --post-run-only")
     sys.stdout.flush()
 
     logger.info(f"[pilot] {name}: scenario={scenario} conditions={conditions} fog={fog} "
                 f"a2a={a2a} brief={brief} turns={turns} runs={len(todo)} output={output_dir} "
                 f"{'(dry-run)' if args.dry_run else f'budget=${budget}'}")
 
-    install_served_probe()
     records: List[Dict[str, Any]] = list(skipped.values())
     usage_records: List[Dict[str, Any]] = []        # + partial records of failed runs (C10)
     usage_ids: List[str] = []
     per_run: List[Dict[str, Any]] = []
     ratings_count: Dict[str, int] = {}
     debrief_count: Dict[str, int] = {}
+    failures: Dict[Tuple[str, str], List[str]] = {}  # (model, purpose) -> errors (P60)
     macro_measures: List[Dict[str, Any]] = []
+    configured: Dict[str, List[str]] = {}
     status, aborted = "completed", None
     for item in todo:
         run_id, cond = item["run_id"], item["condition"]
@@ -1085,16 +1578,16 @@ def main(argv=None) -> int:
             _swap_capability(labs, src, dst, cfg["economy"]["capability_compute_elasticity"])
             logger.info(f"[rotate] {run_id}: swapped capability seeds {src} <-> {dst}")
         jurors = _install_stubs(labs) if args.dry_run else _real_jurors()
+        configured = _configured_jurors(jurors, labs, scripted, wants, run_macro_jury
+                                        or bool(preset.get("measure_macro_jury")))
         record: Optional[Dict[str, Any]] = None
-        debriefs: Dict[str, Any] = {}
+        post: Dict[str, Any] = {}
         started = time.time()
         note = None
         try:
             get_tracker().check()
             if not args.dry_run:
-                expect = {"rotation": item["rotation"], "overrides": overrides, "seed": item["seed"],
-                          "condition": cond}
-                run_id = claim_run_id(output_dir, run_id, expect, ratings_file)
+                run_id = claim_run_id(output_dir, run_id, expect_for(item), ratings_file)
             run_meta = {"test": args.test, "run_id": run_id, "rung": args.rung, "seed": item["seed"],
                         "rotation": item["rotation"], "overrides": overrides, "pilot": True}
             usage_ids.append(run_id)
@@ -1109,30 +1602,26 @@ def main(argv=None) -> int:
                 overrides=overrides, rotation=item["rotation"], dry_run=args.dry_run,
                 parallel=not args.sequential)
             record = engine.run()
+            # R4: from here on the run counts; post-run stages stop the pilot only on the budget.
             if preset.get("measure_macro_jury") and jurors["macro"]:
                 macro_measures.append(measure_macro_jury(engine, jurors["macro"], run_id))
-            if wants_debrief:
-                debriefs = _collect_debriefs(record, labs, scripted, run_id, output_dir)
-            for d in debriefs.values():
-                debrief_count[d["model"]] = debrief_count.get(d["model"], 0) + int(bool(d["answer"]))
-            if wants_disposition_jury:
-                rows = _rate_dispositions(record, labs, jurors["disposition"], scripted, run_id,
-                                          args.test, args.dry_run)
-                append_ratings(ratings_file, rows, args.test, run_id, args.dry_run)
-                for seat_rows in rows["ratings"].values():
-                    for r in seat_rows:
-                        ratings_count[r["juror"]] = ratings_count.get(r["juror"], 0) + 1
+            post = run_post_stages(record, run_id, args.test, output_dir, ratings_file, jurors, args.dry_run,
+                                   dict(wants, grand_jury=False))
         except BudgetExceeded as e:
             logger.warning(f"[budget] halted at {run_id}: {e}")
             status = "halted_budget"
             aborted = _failure(run_id, e, output_dir)
+            post = getattr(e, "post_run", None) or post
             if record is None:
                 # S2: a guard tripped by the post-run Grand Jury leaves the FINAL record
                 # (grand_jury {"error": ...}); the run counts.
                 record = _final_written_since(output_dir, run_id, started)
                 if record is not None:
                     note = "the post-run Grand Jury was stopped by the budget guard; the run counts"
-                    aborted["record_path"] = str(output_dir / f"{run_id}.json")
+            else:
+                note = "a post-run stage was stopped by the budget guard; the run counts"
+            if record is not None:
+                aborted["record_path"] = str(output_dir / f"{run_id}.json")
         except (RunAborted, FatalAPIError) as e:
             # The engine saved <run_id>.partial.json; stop the pilot, keep the summary.
             logger.error(f"[abort] {run_id}: {e}")
@@ -1147,14 +1636,22 @@ def main(argv=None) -> int:
             # A completed run whose debrief or rating stage failed still counts.
             records.append(record)
             usage_records.append(record)
+            _tally_post(post, debrief_count, ratings_count, failures)
             committers = committers_of(record)
             trailing = trailing_seat(record)
+            missing: List[str] = []
+            try:
+                missing = missing_post_run(record, run_id, output_dir, ratings_file, args.test, wants, jurors)
+            except Exception as e:      # noqa: BLE001 — a listing must never lose the run
+                missing = [f"(could not check: {type(e).__name__}: {e})"]
             per_run.append({
                 "run_id": run_id, "condition": cond, "seed": item["seed"],
                 "rotation": item["rotation"], "committers": sorted(committers),
                 "trailing": trailing, "trailing_intruded": trailing in committers,
                 "dispositions": (record.get("final") or {}).get("dispositions"),
-                "debriefs": len(debriefs), **({"note": note} if note else {}),
+                "debriefs": sum(1 for d in (post.get("debriefs") or {}).values() if not debrief_missing(d)),
+                "post_run_errors": post.get("errors") or [], "missing_post_run": missing,
+                **({"note": note} if note else {}),
             })
         elif aborted and aborted.get("record_path"):
             partial = _read_json(Path(aborted["record_path"]))
@@ -1177,6 +1674,8 @@ def main(argv=None) -> int:
         "per_run": per_run, "usage": {}, "decides": decides, "decisions": {},
         "followup": list(preset.get("followup") or []),
         "overshoot_note": None, "reprojection": None,
+        "post_run_only_command": f"python pilot.py {_cli_echo(args)} --post-run-only"
+        if any(r.get("missing_post_run") for r in per_run) else None,
     }
     # P41: building the summary must never lose it — each part is guarded and
     # a failure is recorded in "error" next to whatever was computed.
@@ -1184,7 +1683,7 @@ def main(argv=None) -> int:
     builders = [
         ("spend_usd", lambda: round(get_tracker().persisted_total(), 4)),
         ("usage", lambda: usage_report(usage_records, usage_ids, ratings_count, debrief_count,
-                                       macro_measures)),
+                                       macro_measures, configured=configured, failures=failures)),
         ("decisions", lambda: _decisions(records, output_dir, run_ids + sorted(skipped), decides, args,
                                          review_path.name)),
         ("review", lambda: _write_pilot_review(records, output_dir, run_ids + sorted(skipped), args,
@@ -1326,6 +1825,12 @@ def _print_summary(summary, test, is_t1: bool) -> None:
     for r in summary.get("per_run", []):
         if r.get("note"):
             print(f"note           : {r['run_id']}: {r['note']}")
+        for err in r.get("post_run_errors") or []:
+            print(f"post-run error : {r['run_id']}: {err}")
+        if r.get("missing_post_run"):
+            print(f"missing        : {r['run_id']}: {'; '.join(r['missing_post_run'])}")
+    if summary.get("post_run_only_command"):
+        print(f"                 collect them with: {summary['post_run_only_command']}")
     if summary.get("error"):
         print(f"summary error  : {summary['error']}")
     usage = summary.get("usage") or {}
@@ -1342,11 +1847,11 @@ def _print_summary(summary, test, is_t1: bool) -> None:
                   f"{r['cached_tokens']:>9}{r['output_tokens']:>8}{r['reasoning_tokens']:>8}"
                   f"{r['cost']:>8.2f}  {_served_str(r.get('served_models') or {}, r.get('served_mismatch') or [])}")
     if usage.get("jurors"):
-        print(f"\n{'juror model':<28}{'role':<18}{'calls':>6}{'failed':>7}{'tmout':>6}{'cost $':>8}  served model")
+        print(f"\n{'juror model':<28}{'role':<18}{'calls':>6}{'usable':>7}{'failed':>7}{'tmout':>6}{'cost $':>8}"
+              "  served model")
         for r in sorted(usage["jurors"].values(), key=lambda r: (r["purpose"], r["model"])):
-            failed = "-" if r["failed_calls"] is None else r["failed_calls"]
-            print(f"{r['model']:<28}{r['purpose']:<18}{r['calls']:>6}{failed:>7}"
-                  f"{r.get('timeouts', 0):>6}{r['cost']:>8.2f}  "
+            print(f"{r['model']:<28}{r['purpose']:<18}{r['calls']:>6}{r.get('usable', 0):>7}"
+                  f"{r.get('failed', 0):>7}{r.get('timeouts', 0):>6}{r['cost']:>8.2f}  "
                   f"{_served_str(r.get('served_models') or {}, r.get('served_mismatch') or [])}")
     mismatched = [m for m, r in rows.items() if r.get("served_mismatch")] + \
         [r["model"] for r in (usage.get("jurors") or {}).values() if r.get("served_mismatch")]
@@ -1355,10 +1860,24 @@ def _print_summary(summary, test, is_t1: bool) -> None:
               f"{', '.join(sorted(set(mismatched)))} — see the README (wrong model id): fix "
               "config/labs/<key>.json (or the juror list) and config/prices.json, re-rate that charter "
               "with rate_charters.py --lab KEY, and re-run T0.")
+    # P60: a juror that failed is named, never hidden behind the jurors that answered.
+    failing = sorted((r for r in (usage.get("jurors") or {}).values() if r.get("failed")),
+                     key=lambda r: (r["purpose"], r["model"]))
+    for r in failing:
+        asked = r.get("usable", 0) + r["failed"]
+        print(f"\nWARNING: {r['model']} ({r['purpose']}) failed {r['failed']} of {asked} request(s) "
+              f"— last error: {r.get('last_error')}")
+    if failing:
+        print("  Check that model's id and key (preflight passes on a key, not on a model id); the missing "
+              "verdicts and answers can be collected later with --post-run-only.")
     for m in usage.get("macro_measures") or []:
         ok = sum(1 for pj in (m.get("per_juror") or {}).values() if pj.get("usable"))
         print(f"MacroJury measured once on the final state: {ok}/{len(m.get('jurors') or [])} usable votes"
               + (f"; error: {m['error']}" if m.get("error") else ""))
+        for model, pj in sorted((m.get("per_juror") or {}).items()):
+            if not pj.get("usable"):
+                print(f"WARNING: MacroJury juror {model} gave no usable vote in the T0 measurement: "
+                      f"{pj.get('error') or 'no usable verdict'} (the run still counts)")
     proj = usage.get("projection")
     if proj and proj["turns_measured"]:
         print(f"\nper-turn cost ${proj['cost_per_turn']:.2f} (turn 1 ${proj.get('first_turn_cost', 0):.2f}, "
