@@ -20,7 +20,9 @@ Every juror call goes through llm.complete_json (effort "medium", output caps
 per G4), so a stub model makes the whole jury run offline. Juror replies are
 validated numerically: numeric strings are coerced, anything else is an error
 that triggers a corrective retry; a juror that never gives usable numbers is
-skipped, never crashes the run.
+skipped, never crashes the run. A juror whose provider fails for good
+(FatalAPIError) is recorded with its error and the panel goes on (S2/J16);
+BudgetExceeded propagates so the pilot stops.
 """
 
 import logging
@@ -28,7 +30,7 @@ import math
 import statistics
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from core.llm import complete_json
+from core.llm import FatalAPIError, complete_json
 from core.state import VALUE_AXES
 from core.transcript import MASK_NOTE
 
@@ -107,6 +109,16 @@ def _check(container: Dict[str, Any], field: str, lo: float, hi: float,
         return f"{where}{field} must be from {lo:g} to {hi:g}, got {n:g}"
     container[field] = n
     return None
+
+
+def _failed_juror(model: str, e: Exception) -> Dict[str, Any]:
+    """A juror whose call raised FatalAPIError (S2/J16): no result, the error and
+    the attempts made before it (count, and their errors)."""
+    prior = list(getattr(e, "attempts", None) or [])
+    return {"result": None, "error": str(e), "attempts": len(prior),
+            "errors": [a.get("error") for a in prior if isinstance(a, dict) and a.get("error")]
+            + [str(e)],
+            "family": juror_family(model)}
 
 
 # ---------------------------------------------------------------------------
@@ -215,13 +227,22 @@ class GrandJury:
             {"per_juror": {juror: obj}, "ups": float, "actors": {key: {...aggregated...}},
              "commentary": [str]}
         Per-seat measures exclude jurors whose family matches the seat (§7).
+        A juror that raises FatalAPIError is kept as {"result": None, "error",
+        "errors", "attempts", "family"} and the panel goes on (S2/J16);
+        BudgetExceeded propagates.
         """
         per_juror: Dict[str, Any] = {}
+        user = _grand_user(transcript, lab_keys, lab_names)
         for model in self.jurors:
-            obj, attempts = complete_json(
-                model, _GRAND_SYSTEM, _grand_user(transcript, lab_keys, lab_names),
-                validate=_validate_grand(lab_keys), max_tokens=self.max_tokens,
-                effort=self.effort, purpose="grand_jury", run_id=run_id)
+            try:
+                obj, attempts = complete_json(
+                    model, _GRAND_SYSTEM, user, validate=_validate_grand(lab_keys),
+                    max_tokens=self.max_tokens, effort=self.effort, purpose="grand_jury",
+                    run_id=run_id)
+            except FatalAPIError as e:              # J16: record it, the panel goes on
+                per_juror[model] = _failed_juror(model, e)
+                logger.warning(f"[grand_jury] {model} failed ({e}); continuing without it")
+                continue
             per_juror[model] = {"result": obj, "attempts": len(attempts),
                                 "errors": [a.get("error") for a in attempts if a.get("error")],
                                 "family": juror_family(model)}
@@ -231,7 +252,7 @@ class GrandJury:
 
     def _aggregate(self, per_juror: Dict[str, Any], lab_keys: List[str],
                    families: Dict[str, str]) -> Dict[str, Any]:
-        results = {m: pj["result"] for m, pj in per_juror.items() if pj["result"]}
+        results = {m: pj["result"] for m, pj in per_juror.items() if pj.get("result")}
         ups = _mean([r.get("ups") for r in results.values()])
         actors: Dict[str, Any] = {}
         for key in lab_keys:
@@ -414,24 +435,41 @@ def _validate_disp(obj: dict) -> Optional[str]:
 
 class DispositionJury:
     """Blind panel (T2). No juror rates its own family; the caller passes an already
-    family-filtered juror list per seat."""
+    family-filtered juror list per seat. `rate` returns the usable ratings; the
+    jurors that gave none (unusable replies or a FatalAPIError, S2/J16) are in
+    `self.failed` for the last call ({"juror", "family", "result": None, "error",
+    "errors", "attempts"}) and accumulate in `self.failures` across calls.
+    BudgetExceeded propagates."""
 
     def __init__(self, max_tokens: int = DISPOSITION_MAX_TOKENS,
                  effort: Optional[str] = JUROR_EFFORT):
         self.max_tokens = max_tokens
         self.effort = effort
+        self.failed: List[Dict[str, Any]] = []
+        self.failures: List[Dict[str, Any]] = []
 
     def rate(self, jurors: List[str], redacted_transcript: str,
              run_id: Optional[str] = None) -> List[Dict[str, Any]]:
         out = []
+        self.failed = []
         for model in jurors:
-            obj, _ = complete_json(
-                model, _DISP_SYSTEM, _disp_user(redacted_transcript),
-                validate=_validate_disp, max_tokens=self.max_tokens, effort=self.effort,
-                purpose="disposition_jury", run_id=run_id)
+            try:
+                obj, attempts = complete_json(
+                    model, _DISP_SYSTEM, _disp_user(redacted_transcript),
+                    validate=_validate_disp, max_tokens=self.max_tokens, effort=self.effort,
+                    purpose="disposition_jury", run_id=run_id)
+            except FatalAPIError as e:              # J16: record it, the panel goes on
+                self.failed.append(dict(_failed_juror(model, e), juror=model))
+                logger.warning(f"[disposition_jury] {model} failed ({e}); continuing without it")
+                continue
             if obj:
                 out.append({"juror": model, "family": juror_family(model),
                             "disposition": obj["disposition"], "reason": obj.get("reason", "")})
             else:
+                errors = [a.get("error") for a in attempts if a.get("error")]
+                self.failed.append({"juror": model, "family": juror_family(model),
+                                    "result": None, "error": errors[-1] if errors else "no usable rating",
+                                    "errors": errors, "attempts": len(attempts)})
                 logger.warning(f"[disposition_jury] {model} gave no usable rating; skipped")
+        self.failures.extend(dict(f, run_id=run_id) for f in self.failed)
         return out

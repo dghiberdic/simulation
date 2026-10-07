@@ -6,9 +6,10 @@ import pytest
 
 import core.jury as jury_mod
 from core.config import build_labs_and_world, load_world
+from core.costs import BudgetExceeded
 from core.engine import SimulationEngine
 from core.jury import DispositionJury, GrandJury, MacroJury, juror_family
-from core.llm import register_stub
+from core.llm import FatalAPIError, register_stub
 from tests.test_engine import greedy_intrude
 
 LAB_KEYS = ("anthropic", "openai", "gdm", "meta", "xai")
@@ -267,3 +268,98 @@ def test_macro_mandate_needs_two_proposers_of_the_board():
         assert res["mandate_source"] == "stub:r3_p1"
     res = run("r3_p3", "r3_p4", "r3_p1")                         # blank proposals do not count
     assert res["mandate"] == "" and res["mandate_source"] is None
+
+
+# ---------------------------------------------------------------------------
+# Round 4: a juror's FatalAPIError never aborts the panel (S2/J16, r4C/gjfatal.py);
+# BudgetExceeded propagates
+# ---------------------------------------------------------------------------
+
+def _fatal(model="gpt-6-sol"):
+    def fn(system, user):
+        e = FatalAPIError(f"{model}: 400 organization must be verified", provider="openai",
+                          model=model, status=400)
+        e.attempts = [{"stop": "end", "cost": 0.4, "error": None}]
+        raise e
+    return fn
+
+
+def _over_budget(system, user):
+    raise BudgetExceeded("budget reached")
+
+
+def test_grand_jury_fatal_juror_is_recorded_and_panel_continues():
+    register_stub("claude-r4ok", _grand_reply)
+    register_stub("gpt-r4fatal", _fatal())
+    register_stub("gemini-r4ok", _grand_reply)
+    fams = {"anthropic": "claude", "openai": "gpt", "gdm": "gemini", "meta": "muse",
+            "xai": "grok"}
+    res = GrandJury(["stub:claude-r4ok", "stub:gpt-r4fatal", "stub:gemini-r4ok"]).evaluate(
+        "T", list(LAB_KEYS), fams)
+    bad = res["per_juror"]["stub:gpt-r4fatal"]
+    assert bad["result"] is None and bad["family"] == "gpt"
+    assert "400 organization must be verified" in bad["error"]
+    assert bad["attempts"] == 1 and bad["errors"][-1] == bad["error"]
+    assert res["per_juror"]["stub:claude-r4ok"]["result"] is not None
+    assert res["ups"] == 55.0
+    assert res["actors"]["meta"]["n_jurors"] == 2                 # the failed juror is not counted
+    assert res["actors"]["anthropic"]["n_jurors"] == 1           # own family excluded too
+    json.dumps(res)                                              # the record stays serialisable
+
+
+def test_grand_jury_all_jurors_fatal_still_returns():
+    register_stub("gpt-r4fatal2", _fatal())
+    res = GrandJury(["stub:gpt-r4fatal2"]).evaluate("T", list(LAB_KEYS), {})
+    assert res["ups"] is None and res["per_juror"]["stub:gpt-r4fatal2"]["error"]
+    assert res["actors"]["xai"]["n_jurors"] == 0
+
+
+def test_grand_jury_budget_exceeded_propagates():
+    register_stub("claude-r4ok2", _grand_reply)
+    register_stub("gpt-r4budget", _over_budget)
+    with pytest.raises(BudgetExceeded):
+        GrandJury(["stub:claude-r4ok2", "stub:gpt-r4budget"]).evaluate("T", list(LAB_KEYS), {})
+
+
+def test_disposition_jury_fatal_and_unusable_jurors_recorded():
+    register_stub("gpt-r4dfatal", _fatal())
+    register_stub("gemini-r4dok", lambda s, u: '{"disposition": 40, "reason": "r"}')
+    register_stub("grok-r4dbad", lambda s, u: '{"disposition": "high"}')
+    jury = DispositionJury()
+    out = jury.rate(["stub:gpt-r4dfatal", "stub:gemini-r4dok", "stub:grok-r4dbad"],
+                    "Record of one lab.", run_id="r1")
+    assert [r["juror"] for r in out] == ["stub:gemini-r4dok"]
+    assert [f["juror"] for f in jury.failed] == ["stub:gpt-r4dfatal", "stub:grok-r4dbad"]
+    fatal, bad = jury.failed
+    assert fatal["result"] is None and "400" in fatal["error"] and fatal["attempts"] == 1
+    assert fatal["family"] == "gpt"
+    assert bad["result"] is None and bad["attempts"] >= 1 and bad["errors"]
+    # failed holds the last call; failures accumulate with the run id.
+    jury.rate(["stub:gemini-r4dok"], "Record of one lab.", run_id="r2")
+    assert jury.failed == []
+    assert [(f["juror"], f["run_id"]) for f in jury.failures] == [
+        ("stub:gpt-r4dfatal", "r1"), ("stub:grok-r4dbad", "r1")]
+
+
+def test_disposition_jury_budget_exceeded_propagates():
+    register_stub("gpt-r4dbudget", _over_budget)
+    with pytest.raises(BudgetExceeded):
+        DispositionJury().rate(["stub:gpt-r4dbudget"], "Record of one lab.")
+
+
+def test_disposition_jury_prompt_carries_directive_and_condition(monkeypatch):
+    """J18 end to end: the seat text pilot.py builds (seat_transcript -> redact) puts
+    the generic leadership directive and the condition text in the juror's prompt."""
+    from core.transcript import redact, seat_transcript
+    from prompts.brief import CONDITION_TEXTS, EVALUATION_BRIEF
+    from tests.test_transcript import make_record
+    calls = _capture(monkeypatch)
+    register_stub("gemini-r4dhdr", lambda s, u: '{"disposition": 50, "reason": "x"}')
+    rec = make_record(condition="C")
+    text = redact(seat_transcript(rec, "openai", include_disposition=False), rec,
+                  seat_key="openai")
+    DispositionJury().rate(["stub:gemini-r4dhdr"], text)
+    user = calls[0]["user"]
+    assert "Leadership directive given to every lab:" in user
+    assert EVALUATION_BRIEF.split("\n")[0] in user and CONDITION_TEXTS["C"] in user
+    assert user.index("Leadership directive") < user.index("== Month 1")
