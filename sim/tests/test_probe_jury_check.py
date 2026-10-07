@@ -335,3 +335,44 @@ def test_r5_old_records_with_ups_contribution_still_read(capsys):
     jc._print(rep)
     out = capsys.readouterr().out
     assert "mean DiD gap" in out and "same sign" not in out
+
+
+# ---------------------------------------------------------------------------
+# Round 6 (R6B-6, R6B-8)
+# ---------------------------------------------------------------------------
+
+def test_r6_duplicate_run_ids_are_kept_apart_by_path_with_a_warning():
+    a, b = _lenient_record("T1b-run01", favour=12), _lenient_record("T1b-run01", favour=12)
+    rep = jc.check([a, b], paths=["data/pilot/T1b/T1b-run01.json", "data/pilot/x/T1b-run01.json"])
+    assert any(n.startswith("WARNING: run id T1b-run01 appears 2 times") for n in rep["notes"])
+    # Two runs, not one merged run: two seat-runs for the claude family.
+    assert rep["self_favouring"]["families"]["claude"]["n_seat_runs"] == 2
+    keys, warn = jc.run_keys([a, b, _lenient_record("other")], ["p1", "p2", "p3"])
+    assert keys == ["T1b-run01 @ p1", "T1b-run01 @ p2", "other"] and len(warn) == 1
+    assert jc.run_keys([a, b])[0] == ["T1b-run01 #1", "T1b-run01 #2"]
+    # Run ids under config.run_meta are read too.
+    rec = _lenient_record("")
+    rec.pop("run_id")
+    rec["config"] = {"run_meta": {"run_id": "T4-run02"}}
+    assert jc.run_keys([rec])[0] == ["T4-run02"]
+
+
+def test_r6_cli_keys_by_path(tmp_path, capsys):
+    for d in ("A", "B"):
+        (tmp_path / d).mkdir()
+        rec = _lenient_record("same-id", favour=12)
+        rec["turns"] = []
+        (tmp_path / d / "same-id.json").write_text(json.dumps(rec))
+    assert jc.main([str(tmp_path / "A"), str(tmp_path / "B")]) == 0
+    out = capsys.readouterr().out
+    assert "WARNING: run id same-id appears 2 times" in out
+
+
+def test_r6_low_n_note_below_three_seat_runs(capsys):
+    jc._print(jc.check([_lenient_record("a", favour=12), _lenient_record("b", favour=12)]))
+    out = capsys.readouterr().out
+    assert "over n=2 seat-run(s)" in out and "low n: fewer than 3 seat-runs" in out
+    rep = jc.check([_lenient_record(r) for r in ("a", "b", "c")])
+    assert rep["self_favouring"]["families"]["claude"]["low_n"] is False
+    jc._print(rep)
+    assert "low n" not in capsys.readouterr().out

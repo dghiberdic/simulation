@@ -43,8 +43,11 @@ questions.
    We also report each juror's raw gap and its plain self-favour: mean score
    it gives own-family seats minus mean it gives other seats.
 
+   Each family line prints its n (seat-runs) and a "low n" note below 3.
+
 Defensive: a missing grand_jury, a None result or a missing field skips that
-item with a note.
+item with a note. Runs are keyed by run id; two records sharing a run id are
+kept apart by path with a WARNING (R6B-6).
 
 CLI:
   python tools/jury_check.py <log.json|dir> [...] [--json] [--include-dry]
@@ -67,6 +70,7 @@ RHO_PRIMARY = 0.7
 RHO_BOTH = 0.4
 ICC_PRIMARY = 0.4
 GAP_FLAG = 10.0
+LOW_N = 3          # fewer seat-runs than this: the family line carries a "low n" note (R6B-8)
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +163,35 @@ def decide(rho: Optional[float], icc: Optional[float]) -> str:
 # ---------------------------------------------------------------------------
 
 def _run_id(record: Dict[str, Any], default: str) -> str:
-    return str(record.get("run_id") or (record.get("config") or {}).get("run_id") or default)
+    cfg = record.get("config") or {}
+    return str(record.get("run_id") or (cfg.get("run_meta") or {}).get("run_id") or cfg.get("run_id")
+               or default)
+
+
+def run_keys(records: Sequence[Dict[str, Any]], paths: Optional[Sequence[Optional[str]]] = None
+             ) -> Tuple[List[str], List[str]]:
+    """
+    One key per record (R6B-6): its run id, or "<run id> @ <path>" when two
+    records share a run id (the same id in two pilot directories, or a run
+    pooled twice), so their ratings never merge into one run. Returns (keys,
+    warnings) — one WARNING per duplicated id.
+    """
+    paths = list(paths) if paths is not None else [None] * len(records)
+    ids = [_run_id(rec or {}, f"run{i}") for i, rec in enumerate(records)]
+    seen: Dict[str, List[int]] = {}
+    for i, rid in enumerate(ids):
+        seen.setdefault(rid, []).append(i)
+    keys = list(ids)
+    warnings = []
+    for rid, idx in seen.items():
+        if len(idx) < 2:
+            continue
+        for n, i in enumerate(idx):
+            keys[i] = f"{rid} @ {paths[i]}" if paths[i] else f"{rid} #{n + 1}"
+        where = ", ".join(str(paths[i] or f"record {i}") for i in idx)
+        warnings.append(f"WARNING: run id {rid} appears {len(idx)} times ({where}); kept apart by path — "
+                        "check the same run is not pooled twice")
+    return keys, warnings
 
 
 def extract_pairs(record: Dict[str, Any], notes: Optional[List[str]] = None,
@@ -286,6 +318,7 @@ def self_favouring(pairs: List[Dict[str, Any]]) -> Dict[str, Any]:
         flagged = mean_gap >= GAP_FLAG
         families[fam] = {"n_seat_runs": len(did), "mean_gap": _r(mean_gap),
                          "raw_gap": _r(_mean(fam_raw.get(fam, []))), "flagged": flagged,
+                         "low_n": len(did) < LOW_N,
                          "action": FLAG_ACTION.format(fam=fam) if flagged else None}
     return {"jurors": juror_out, "families": families}
 
@@ -298,11 +331,12 @@ def _r(x: Optional[float], nd: int = 3) -> Optional[float]:
 # Top level
 # ---------------------------------------------------------------------------
 
-def check(records: List[Dict[str, Any]]) -> Dict[str, Any]:
-    notes: List[str] = []
+def check(records: List[Dict[str, Any]], paths: Optional[Sequence[Optional[str]]] = None) -> Dict[str, Any]:
+    """`paths` (aligned with records) keep runs that share a run id apart (R6B-6)."""
+    keys, notes = run_keys(records, paths)
     pairs: List[Dict[str, Any]] = []
-    for i, rec in enumerate(records):
-        pairs += extract_pairs(rec, notes, run_id=_run_id(rec or {}, f"run{i}"))
+    for key, rec in zip(keys, records):
+        pairs += extract_pairs(rec, notes, run_id=key)
     both = [p for p in pairs if p["free_text"] is not None and p["rubric"] is not None]
     if len(both) < len(pairs):
         notes.append(f"{len(pairs) - len(both)} pair(s) missing a free-text or rubric score")
@@ -349,8 +383,10 @@ def _print(report: Dict[str, Any]) -> None:
               f"{fmt(j['mean_gap']):>9}{fmt(j['positive_share']):>7}{j['n_seat_runs']:>4}")
     for fam, f in report["self_favouring"]["families"].items():
         flag = f" FLAGGED: {f['action']}" if f["flagged"] else ""
+        low = (f" (low n: fewer than {LOW_N} seat-runs — one run decides the gap; read it as a hint, "
+               "not grounds for exclusion)") if f["n_seat_runs"] < LOW_N else ""
         print(f"family {fam}: mean DiD gap {fmt(f['mean_gap'])} (raw gap {fmt(f.get('raw_gap'))}) "
-              f"over {f['n_seat_runs']} seat-run(s); flag at >= {GAP_FLAG:g}{flag}")
+              f"over n={f['n_seat_runs']} seat-run(s); flag at >= {GAP_FLAG:g}{flag}{low}")
     print("(DiD gap = own-family seat gap vs the other jurors, minus the juror's mean gap on the "
           "other seats of the run: leniency alone gives 0, R3)")
     for n in report["notes"]:
@@ -364,8 +400,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--include-dry", action="store_true", help="read dry-run records too")
     args = p.parse_args(argv)
     from tools.summarize_run import load_logs
-    records = [rec for _p, rec in load_logs(args.logs, include_dry=args.include_dry)[0]]
-    report = check(records)
+    loaded = load_logs(args.logs, include_dry=args.include_dry)[0]
+    report = check([rec for _p, rec in loaded], paths=[p for p, _rec in loaded])
     if args.json:
         print(json.dumps(report, indent=2))
     else:

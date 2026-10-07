@@ -45,6 +45,13 @@ index is recomputed from each run's final.ups_index components under
 and the order of runs and of cells (scenario/condition means) is compared
 with the baseline order: Spearman rho per perturbation, the share of
 Dirichlet draws keeping the exact order, and each run's / cell's rank range.
+Spearman is the informative figure: "same order" fails on any swap of two
+near-tied units. The jury's UPS is on 0–100, the index on 0–1 (labelled).
+
+Runs are keyed by run id; two records sharing one (the same id in two pilot
+directories) are kept apart by path with a WARNING (R6B-6). A seat that no
+eligible juror scored after own-family exclusion (and --exclude-ups-family)
+is named in a note (R6B-7).
 
 CLI:
   python tools/jury_analysis.py <log.json|dir> [...] [--exclude-ups-family FAM[,FAM]]
@@ -63,7 +70,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.jury import RUBRIC_DIMS, juror_contributions, juror_family
 from tools.disposition import juror_offsets
-from tools.jury_check import spearman
+from tools.jury_check import run_keys, spearman
 
 ALIGNMENT_FIELDS = ("alignment_charter", "alignment_rules", "alignment_welfare")
 SEAT_FIELDS = ALIGNMENT_FIELDS + ("perceived_disposition",)
@@ -293,15 +300,29 @@ def ups_sensitivity(records: List[Tuple[str, Dict[str, Any]]], samples: int = 20
 # Top level
 # ---------------------------------------------------------------------------
 
+def _uncovered(rows: List[Dict[str, Any]], seats: Sequence[str]) -> Dict[str, List[str]]:
+    """seat -> the measures no eligible juror scored for it (after own-family and UPS exclusion)."""
+    have: Dict[str, set] = {}
+    for r in rows:
+        have.setdefault(r["seat"], set()).add(r["measure"])
+    out = {}
+    for seat in seats:
+        missing = [m for m in MEASURES if m not in have.get(seat, set())]
+        if missing:
+            out[seat] = missing
+    return out
+
+
 def analyse(records: List[Dict[str, Any]], exclude_ups: Sequence[str] = (),
-            samples: int = 200, seed: int = 0) -> Dict[str, Any]:
-    notes: List[str] = []
+            samples: int = 200, seed: int = 0,
+            paths: Optional[Sequence[Optional[str]]] = None) -> Dict[str, Any]:
+    """`paths` (aligned with records) keep runs that share a run id apart (R6B-6)."""
+    keys, notes = run_keys(records, paths)
     rows: List[Dict[str, Any]] = []
     run_ups: Dict[str, Any] = {}
     named: List[Tuple[str, Dict[str, Any]]] = []
     seat_models: Dict[str, set] = {}
-    for i, rec in enumerate(records):
-        run = run_id_of(rec or {}, f"run{i}")
+    for run, rec in zip(keys, records):
         named.append((run, rec))
         for k, lab in ((rec or {}).get("labs") or {}).items():
             seat_models.setdefault(k, set()).add(str((lab or {}).get("model") or "?"))
@@ -309,6 +330,14 @@ def analyse(records: List[Dict[str, Any]], exclude_ups: Sequence[str] = (),
         rows += r
         idx = (((rec or {}).get("final") or {}).get("ups_index") or {}).get("ups")
         run_ups[run] = {"cell": cell_of(rec or {}), "jury_ups": _r(ups), "index_ups": idx}
+    # R6B-7: a seat no eligible juror scored (own-family exclusion plus
+    # --exclude-ups-family can leave none) has no row at all — say so.
+    uncovered = _uncovered(rows, sorted(seat_models)) if rows else {}
+    for seat, missing in uncovered.items():
+        why = "own-family exclusion" + (f" and --exclude-ups-family {','.join(exclude_ups)}"
+                                        if exclude_ups and UPS_MEASURE in missing else "")
+        what = "every measure" if len(missing) == len(MEASURES) else ", ".join(missing)
+        notes.append(f"seat {seat}: no eligible juror after {why} for {what} (no raw or adjusted mean)")
     return {
         "n_runs": len(records),
         "exclude_ups_families": list(exclude_ups),
@@ -316,6 +345,7 @@ def analyse(records: List[Dict[str, Any]], exclude_ups: Sequence[str] = (),
         "measures": seat_measures(rows),
         "runs": run_ups,
         "ups_sensitivity": ups_sensitivity(named, samples, seed),
+        "uncovered_seats": uncovered,
         "notes": notes,
     }
 
@@ -337,12 +367,16 @@ def _print(rep: Dict[str, Any]) -> None:
         for seat, s in sorted(m["seats"].items()):
             print(f"  {seat:<11}{s['n']:>4}{s['n_runs']:>6}{fmt(s['raw']):>9}{fmt(s['adjusted']):>10}")
     print("-" * 72)
-    print("Run-level UPS: " + "; ".join(f"{r} [{v['cell']}] jury {fmt(v['jury_ups'])}, index "
-                                        f"{fmt(v['index_ups'])}" for r, v in rep["runs"].items()))
+    # Two different scales (R6B-8): the jury rates UPS 0-100, the index is 0-1.
+    print("Run-level UPS (jury UPS on 0-100; deterministic index on 0-1 — different scales, compare "
+          "orders, not values): " + "; ".join(f"{r} [{v['cell']}] jury UPS (0-100) {fmt(v['jury_ups'])}, "
+                                             f"index (0-1) {fmt(v['index_ups'])}" for r, v in rep["runs"].items()))
     sens = rep["ups_sensitivity"]
     print("-" * 72)
-    print(f"UPS-weight sensitivity (index; weights {sens['weights']}; {sens['n_runs']} run(s) with "
+    print(f"UPS-weight sensitivity (index, 0-1; weights {sens['weights']}; {sens['n_runs']} run(s) with "
           f"components; seed {sens['seed']})")
+    print("  (Spearman rho is the informative figure: 'same order' fails on any swap of two near-tied "
+          "units, while rho near 1 means the ranking barely moves)")
     for unit in ("runs", "cells"):
         st = sens[unit]
         if not st:
@@ -350,12 +384,13 @@ def _print(rep: Dict[str, Any]) -> None:
             continue
         print(f"  {unit}: baseline order " + ", ".join(f"{b['unit']} {b['ups']:.4f}" for b in st["baseline"]))
         moved = [p["weighting"] for p in st["perturbations"] if not p["same_order"]]
-        print(f"    ±{WEIGHT_STEP:g} per weight: order kept in "
+        rhos = [p["spearman"] for p in st["perturbations"] if p["spearman"] is not None]
+        print(f"    ±{WEIGHT_STEP:g} per weight: Spearman min {fmt(min(rhos) if rhos else None)}; order kept in "
               f"{len(st['perturbations']) - len(moved)}/{len(st['perturbations'])}"
               + (f" (changed under: {', '.join(moved)})" if moved else ""))
         d = st["dirichlet"]
-        print(f"    Dirichlet ({d['samples']} draws): same order {fmt(d['share_same_order'])}, "
-              f"Spearman mean {fmt(d['mean_spearman'])} min {fmt(d['min_spearman'])}; rank ranges "
+        print(f"    Dirichlet ({d['samples']} draws): Spearman mean {fmt(d['mean_spearman'])} min "
+              f"{fmt(d['min_spearman'])}; same order {fmt(d['share_same_order'])}; rank ranges "
               + ", ".join(f"{u} {lo}-{hi}" for u, (lo, hi) in d["rank_range"].items()))
     for n in rep["notes"]:
         print(f"note: {n}")
@@ -373,11 +408,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = p.parse_args(argv)
     exclude = [f.strip() for v in args.exclude_ups_family for f in v.split(",") if f.strip()]
     from tools.summarize_run import load_logs
-    records = [rec for _p, rec in load_logs(args.logs, include_dry=args.include_dry)[0]]
-    if not records:
+    loaded = load_logs(args.logs, include_dry=args.include_dry)[0]
+    if not loaded:
         print("no run records (dry-run records need --include-dry)")
         return 0
-    rep = analyse(records, exclude, samples=max(args.samples, 0), seed=args.seed)
+    rep = analyse([rec for _p, rec in loaded], exclude, samples=max(args.samples, 0), seed=args.seed,
+                  paths=[p for p, _rec in loaded])
     if args.json:
         print(json.dumps(rep, indent=2))
     else:

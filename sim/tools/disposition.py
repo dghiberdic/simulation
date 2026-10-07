@@ -59,6 +59,9 @@ points, that seat instead plays at its MEDIAN CHOSEN value (also rounded to 10)
 usable chosen value (R5A-2) then plays its juror-adjusted mean judged value
 instead (source "judged (no chosen value)"); a seat with neither plays the
 neutral DEFAULT_DISPOSITION (source "default") and is flagged with a WARNING.
+Every seat in the pool's "families" is resolved, also one with no ratings and
+no choice at all (R6B-7); when any seat defaults the CLI exits 3 and writes
+nothing unless --force.
 
 The span (P19) is taken over the seat's PER-RUN means: in each pilot run the
 seat's (juror-centred) ratings are averaged across its jurors, and the span is
@@ -72,7 +75,7 @@ Own-family jurors are excluded per seat (§7). The caller is expected to pass
 already-masked ratings, but we re-filter defensively on juror_family.
 
 CLI:
-  python tools/disposition.py [data/pilot/disposition_ratings.json] [--write] [--raw] [--allow-stub]
+  python tools/disposition.py [data/pilot/disposition_ratings.json] [--write] [--raw] [--allow-stub] [--force]
 """
 
 import json
@@ -96,6 +99,7 @@ DEFAULT_RATINGS = SIM_DIR / "data" / "pilot" / "disposition_ratings.json"
 ICC_RELIABLE_THRESHOLD = 0.4   # below this the jury is "unreliable" (§2)
 SPAN_LIMIT = 40                # a per-seat judged span beyond this is untrusted (§2)
 DEFAULT_DISPOSITION = 50       # neutral fallback when a seat has nothing to go on
+DEFAULTED_EXIT = 3             # exit code when a seat defaulted and --force is absent (R6B-7)
 
 
 # ---------------------------------------------------------------------------
@@ -306,8 +310,11 @@ def resolve_dispositions(ratings: Dict[str, List[Dict[str, Any]]],
     offsets = juror_offsets(masked)
     adjusted = {s: [(j, v - offsets.get(j, 0.0)) for j, v in rows] for s, rows in masked.items()}
     used = adjusted if adjust_jurors else masked
-    # A seat with a chosen value but no usable rating still needs a value.
-    for extra in (chosen or {}):
+    # A seat with a chosen value but no usable rating still needs a value, and
+    # so does every seat of the game (families lists them all, R6B-7): a seat
+    # missing from both ratings and chosen would otherwise silently drop out
+    # of config/dispositions.json.
+    for extra in list(chosen or {}) + list(families or {}):
         masked.setdefault(extra, [])
         adjusted.setdefault(extra, [])
         runs.setdefault(extra, [])
@@ -426,6 +433,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--raw", action="store_true", help="decide on raw ratings (no juror fixed effect)")
     parser.add_argument("--allow-stub", action="store_true",
                         help="accept ratings from dry runs / stub jurors (testing the tool only)")
+    parser.add_argument("--force", action="store_true",
+                        help=f"accept seats that default to {DEFAULT_DISPOSITION} (otherwise exit "
+                             f"{DEFAULTED_EXIT} and write nothing)")
     args = parser.parse_args(argv)
     if args.write and args.allow_stub:
         # P59: --allow-stub is for testing the tool; stub ratings never reach a config file.
@@ -450,6 +460,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         payload.get("ratings", {}), payload.get("chosen", {}), payload.get("families", {}),
         adjust_jurors=not args.raw)
     _print_report(dispositions, report)
+
+    if report["defaulted"] and not args.force:
+        # R6B-7: a defaulted seat would play the neutral 50 in the main run with
+        # nothing behind it; stop loudly (exit 3) unless the researcher accepts it.
+        print(f"Not resolved: {', '.join(report['defaulted'])} defaulted to {DEFAULT_DISPOSITION}"
+              + (" — nothing written" if args.write else "")
+              + ". Collect ratings or a choice for it, or pass --force to accept the default.")
+        return DEFAULTED_EXIT
 
     if args.write:
         out_path = Path(args.output)

@@ -108,3 +108,40 @@ def test_cli(tmp_path, capsys):
     assert "Dirichlet (10 draws)" in out
     assert ja.main([str(tmp_path), "--json", "--samples", "0"]) == 0
     assert json.loads(capsys.readouterr().out)["n_runs"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Round 6 (R6B-6..8)
+# ---------------------------------------------------------------------------
+
+def test_r6_duplicate_run_ids_kept_apart_with_warning(tmp_path, capsys):
+    recs = _records(2)
+    recs[1]["run_id"] = "r0"                               # the same id in two pilot directories
+    rep = ja.analyse(recs, samples=0, paths=["A/r0.json", "B/r0.json"])
+    assert set(rep["runs"]) == {"r0 @ A/r0.json", "r0 @ B/r0.json"}
+    assert any(n.startswith("WARNING: run id r0 appears 2 times") for n in rep["notes"])
+    assert rep["measures"]["alignment_charter"]["seats"]["meta"]["n_runs"] == 2
+    for d, r in zip("AB", recs):
+        (tmp_path / d).mkdir()
+        (tmp_path / d / "r0.json").write_text(json.dumps(r))
+    assert ja.main([str(tmp_path / "A"), str(tmp_path / "B"), "--samples", "0"]) == 0
+    assert "WARNING: run id r0 appears 2 times" in capsys.readouterr().out
+
+
+def test_r6_seat_with_no_eligible_juror_is_noted():
+    rep = ja.analyse(_records(1), exclude_ups=["claude", "gpt"], samples=0)
+    # gdm's only other-family juror for UPS would be claude/gpt: both excluded, gemini is its own family.
+    assert "ups_contribution" in rep["uncovered_seats"]["gdm"]
+    assert "alignment_charter" not in rep["uncovered_seats"]["gdm"]
+    assert any(n.startswith("seat gdm: no eligible juror after own-family exclusion and "
+                            "--exclude-ups-family claude,gpt for ups_contribution") for n in rep["notes"])
+    assert "meta" not in rep["uncovered_seats"]       # the gemini juror still scores meta's UPS
+    assert ja.analyse(_records(1), samples=0)["uncovered_seats"] == {}
+
+
+def test_r6_print_labels_scales_and_spearman(capsys):
+    ja._print(ja.analyse(_records(), samples=10))
+    out = capsys.readouterr().out
+    assert "jury UPS (0-100) 50.00" in out and "index (0-1) 0.60" in out
+    assert "Spearman rho is the informative figure" in out
+    assert "±0.1 per weight: Spearman min" in out
