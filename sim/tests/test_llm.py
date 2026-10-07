@@ -1202,3 +1202,80 @@ def test_real_sdk_stream_failures(tmp_path, monkeypatch):
     with pytest.raises(llm.FatalAPIError) as ei:
         llm.complete_json("claude-opus-5-5", "S", "U")
     assert calls["n"] == 3 and [a["stop"] for a in ei.value.attempts] == ["stream_error"] * 3
+
+
+# ---------------------------------------------------------------------------
+# L21 context-window overflow: stop "context", unusable, no corrective re-ask
+# ---------------------------------------------------------------------------
+
+def test_anthropic_context_window_stop_is_context_without_reask(monkeypatch):
+    fake = FakeAnthropic([_anth('{"actions": [', stop="model_context_window_exceeded"),
+                          _anth('{"a": 1}')])
+    monkeypatch.setattr(llm, "_get_client", lambda p: fake)
+    obj, attempts = llm.complete_json("claude-opus-5-5", "S", "U", max_tokens=16000)
+    assert obj is None and len(attempts) == 1 and len(fake.calls) == 1
+    a = attempts[0]
+    assert (a["stop"], a["stop_detail"]) == ("context", "model_context_window_exceeded")
+    assert a["error"] == llm.CONTEXT_ERROR == "prompt exceeds the model's context window"
+
+
+def test_anthropic_context_stop_with_complete_reply_is_used(monkeypatch):
+    """Like max_tokens: a reply that parsed whole before the window filled is usable."""
+    fake = FakeAnthropic([_anth('{"a": 1}', stop="model_context_window_exceeded")])
+    monkeypatch.setattr(llm, "_get_client", lambda p: fake)
+    obj, attempts = llm.complete_json("claude-opus-5-5", "S", "U")
+    assert obj == {"a": 1} and attempts[0]["stop"] == "context" and attempts[0]["error"] is None
+
+
+_CTX_ERRORS = [
+    ("anthropic", "claude-opus-5-5",
+     APIStatusLike(400, "prompt is too long: 1050000 tokens > 1000000 maximum")),
+    ("openai", "gpt-6-astra",
+     APIStatusLike(400, "Your input exceeds the context window of this model. Please adjust your "
+                        "input and try again.", code="context_length_exceeded")),
+    ("google", "gemini-3.1-pro",
+     APIStatusLike(400, "400 INVALID_ARGUMENT. The input token count (1200000) exceeds the maximum "
+                        "number of tokens allowed (1048576).")),
+    ("xai", "grok-4.7",
+     APIStatusLike(400, "This model's maximum prompt length is 256000 but the request contains "
+                        "300000 tokens.")),
+]
+
+
+def _raising_client(provider, err, calls):
+    def boom(**kw):
+        calls.append(kw)
+        raise err
+    if provider == "anthropic":
+        return NS(messages=NS(stream=boom))
+    if provider == "openai":
+        return NS(responses=NS(create=boom))
+    if provider == "google":
+        return NS(models=NS(generate_content=boom))
+    return NS(chat=NS(completions=NS(create=boom)))
+
+
+@pytest.mark.parametrize("provider,model,err", _CTX_ERRORS)
+def test_context_length_errors_are_context_stops_not_fatal(tmp_path, monkeypatch, provider, model, err):
+    costs.configure(tmp_path / "ledger.json")
+    calls = []
+    monkeypatch.setattr(llm, "_get_client", lambda p: _raising_client(provider, err, calls))
+    r = llm.complete(model, "S", "U")
+    assert (r.text, r.stop, r.cost) == ("", "context", 0.0) and len(calls) == 1
+    assert str(err)[:40] in r.stop_detail
+    obj, attempts = llm.complete_json(model, "S", "U")
+    assert obj is None and len(attempts) == 1 and len(calls) == 2   # no corrective re-ask
+    assert attempts[0]["error"] == llm.CONTEXT_ERROR and attempts[0]["stop"] == "context"
+
+
+def test_other_400s_stay_fatal_and_context_needs_400():
+    assert not llm._is_context_error(APIStatusLike(400, "invalid model"))
+    assert not llm._is_context_error(APIStatusLike(429, "context window"))     # not a 400
+    assert llm._is_context_error(APIStatusLike(400, "x", code="context_length_exceeded"))
+    assert llm._is_context_error(APIStatusLike(413, "prompt is too long"))
+
+
+def test_stub_can_simulate_context_stop():
+    llm.register_stub("ctx", lambda s, u: {"text": "", "stop": "context"})
+    obj, attempts = llm.complete_json("stub:ctx", "S", "U")
+    assert obj is None and len(attempts) == 1 and attempts[0]["error"] == llm.CONTEXT_ERROR

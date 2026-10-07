@@ -48,8 +48,13 @@ everything billed as output including reasoning, reasoning_tokens the
 reasoning subset.
 
 Stop convention (normalised): "end", "max_tokens", "refusal", "safety",
-"other" (plus "timeout" on attempt records); stop_detail carries the
-provider's own category/reason.
+"context", "other" (plus "timeout" and "stream_error" on attempt records);
+stop_detail carries the provider's own category/reason. "context" is a prompt
+that does not fit the model's context window: Anthropic's stop reason
+"model_context_window_exceeded", or a context-length request error from any
+provider (returned as an empty reply at cost 0, not raised). complete_json
+treats it as unusable without a corrective re-ask (L21): the next prompt
+would be longer still.
 """
 
 import inspect
@@ -145,6 +150,11 @@ class MissingKeyError(FatalAPIError):
     """A provider's API key (or base URL) is not configured."""
 
 
+class ContextWindowExceeded(RuntimeError):
+    """A request rejected because the prompt does not fit the model's context
+    window (L21). Not fatal: complete() turns it into a reply with stop "context"."""
+
+
 class StreamInterrupted(RuntimeError):
     """
     An Anthropic stream that failed after its 200 response started (L17):
@@ -173,7 +183,7 @@ class LLMResponse:
     thinking: Optional[str] = None
     latency_s: float = 0.0
     raw_stop_reason: Optional[str] = None
-    stop: str = "end"                   # end | max_tokens | refusal | safety | other
+    stop: str = "end"                   # end | max_tokens | refusal | safety | context | other
     stop_detail: Optional[str] = None   # provider's own category / reason
     served_model: Optional[str] = None  # model id/version the provider reports
     max_tokens: int = 0
@@ -327,7 +337,8 @@ def register_stub(name: str, fn: Callable[[str, str], Any]) -> None:
 # ---------------------------------------------------------------------------
 
 ANTHROPIC_STOP = {"end_turn": "end", "stop_sequence": "end", "tool_use": "end",
-                  "max_tokens": "max_tokens", "refusal": "refusal"}
+                  "max_tokens": "max_tokens", "refusal": "refusal",
+                  "model_context_window_exceeded": "context"}
 
 
 def _call_anthropic(client: Any, model: str, system: str, turns: List[Dict[str, str]],
@@ -397,7 +408,8 @@ def _call_anthropic(client: Any, model: str, system: str, turns: List[Dict[str, 
         "raw_stop": raw,
         "stop": ANTHROPIC_STOP.get(raw, "other"),
         # stop_details is set only on refusals (e.g. "reasoning_extraction").
-        "stop_detail": _get(stop_details, "category") or (raw if raw not in ANTHROPIC_STOP else None),
+        "stop_detail": _get(stop_details, "category")
+        or (raw if ANTHROPIC_STOP.get(raw) in (None, "context") else None),
         "served_model": _get(resp, "model"),
         "max_tokens": max_tokens,
     }
@@ -691,6 +703,24 @@ def _is_transient(err: Exception) -> bool:
     return any(s in msg for s in ("overloaded", "rate limit", "unavailable", "timed out", "deadline exceeded"))
 
 
+# Context-length request errors, as the providers word them: OpenAI
+# "context_length_exceeded" / "exceeds the context window", xAI "maximum prompt
+# length is N", Anthropic "prompt is too long: N tokens > M maximum", Gemini
+# "The input token count (N) exceeds the maximum number of tokens allowed (M)".
+_CONTEXT_ERROR_RE = re.compile(
+    r"context[_ ]length[_ ]exceeded|context[_ ]window|maximum context length|context limit"
+    r"|prompt is too long|maximum prompt length|input token count.{0,40}exceeds"
+    r"|exceeds the maximum number of tokens", re.IGNORECASE)
+
+
+def _is_context_error(err: Exception) -> bool:
+    """A 400/413 saying the prompt does not fit the model's context window (L21)."""
+    if _status(err) not in (400, 413):
+        return False
+    text = f"{getattr(err, 'code', '') or ''} {err} {getattr(err, 'body', '') or ''}"
+    return bool(_CONTEXT_ERROR_RE.search(text))
+
+
 def _retry_after(err: Exception) -> Optional[float]:
     """Seconds from retry-after-ms / retry-after headers, if the error carries them."""
     headers = getattr(getattr(err, "response", None), "headers", None)
@@ -752,6 +782,8 @@ def _with_retries(fn: Callable[[], Dict[str, Any]], provider: str, model: str,
                                                  f"stream broke {broken} times" if broken else "") if s)
                     raise FatalAPIError(f"{label}: {what}: {type(e).__name__}: {e}",
                                         provider, model, status) from e
+            elif _is_context_error(e):
+                raise ContextWindowExceeded(f"{label}: {e}") from e  # not retried, not fatal (L21)
             elif not _is_transient(e):
                 raise FatalAPIError(f"{label}: {type(e).__name__}: {e}", provider, model, status) from e
             if attempt == MAX_ATTEMPTS - 1:
@@ -846,6 +878,12 @@ def complete(model: str, system: str, user: str, *, provider: Optional[str] = No
     except (FatalAPIError, BudgetExceeded) as e:
         e.attempts = timed_out + list(getattr(e, "attempts", None) or [])
         raise
+    except ContextWindowExceeded as e:
+        # The request was refused before any generation: an empty reply, nothing billed (L21).
+        logger.warning(f"{provider}/{model} [{purpose}]: prompt exceeds the context window ({e})")
+        out = {"text": "", "thinking": None, "input_tokens": 0, "cached_tokens": 0, "output_tokens": 0,
+               "reasoning_tokens": 0, "raw_stop": "context_length_error", "stop": "context",
+               "stop_detail": f"{e}"[:200], "served_model": None, "max_tokens": max_tokens}
     latency = time.monotonic() - start
 
     cost = cost_of(model, out["input_tokens"], out["output_tokens"], out["cached_tokens"])
@@ -991,6 +1029,9 @@ def _top_level_objects(text: str) -> Tuple[List[Tuple[int, dict]], str, bool]:
     return found, last_err, False
 
 
+CONTEXT_ERROR = "prompt exceeds the model's context window"
+
+
 def complete_json(model: str, system: str, user: str, *,
                   validate: Optional[Callable[[dict], Optional[str]]] = None, retries: int = 2,
                   expect_keys: Iterable[str] = (), **kw: Any) -> Tuple[Optional[dict], List[Dict[str, Any]]]:
@@ -999,7 +1040,8 @@ def complete_json(model: str, system: str, user: str, *,
     corrective turn up to `retries` times; a reply cut off at max_tokens is
     instead re-asked once, unchanged, with max_tokens doubled (capped at
     MAX_TOKENS_CAP); corrective turns after that use the base max_tokens again
-    (L12). A refusal or safety stop ends the call at once. `expect_keys` are the
+    (L12). A refusal or safety stop ends the call at once, and so does a prompt
+    that exceeds the context window (stop "context", error CONTEXT_ERROR, L21). `expect_keys` are the
     reply schema's keys, passed to parse_json_detail: a reply with two differing
     schema objects and no single ```json-fenced one is re-asked ("reply with
     exactly one"), and its attempt carries "ambiguous": True (K1). Returns (obj or
@@ -1032,6 +1074,8 @@ def complete_json(model: str, system: str, user: str, *,
                 err = f"validation error: {e}"
         if err is not None and r.stop in ("refusal", "safety"):
             err = f"refusal:{r.stop_detail or r.stop}"
+        elif err is not None and r.stop == "context":
+            err = CONTEXT_ERROR
         elif err is not None and r.stop == "max_tokens":
             err = f"max_tokens: reply cut off at {r.max_tokens or max_tokens} tokens ({err})"
         attempts.append({
@@ -1050,6 +1094,8 @@ def complete_json(model: str, system: str, user: str, *,
         logger.info(f"{model}: unusable reply ({err}); attempt {len(attempts)}")
         if r.stop in ("refusal", "safety"):
             return None, attempts  # re-asking a refusal only invites another
+        if r.stop == "context":
+            return None, attempts  # a corrective turn would only make the prompt longer (L21)
         if r.stop == "max_tokens":
             bigger = min(MAX_TOKENS_CAP, max_tokens * 2)
             if grown or bigger <= max_tokens:

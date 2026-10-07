@@ -125,3 +125,49 @@ def test_t5_scripted_invests_and_reports_truthfully():
     idle = POLICIES["t5_scripted"](k["xai"], labs, world, cfg, "S1", None)
     assert idle["actions"] == [] and idle["public_statement"] == "Operations as planned this month."
     assert {"pair_intrude", "t5_scripted", "intrude_profitable"} <= set(POLICIES)
+
+
+# ---------------------------------------------------------------------------
+# SC11 calibration sweep (M25)
+# ---------------------------------------------------------------------------
+
+def test_sc11_sweep_covers_grid_and_passes():
+    from checks.scripted_checks import (
+        SWEEP_A, SWEEP_DRIFT, calibration_sweep, sc11_calibration_sweep,
+    )
+    assert SWEEP_A == (3.0, 4.0, 5.0, 6.0, 7.0, 8.0) and SWEEP_DRIFT == (0.10, 0.125, 0.15)
+    rows = calibration_sweep()
+    assert [(r["a"], r["drift"]) for r in rows] == [(a, d) for a in SWEEP_A for d in SWEEP_DRIFT]
+    assert all(r["stable"] for r in rows)
+    # Pace rises with a (the compute term grows), so the band is a calibration choice.
+    by_a = {a: [r["pace"] for r in rows if r["a"] == a][0] for a in SWEEP_A}
+    assert all(by_a[x] < by_a[y] for x, y in zip(SWEEP_A, SWEEP_A[1:]))
+    name, passed, detail = sc11_calibration_sweep()
+    assert passed, detail
+    assert "18 cells" in detail and "configured a=5, drift=0.1: pace=" in detail
+
+
+def test_sc11_pace_asserted_only_at_configured_values(monkeypatch):
+    import checks.scripted_checks as sc
+    rows = [{"a": a, "drift": d, "pace": 1.6 if (a, d) == (5.0, 0.1) else 3.0,
+             "base_swing": 0.0, "engine_swing": 0.0, "stable": True}
+            for a in sc.SWEEP_A for d in sc.SWEEP_DRIFT]
+    monkeypatch.setattr(sc, "calibration_sweep", lambda: rows)
+    assert sc.sc11_calibration_sweep()[1] is True          # off-band cells are only reported
+    rows[0]["stable"] = False
+    name, passed, detail = sc.sc11_calibration_sweep()
+    assert passed is False and "unstable: a=3/drift=0.1" in detail
+    rows[0]["stable"] = True
+    rows[6]["pace"] = 1.9                                   # the configured cell (a=5, 0.10)
+    assert sc.sc11_calibration_sweep()[1] is False
+
+
+def test_sc11_table_marks_configured_cell():
+    from checks.scripted_checks import format_sweep
+    rows = [{"a": 5.0, "drift": 0.1, "pace": 1.576, "base_swing": 0.024, "engine_swing": 0.1,
+             "stable": True},
+            {"a": 8.0, "drift": 0.15, "pace": 1.775, "base_swing": 0.033, "engine_swing": 0.1,
+             "stable": False}]
+    table = format_sweep(rows, 5.0, 0.1).splitlines()
+    assert table[2].endswith("yes  <- configured") and "1.576" in table[2]
+    assert table[3].endswith("NO") and "8.0" in table[3]

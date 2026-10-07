@@ -7,7 +7,8 @@ profitable, always intrude) play every seat at no cost, to catch a broken
 economy, an intrusion payoff from which no seat or pair can profit, a ceiling
 or cap that fails to bind, odds that differ from §5.3, unstable talent shares,
 hidden data or other conditions' text leaking into prompts, and crashes on
-malformed replies.
+malformed replies. SC11 sweeps the calibration (a = 3–8, talent drift
+0.10–0.15) and reports frontier pace and talent stability per cell.
 
 Everything here runs with a zero-cost `policy=` callable: no LLM, no grand jury
 (run_grand_jury=False, macro_jurors=[]). Every world constant is read from the
@@ -51,6 +52,8 @@ CheckResult = Tuple[str, bool, str]
 PACE_LOW, PACE_HIGH = 1.4, 1.8          # SC1 frontier pace, C/turn (no-event baseline)
 TALENT_CAP = 40.0                        # SC5 upper bound on any seat's talent share
 TALENT_MAX_SWING = 3.0                   # SC5 max turn-to-turn change
+SWEEP_A = (3.0, 4.0, 5.0, 6.0, 7.0, 8.0)          # SC11 capability-compute elasticity a
+SWEEP_DRIFT = (0.10, 0.125, 0.15)                 # SC11 talent drift rate
 MC_TRIALS = 20000                        # SC4 Monte Carlo sample size
 MC_TOL = 0.015                           # SC4 empirical-vs-formula tolerance
 EPS = 1e-6
@@ -88,14 +91,14 @@ def _engine_frontier_pace(record: Dict[str, Any], labs) -> float:
     return _frontier_pace(seed_c, rows)
 
 
-def _baseline_economy(turns: int = 12):
+def _baseline_economy(turns: int = 12, overrides: Dict[str, Any] = None):
     """
     The no-event greedy baseline: run economy.macro_growth directly (like
     tests/test_economy) with the shock off and no scenario ceiling, so compute
-    keeps growing. Returns (seed_cap, per-turn capability rows, per-turn talent
-    rows, cfg).
+    keeps growing. `overrides` (dotted world keys) serve the SC11 sweep. Returns
+    (seed_cap, per-turn capability rows, per-turn talent rows, cfg).
     """
-    cfg = load_world({"economy.know_how_shock_sd": 0.0})
+    cfg = load_world(dict(overrides or {}, **{"economy.know_how_shock_sd": 0.0}))
     a = cfg["economy"]["capability_compute_elasticity"]
     labs = [build_lab(c, "", a) for c in load_lab_configs()]
     world = WorldState(start=date(2026, 1, 1), us_stock=cfg["compute"]["us_stock_t0"],
@@ -376,24 +379,33 @@ def sc4_odds_match() -> CheckResult:
 # SC5 — talent stable
 # ---------------------------------------------------------------------------
 
-def sc5_talent_stable() -> CheckResult:
-    name = "SC5 talent stable"
-    record, labs, world, cfg = _engine_run("S1", "greedy")
+def _talent_stability(talent_rows: List[Dict[str, float]], labs, cfg) -> Tuple[bool, float]:
+    """(every seat within [floor, TALENT_CAP] each turn, max turn-to-turn swing) over
+    per-turn {key: talent} rows; the floor is talent_floor_fraction × seed."""
     floor_frac = cfg["economy"]["talent_floor_fraction"]
     floors = {lab.key: floor_frac * lab.seed["talent"] for lab in labs}
     tol = 0.1  # public sheets round talent to one decimal
-
     in_range = True
     max_swing = 0.0
     prev: Dict[str, float] = {}
-    for turn in record["turns"]:
-        row = {k: s["talent"] for k, s in turn["public_sheets"].items()}
+    for row in talent_rows:
         for k, v in row.items():
             if v < floors[k] - tol or v > TALENT_CAP + tol:
                 in_range = False
             if prev:
                 max_swing = max(max_swing, abs(v - prev[k]))
         prev = row
+    return in_range, max_swing
+
+
+def _engine_talent_rows(record: Dict[str, Any]) -> List[Dict[str, float]]:
+    return [{k: s["talent"] for k, s in t["public_sheets"].items()} for t in record["turns"]]
+
+
+def sc5_talent_stable() -> CheckResult:
+    name = "SC5 talent stable"
+    record, labs, world, cfg = _engine_run("S1", "greedy")
+    in_range, max_swing = _talent_stability(_engine_talent_rows(record), labs, cfg)
     stable = max_swing < TALENT_MAX_SWING
     passed = in_range and stable
     detail = (f"every seat in [0.5*seed, {TALENT_CAP}] each turn={in_range}; "
@@ -562,6 +574,72 @@ def sc10_all_policies_complete() -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
+# SC11 — calibration sweep (a, talent drift)
+# ---------------------------------------------------------------------------
+
+def calibration_sweep() -> List[Dict[str, Any]]:
+    """
+    Frontier pace and talent stability for every a in SWEEP_A × talent drift in
+    SWEEP_DRIFT (calibration of a = 3–8 and drift 0.10–0.15). Pace comes from the
+    no-event baseline (as SC1); stability (SC5's rule: every seat within
+    [floor, TALENT_CAP], turn-to-turn swing < TALENT_MAX_SWING, shares summing to
+    100) must hold in both the baseline and a 12-turn greedy S1 engine run.
+    """
+    rows: List[Dict[str, Any]] = []
+    for a in SWEEP_A:
+        for drift in SWEEP_DRIFT:
+            overrides = {"economy.capability_compute_elasticity": a,
+                         "economy.talent_drift_rate": drift}
+            seed_cap, cap_rows, talent_rows, cfg = _baseline_economy(overrides=overrides)
+            labs = [build_lab(c, "", a) for c in load_lab_configs()]
+            keys = [lab.key for lab in labs]
+            base_ok, base_swing = _talent_stability([dict(zip(keys, row)) for row in talent_rows],
+                                                    labs, cfg)
+            sums_ok = all(abs(sum(row) - 100.0) < EPS for row in talent_rows)
+            record, e_labs, _, e_cfg = _engine_run("S1", "greedy", overrides=overrides)
+            eng_ok, eng_swing = _talent_stability(_engine_talent_rows(record), e_labs, e_cfg)
+            swing = max(base_swing, eng_swing)
+            rows.append({"a": a, "drift": drift, "pace": _frontier_pace(seed_cap, cap_rows),
+                         "base_swing": base_swing, "engine_swing": eng_swing,
+                         "stable": base_ok and eng_ok and sums_ok and swing < TALENT_MAX_SWING})
+    return rows
+
+
+def format_sweep(rows: List[Dict[str, Any]], a0: float, drift0: float) -> str:
+    """The SC11 table; the configured cell is marked."""
+    lines = ["SC11 calibration sweep: frontier pace (C/turn, no-event baseline); max talent "
+             "swing per turn in the baseline (exact) and the greedy S1 run (public, 1 dp); "
+             "talent stable",
+             f"{'a':>5} {'drift':>6} {'pace':>6} {'base':>7} {'S1':>5}  stable"]
+    for r in rows:
+        mark = "  <- configured" if (r["a"], r["drift"]) == (a0, drift0) else ""
+        lines.append(f"{r['a']:>5.1f} {r['drift']:>6.3f} {r['pace']:>6.3f} {r['base_swing']:>7.3f} "
+                     f"{r['engine_swing']:>5.1f}  {'yes' if r['stable'] else 'NO'}{mark}")
+    return "\n".join(lines)
+
+
+def sc11_calibration_sweep() -> CheckResult:
+    """Stability must hold in every cell; the pace band is asserted only at the
+    configured a and drift (the other cells are reported for calibration)."""
+    name = "SC11 calibration sweep"
+    econ = load_world()["economy"]
+    a0, drift0 = econ["capability_compute_elasticity"], econ["talent_drift_rate"]
+    rows = calibration_sweep()
+    configured = [r for r in rows if (r["a"], r["drift"]) == (a0, drift0)]
+    pace0 = configured[0]["pace"] if configured else None
+    pace_ok = pace0 is not None and PACE_LOW <= pace0 <= PACE_HIGH
+    unstable = [f"a={r['a']:g}/drift={r['drift']:g}" for r in rows if not r["stable"]]
+    paces = [r["pace"] for r in rows]
+    shown = f"{pace0:.3f}" if pace0 is not None else "n/a (configured values outside the sweep)"
+    detail = (f"{len(rows)} cells (a={'/'.join(f'{a:g}' for a in SWEEP_A)} x drift="
+              f"{'/'.join(f'{d:g}' for d in SWEEP_DRIFT)}); configured a={a0:g}, drift={drift0:g}: "
+              f"pace={shown} (want {PACE_LOW}-{PACE_HIGH}); pace range {min(paces):.3f}-"
+              f"{max(paces):.3f}; talent stable in all cells={not unstable}"
+              + (f" (unstable: {', '.join(unstable)})" if unstable else ""))
+    return name, pace_ok and not unstable, detail
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -576,6 +654,7 @@ CHECKS: Tuple[Callable[[], CheckResult], ...] = (
     sc8_other_condition_text_absent,
     sc9_reproducibility,
     sc10_all_policies_complete,
+    sc11_calibration_sweep,
 )
 
 
@@ -592,6 +671,9 @@ def run_all(verbose: bool = True) -> bool:
         print("=" * (width + 10))
         n_pass = sum(1 for _, passed, _ in results if passed)
         print(f"{n_pass}/{len(results)} checks passed\n")
+        econ = load_world()["economy"]
+        print(format_sweep(calibration_sweep(), econ["capability_compute_elasticity"],
+                           econ["talent_drift_rate"]) + "\n")
     return all(passed for _, passed, _ in results)
 
 

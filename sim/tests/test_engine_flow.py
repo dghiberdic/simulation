@@ -123,6 +123,23 @@ def test_budget_during_grand_jury_saves_final_then_raises(tmp_path):
     assert not (tmp_path / "bx.partial.json").exists()
 
 
+def test_interrupt_during_grand_jury_saves_final_then_raises(tmp_path):
+    """E41: a KeyboardInterrupt during the jury saves the FINAL record with
+    grand_jury {"error": "interrupted"}, removes the partial and re-raises."""
+    def juror_ctrl_c(s, u):
+        raise KeyboardInterrupt()
+    register_stub("flow_juror_ctrl_c", juror_ctrl_c)
+    eng = _stub_engine(lambda k: lambda s, u: json.dumps({"rationale": "x", "actions": []}),
+                       turns=2, output_dir=tmp_path, run_id="kb", grand=True)
+    eng.grand_jurors = ["stub:flow_juror_ctrl_c"]
+    with pytest.raises(KeyboardInterrupt):
+        eng.run()
+    saved = json.loads((tmp_path / "kb.json").read_text())
+    assert len(saved["turns"]) == 2 and saved["final"]["scores"]
+    assert saved["final"]["grand_jury"] == {"error": "interrupted", "detail": "KeyboardInterrupt"}
+    assert not (tmp_path / "kb.partial.json").exists()
+
+
 def test_unexpected_exception_in_a_turn_still_saves_partial(tmp_path):
     """A bug outside the seat calls during the run must not lose the paid turns."""
     eng = _stub_engine(lambda k: lambda s, u: json.dumps({"rationale": "x", "actions": []}),
@@ -349,12 +366,14 @@ def test_budget_exceeded_mid_execution_appends_incomplete_turn(tmp_path, monkeyp
 
 
 def test_turn_appended_before_macro_jury(tmp_path):
+    """H5: a MacroJury that stops the run (budget; a juror's FatalAPIError is now
+    recorded per juror by J21 and no longer escapes) leaves the turn appended."""
     def bad_juror(s, u):
-        raise FatalAPIError("down", provider="x", model="y")
+        raise BudgetExceeded("guard")
     register_stub("r2_bad_macro", bad_juror)
     eng = _model_engine(lambda k, s, m, u: _idle(s), turns=5, output_dir=tmp_path, run_id="mj",
                         macro_jurors=["stub:r2_bad_macro"] * 3)
-    with pytest.raises(RunAborted):
+    with pytest.raises(BudgetExceeded):
         eng.run()
     saved = json.loads((tmp_path / "mj.partial.json").read_text())
     assert [t["turn"] for t in saved["turns"]] == [1, 2, 3, 4]
@@ -492,12 +511,14 @@ def test_joint_access_record_tip_and_months():
     rec = _model_engine(beh, scenario="S2", turns=5, overrides=SURE, prompts=prompts).run()
     # E29/E38: the named lab that did not commit learns the others went ahead, no
     # outcome: a record line next month, and a list kept in every later prompt.
-    named = [l for l in prompts[("anthropic", "proposal", 2)].splitlines()
-             if l.strip().startswith("Access you were named in:")]
-    assert named == ["  Access you were named in: January 2026: Google DeepMind went ahead "
-                     "with the access of OpenAI's tenancy; you were named but did not commit."]
-    assert "Access you were named in:" not in prompts[("anthropic", "proposal", 3)]
-    assert "Access you were named in" not in prompts[("gdm", "proposal", 2)]
+    # E43: the record line says "named" once and carries no label.
+    line = ("  January 2026: Google DeepMind went ahead with the access of OpenAI's tenancy; "
+            "you were named but did not commit.")
+    record2 = prompts[("anthropic", "proposal", 2)].split("Your record for")[1].split("\n\n")[0]
+    assert line in record2.splitlines()
+    assert "Access you were named in" not in prompts[("anthropic", "proposal", 2)]
+    assert "you were named but did not commit" not in prompts[("anthropic", "proposal", 3)]
+    assert "you were named" not in prompts[("gdm", "proposal", 2)]
     item = ("Accesses you were named in (you did not commit):\n  - January 2026: Google "
             "DeepMind went ahead with the access of OpenAI's tenancy\n")
     for m in (2, 3, 5):

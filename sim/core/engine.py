@@ -251,10 +251,11 @@ class SimulationEngine:
             self._save_partial()
             raise
         # The run is finished and counts: the Grand Jury never aborts it (S2). A budget
-        # stop during the jury saves the final record first, then stops the pilot.
+        # stop or an interrupt (Ctrl-C) during the jury saves the final record first,
+        # then stops the pilot (E41).
         try:
             self._grand_jury()
-        except BudgetExceeded:
+        except BaseException:
             self._save_final()
             raise
         self._save_final()
@@ -1068,7 +1069,8 @@ class SimulationEngine:
         """Post-run Grand Jury on the finished record (S2). A juror's FatalAPIError is
         recorded per juror by GrandJury itself; anything else that escapes is recorded
         as {"error": ...} and the run still completes. BudgetExceeded is recorded as
-        {"error": "budget"} and re-raised, so the pilot stops after the run is saved."""
+        {"error": "budget"} and re-raised, so the pilot stops after the run is saved;
+        an interrupt (Ctrl-C) likewise as {"error": "interrupted"} (E41)."""
         if not self.run_grand_jury:
             return
         families = {lab.key: lab.family for lab in self.labs}
@@ -1087,6 +1089,10 @@ class SimulationEngine:
             self.record["final"]["grand_jury"] = {
                 "error": f"{type(e).__name__}: {e}",
                 "attempts": [_slim(a) for a in getattr(e, "attempts", None) or []]}
+        except BaseException as e:              # KeyboardInterrupt, SystemExit: the run counts (E41)
+            logger.error(f"[grand_jury] interrupted ({type(e).__name__}); saving the final record")
+            self.record["final"]["grand_jury"] = {"error": "interrupted", "detail": type(e).__name__}
+            raise
 
     # ---------------------------------------------------------------- save
     def _save_partial(self) -> Optional[Path]:
