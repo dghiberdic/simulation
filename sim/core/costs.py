@@ -8,9 +8,21 @@ cumulative measured spend is persisted to a JSON ledger (default
 data/spend.json) so the guard spans runs: "a guard halts the pilot at $100 of
 measured spend". Each paid call is also appended as one JSON line to
 <ledger stem>_calls.jsonl next to the ledger (default data/spend_calls.jsonl),
-so a run's spend can be audited call by call.
+so a run's spend can be audited call by call. A request that timed out is
+logged there too, at cost 0 with "possibly_billed": true (the provider may
+have finished and billed it; its cost is unknown), and never enters the total.
 
 Thread-safe: core.llm calls record()/check() from one thread per seat.
+
+Parallel overshoot bound (D5): the guard is checked before every HTTP request,
+but the seats of a stage (and parallel jurors) run at once, so requests already
+in flight when the total crosses the budget still complete and are recorded.
+Spend can therefore exceed the budget by at most one request per concurrent
+worker — one stage of calls — each at most its prompt plus max_tokens of output
+(a retry, corrective turn or doubled re-ask is a new request and is checked
+first, so it cannot add to the overshoot). Requests that timed out may add
+unmeasured, possibly billed spend on top (flagged in the call log).
+CostTracker.overshoot_note() gives the figure for the README.
 
 Token convention: input_tokens is the total prompt including cached tokens;
 cached_tokens is the subset billed at the cached rate. output_tokens includes
@@ -121,8 +133,13 @@ class CostTracker:
 
     def record(self, model: str, purpose: str, run_id: Optional[str], input_tokens: int,
                output_tokens: int, cached_tokens: int = 0, reasoning_tokens: int = 0,
-               cost: Optional[float] = None, provider: str = "", stop: Optional[str] = None) -> float:
-        """Record one call; returns its cost. Zero-cost calls (stubs) never touch the ledger or call log."""
+               cost: Optional[float] = None, provider: str = "", stop: Optional[str] = None,
+               possibly_billed: bool = False) -> float:
+        """
+        Record one call; returns its cost. Zero-cost calls (stubs) never touch the
+        ledger or call log, except a possibly billed one (a timed-out request),
+        which is logged to the call log only.
+        """
         if cost is None:
             cost = cost_of(model, input_tokens, output_tokens, cached_tokens)
         entry = {
@@ -130,6 +147,7 @@ class CostTracker:
             "purpose": purpose, "run_id": run_id, "input_tokens": input_tokens,
             "output_tokens": output_tokens, "cached_tokens": cached_tokens,
             "reasoning_tokens": reasoning_tokens, "cost": cost, "stop": stop,
+            "possibly_billed": possibly_billed,
         }
         with self._lock:
             self.calls.append(entry)
@@ -141,6 +159,8 @@ class CostTracker:
                 by_model[model] = by_model.get(model, 0.0) + cost
                 ledger["updated"] = time.strftime("%Y-%m-%dT%H:%M:%S")
                 self._write_ledger(ledger)
+            if cost > 0 or possibly_billed:
+                self.calls_file.parent.mkdir(parents=True, exist_ok=True)
                 with open(self.calls_file, "a") as f:
                     f.write(json.dumps(entry) + "\n")
         return cost
@@ -158,6 +178,26 @@ class CostTracker:
             raise BudgetExceeded(
                 f"Measured spend ${spent:.2f} has reached the ${self.budget:.2f} budget "
                 f"(ledger {self.spend_file})")
+
+    def overshoot_note(self, concurrency: int = 5, prompt_tokens: int = 50_000,
+                       output_tokens: int = 32_000) -> str:
+        """
+        README text for the parallel overshoot bound (D5): one stage of
+        `concurrency` requests, each at most prompt_tokens in and output_tokens
+        out (default: the doubled-retry ceiling), at the highest prices on file.
+        """
+        table = prices()
+        p_in = max(p["input"] for p in table.values())
+        p_out = max(p["output"] for p in table.values())
+        per = (prompt_tokens * p_in + output_tokens * p_out) / 1e6
+        return (f"The budget guard is checked before every request, but the {concurrency} seats of a stage "
+                f"(or parallel jurors) call at once: requests already in flight when the budget is reached "
+                f"still complete, so measured spend can exceed the budget by at most one stage of calls — "
+                f"{concurrency} requests of at most {prompt_tokens:,} prompt and {output_tokens:,} output "
+                f"tokens, ${concurrency * per:.2f} at the highest prices in config/prices.json "
+                f"(${per:.2f} each). Retries, corrective turns and the doubled max_tokens re-ask are new "
+                f"requests and are checked first. Timed-out requests are logged at $0 with "
+                f"possibly_billed=true and may add unmeasured spend.")
 
     # -- reporting ----------------------------------------------------------
 

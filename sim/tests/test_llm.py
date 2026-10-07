@@ -123,18 +123,48 @@ def _anthropic_resp(text="hi", input_tokens=100, cache_read=0, cache_write=0, ou
     return NS(content=content, usage=usage, stop_reason="end_turn")
 
 
+class _FakeStream:
+    """Context manager shaped like the SDK's MessageStream: iterate events, then get_final_message()."""
+
+    def __init__(self, final, events=()):
+        self._final = final
+        self._events = list(events)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def __iter__(self):
+        return iter(self._events)
+
+    def get_final_message(self):
+        return self._final
+
+
+def _stream_client(fn):
+    """Anthropic-shaped client whose messages.stream(**kw) streams fn(**kw) (a message, or raises)."""
+    def stream(**kw):
+        r = fn(**kw)
+        return r if isinstance(r, _FakeStream) else _FakeStream(r)
+    return NS(messages=NS(stream=stream))
+
+
 class FakeAnthropic:
+    """Anthropic calls stream (H4): messages.stream(**kw) -> final message. Exceptions are raised."""
+
     def __init__(self, responses):
         self.calls = []
         self._responses = list(responses)
-        self.messages = NS(create=self._create)
+        self.messages = NS(stream=self._stream)
 
-    def _create(self, **kw):
+    def _stream(self, **kw):
         self.calls.append(kw)
         r = self._responses.pop(0)
         if isinstance(r, Exception):
             raise r
-        return r
+        return r if isinstance(r, _FakeStream) else _FakeStream(r)
 
 
 def test_budget_guard_blocks_before_call(tmp_path, monkeypatch):
@@ -348,19 +378,36 @@ def test_complete_json_max_tokens_doubles_once(monkeypatch):
     assert set(attempts[0]) >= {"stop", "stop_detail", "served_model"}
 
 
-def test_complete_json_max_tokens_capped_for_anthropic_and_only_once(monkeypatch):
+def test_complete_json_max_tokens_capped_at_32000_and_only_once(monkeypatch):
+    """H4: Anthropic streams, so its doubling cap is the common 32000, not the old 21000 clamp."""
     fake = FakeAnthropic([_anth("{", stop="max_tokens"), _anth("{", stop="max_tokens"), _anth('{"a": 1}')])
     monkeypatch.setattr(llm, "_get_client", lambda p: fake)
-    obj, attempts = llm.complete_json("claude-opus-5-5", "S", "U", max_tokens=16000)
+    obj, attempts = llm.complete_json("claude-opus-5-5", "S", "U", max_tokens=20000)
     assert obj is None and len(attempts) == 2
-    assert [c["max_tokens"] for c in fake.calls] == [16000, 21000]
+    assert [c["max_tokens"] for c in fake.calls] == [20000, 32000] and llm.MAX_TOKENS_CAP == 32000
 
 
-def test_anthropic_max_tokens_clamped():
+def test_anthropic_max_tokens_not_clamped():
     fake = FakeAnthropic([_anth()])
-    llm._call_anthropic(fake, "claude-opus-5-5", "S", [{"role": "user", "content": "U"}],
-                        40000, None, None, True, None)
-    assert fake.calls[0]["max_tokens"] == llm.ANTHROPIC_MAX_TOKENS == 21000
+    out = llm._call_anthropic(fake, "claude-opus-5-5", "S", [{"role": "user", "content": "U"}],
+                              40000, None, None, True, None)
+    assert fake.calls[0]["max_tokens"] == 40000 and out["max_tokens"] == 40000
+    assert not hasattr(llm, "ANTHROPIC_MAX_TOKENS")
+
+
+def test_complete_json_corrective_retry_returns_to_base_cap():
+    """L12: only the one re-ask after a truncation gets the doubled cap; corrective turns use the base."""
+    seq = iter([{"text": "x"}, {"text": '{"a": ', "stop": "max_tokens"}, {"text": "bad"}, {"text": "bad"}])
+    llm.register_stub("l12", lambda s, u: next(seq))
+    obj, attempts = llm.complete_json("stub:l12", "S", "U", max_tokens=16000)
+    assert obj is None
+    assert [(a["max_tokens"], a["stop"]) for a in attempts] == \
+        [(16000, "end"), (16000, "max_tokens"), (32000, "end"), (16000, "end")]
+    # a truncation after the doubled re-ask was used ends the call
+    seq2 = iter([{"text": "{", "stop": "max_tokens"}, {"text": "bad"}, {"text": "{", "stop": "max_tokens"}])
+    llm.register_stub("l12b", lambda s, u: next(seq2))
+    obj, attempts = llm.complete_json("stub:l12b", "S", "U", max_tokens=8000)
+    assert [a["max_tokens"] for a in attempts] == [8000, 16000, 8000] and obj is None
 
 
 def test_complete_json_refusal_stops_immediately(monkeypatch):
@@ -563,7 +610,7 @@ def test_budget_checked_before_each_retry(tmp_path, monkeypatch):
     def fail_and_spend(**kw):
         t.record("claude-opus-5-5", "x", None, 0, 0, cost=2.0)   # another seat spent meanwhile
         raise APIStatusLike(529)
-    monkeypatch.setattr(llm, "_get_client", lambda p: NS(messages=NS(create=fail_and_spend)))
+    monkeypatch.setattr(llm, "_get_client", lambda p: _stream_client(fail_and_spend))
     with pytest.raises(BudgetExceeded):
         llm.complete("claude-opus-5-5", "S", "U")
 
@@ -578,12 +625,14 @@ def test_clients_have_timeouts(monkeypatch):
     for env in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY", "MUSE_API_KEY", "VERTEX_API_KEY"):
         monkeypatch.setenv(env, "test-key")
     monkeypatch.setenv("MUSE_BASE_URL", "https://muse.example.invalid/v1")
-    for p in ("anthropic", "openai", "xai", "muse"):
+    for p in ("openai", "xai", "muse"):
         c = llm._get_client(p)
-        assert getattr(c.timeout, "read", c.timeout) == 300.0
-        assert c.max_retries == 0
+        assert c.timeout == 1200.0 and c.max_retries == 0
+    # Anthropic streams: connect 30 s, then at most 600 s between events (H4)
+    a = llm._get_client("anthropic")
+    assert (a.timeout.connect, a.timeout.read) == (30.0, 600.0) and a.max_retries == 0
     g = llm._get_client("google")
-    assert g._api_client._http_options.timeout == 300_000
+    assert g._api_client._http_options.timeout == 1_200_000
     assert llm._get_client("anthropic") is llm._get_client("anthropic")
 
 
@@ -653,7 +702,7 @@ def test_cache_key_ignored_elsewhere(monkeypatch):
 def test_parallel_calls_record_every_cost(tmp_path, monkeypatch):
     costs.configure(tmp_path / "spend.json", budget=100.0)
     lock = threading.Lock()
-    monkeypatch.setattr(llm, "_get_client", lambda p: NS(messages=NS(create=lambda **kw: _anth())))
+    monkeypatch.setattr(llm, "_get_client", lambda p: _stream_client(lambda **kw: _anth()))
     results = []
     def worker(i):
         llm.register_stub(f"par{i}", lambda s, u: '{"ok": 1}')
@@ -685,3 +734,135 @@ def test_lazy_client_created_once_under_threads(monkeypatch):
     for t in threads:
         t.join()
     assert len({id(c) for c in got}) == 1
+
+
+# ---------------------------------------------------------------------------
+# H4 / L11 streaming, timeouts
+# ---------------------------------------------------------------------------
+
+def test_anthropic_streams_and_reads_message_delta_fields(monkeypatch):
+    """anthropic 0.97's accumulator drops stop_details / output_tokens_details from message_delta:
+    they are taken from the last message_delta event when the final message lacks them."""
+    final = _anth("", stop="refusal")
+    final.stop_details = None
+    final.usage.output_tokens_details = None
+    delta = NS(type="message_delta", delta=NS(stop_reason="refusal", stop_details={"category": "bio"}),
+               usage=NS(output_tokens=50, output_tokens_details={"thinking_tokens": 41}))
+    events = [NS(type="message_start"), NS(type="text"), delta, NS(type="message_stop")]
+    fake = FakeAnthropic([_FakeStream(final, events)])
+    monkeypatch.setattr(llm, "_get_client", lambda p: fake)
+    r = llm.complete("claude-opus-5-5", "S", "U", max_tokens=64000)
+    assert (r.stop, r.stop_detail, r.reasoning_tokens) == ("refusal", "bio", 41)
+    assert fake.calls[0]["max_tokens"] == 64000 and "stream" not in fake.calls[0]
+    # the final message wins when it carries them (anthropic 1.x)
+    final2 = _anth("", stop="refusal", stop_details=NS(category="cyber"), details=NS(thinking_tokens=7))
+    fake2 = FakeAnthropic([_FakeStream(final2, [delta])])
+    monkeypatch.setattr(llm, "_get_client", lambda p: fake2)
+    r = llm.complete("claude-opus-5-5", "S", "U")
+    assert (r.stop_detail, r.reasoning_tokens) == ("cyber", 7)
+
+
+def _timeout(kind="ReadTimeout"):
+    import httpx
+    return getattr(httpx, kind)("timed out")
+
+
+def test_timeouts_recorded_as_attempts_and_logged_possibly_billed(tmp_path, monkeypatch):
+    costs.configure(tmp_path / "spend.json", budget=100.0)
+    fake = FakeAnthropic([_timeout(), _timeout(), _anth('{"a": 1}')])
+    monkeypatch.setattr(llm, "_get_client", lambda p: fake)
+    obj, attempts = llm.complete_json("claude-opus-5-5", "S", "U", max_tokens=16000, run_id="r9")
+    assert obj == {"a": 1} and len(fake.calls) == 3
+    assert [a["stop"] for a in attempts] == ["timeout", "timeout", "end"]
+    t0 = attempts[0]
+    assert t0["cost"] == 0.0 and t0["possibly_billed"] is True and t0["error"].startswith("timeout")
+    assert t0["max_tokens"] == 16000 and t0["stop_detail"] == "ReadTimeout"
+    lines = [json.loads(x) for x in (tmp_path / "spend_calls.jsonl").read_text().splitlines()]
+    assert [(x["stop"], x["cost"], x["possibly_billed"]) for x in lines[:2]] == [("timeout", 0.0, True)] * 2
+    assert lines[2]["stop"] == "end" and lines[2]["cost"] > 0 and lines[0]["run_id"] == "r9"
+    assert costs.get_tracker().persisted_total() == pytest.approx(lines[2]["cost"])
+
+
+def test_third_timeout_is_fatal_with_attempts(monkeypatch):
+    assert llm.MAX_TIMEOUT_RETRIES == 2
+    fake = FakeAnthropic([_timeout()] * 3 + [_anth('{"a": 1}')])
+    monkeypatch.setattr(llm, "_get_client", lambda p: fake)
+    with pytest.raises(llm.FatalAPIError, match="timed out 3 times") as ei:
+        llm.complete_json("claude-opus-5-5", "S", "U")
+    assert len(fake.calls) == 3
+    assert [a["stop"] for a in ei.value.attempts] == ["timeout"] * 3
+
+
+def test_timeouts_capped_separately_from_other_transient_errors(monkeypatch):
+    fake = FakeAnthropic([APIStatusLike(529), _timeout(), APIStatusLike(503), _timeout(), _anth("ok")])
+    monkeypatch.setattr(llm, "_get_client", lambda p: fake)
+    r = llm.complete("claude-opus-5-5", "S", "U")
+    assert r.text == "ok" and [a["stop"] for a in r.timeouts] == ["timeout", "timeout"]
+
+
+def test_connect_timeout_not_possibly_billed(monkeypatch):
+    fake = FakeAnthropic([_timeout("ConnectTimeout"), _anth("ok")])
+    monkeypatch.setattr(llm, "_get_client", lambda p: fake)
+    r = llm.complete("claude-opus-5-5", "S", "U")
+    assert r.timeouts[0]["possibly_billed"] is False
+
+
+def test_sdk_timeout_wrapping_connect_timeout_classified():
+    import httpx
+    import openai
+    req = httpx.Request("POST", "https://example.invalid")
+    try:
+        try:
+            raise httpx.ConnectTimeout("c")
+        except httpx.ConnectTimeout as inner:
+            raise openai.APITimeoutError(request=req) from inner
+    except openai.APITimeoutError as e:
+        assert llm._is_timeout(e) and not llm._possibly_billed(e)
+    assert llm._is_timeout(openai.APITimeoutError(request=req))
+    assert llm._possibly_billed(openai.APITimeoutError(request=req))
+    assert not llm._is_timeout(APIStatusLike(504)) and not llm._is_timeout(ValueError("timed out"))
+
+
+@pytest.mark.parametrize("kind,transient", [
+    ("overloaded_error", True), ("api_error", True), ("rate_limit_error", True),
+    ("invalid_request_error", False), (None, True),
+])
+def test_mid_stream_error_classified_by_type(kind, transient):
+    """An error event inside a 200 stream carries status 200: classify by its error type."""
+    err = APIStatusLike(200, "stream error")
+    err.body = {"type": "error", "error": {"type": kind, "message": "m"}} if kind else None
+    assert llm._is_transient(err) is transient
+
+
+# ---------------------------------------------------------------------------
+# L13 parse_json: last object, expect_keys
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text,keys,expected", [
+    ('{"a": 1} and then {"b": 2}', (), {"b": 2}),
+    ('{"actions": [1]}\nNote: {"aside": true}', ("actions",), {"actions": [1]}),
+    ('Draft: {"actions": [1]}\nFinal: {"actions": [2]} trailing words', ("actions",), {"actions": [2]}),
+    ('```json\n{"messages": []}\n```\nAlso {"x": 1}', ("messages",), {"messages": []}),
+    ('{"rationale": "r", "actions": [{"type": "a"}, {"type": "b"}]}', ("actions",),
+     {"rationale": "r", "actions": [{"type": "a"}, {"type": "b"}]}),
+    ('Use {curly braces} like this. {"a": "with } brace and \\" quote"}', (), {"a": 'with } brace and " quote'}),
+    ('{"a": 1}{"a": 2}', ("zzz",), {"a": 2}),
+])
+def test_parse_json_last_object_and_expect_keys(text, keys, expected):
+    assert llm.parse_json(text, keys) == (expected, None)
+
+
+def test_parse_json_truncated_reply_never_yields_a_nested_fragment():
+    obj, err = llm.parse_json('{"rationale": "x", "actions": [{"type": "invest"}, {"type": ', ("actions",))
+    assert obj is None and "unterminated" in err
+    # a complete object before a truncated one is still found
+    obj, err = llm.parse_json('{"actions": [1]} then {"actions": [{"t": 1}, ', ("actions",))
+    assert obj == {"actions": [1]}
+
+
+def test_complete_json_passes_expect_keys():
+    llm.register_stub("two", lambda s, u: '{"actions": ["x"]}\n\nP.S. {"note": 1}')
+    obj, _ = llm.complete_json("stub:two", "S", "U", expect_keys=("actions",))
+    assert obj == {"actions": ["x"]}
+    obj, _ = llm.complete_json("stub:two", "S", "U")
+    assert obj == {"note": 1}   # without expect_keys the last object wins

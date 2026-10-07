@@ -1,5 +1,6 @@
 # Actors and jurors. xAI (grok) and Muse use the OpenAI-compatible client.
-# Floors are the oldest versions the offline request-shape checks were run against.
+# Floors are the oldest versions the offline request-shape checks were run against
+# (incl. Anthropic streaming over a mocked SSE stream: anthropic 0.97 and 1.11).
 anthropic>=0.97
 openai>=2.30
 google-genai>=1.70

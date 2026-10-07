@@ -17,7 +17,15 @@ run starts and a missing key at call time raises MissingKeyError.
 Failure handling (G5): transient API errors (rate limits, overload, 5xx,
 network) are retried with exponential backoff; non-transient API errors (and
 transient ones that outlast every retry) raise FatalAPIError, which the
-engine turns into a saved partial record and RunAborted.
+engine turns into a saved partial record and RunAborted. A request timeout is
+retried at most twice: each timed-out request is logged (cost 0, flagged
+"possibly billed", since the provider may have finished it) and reported to
+complete_json as an attempt with stop "timeout" (H4).
+
+Anthropic calls stream (messages.stream(...).get_final_message()): a long
+thinking reply then never hits a whole-request timeout or the SDK's
+non-streaming max_tokens limit; the read timeout applies between events.
+Other providers get a 1200 s request timeout.
 
 Every response is recorded in the cost tracker (core.costs) before it is
 returned, and the budget guard is checked before every paid call. complete()
@@ -29,7 +37,8 @@ everything billed as output including reasoning, reasoning_tokens the
 reasoning subset.
 
 Stop convention (normalised): "end", "max_tokens", "refusal", "safety",
-"other"; stop_detail carries the provider's own category/reason.
+"other" (plus "timeout" on attempt records); stop_detail carries the
+provider's own category/reason.
 """
 
 import inspect
@@ -40,7 +49,7 @@ import random
 import re
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
@@ -73,10 +82,9 @@ XAI_BASE_URL = "https://api.x.ai/v1"
 # reasoning for the logs. Depth is controlled with output_config.effort.
 ANTHROPIC_THINKING: Optional[Dict[str, Any]] = {"type": "adaptive", "display": "summarized"}
 
-# The Anthropic SDK refuses non-streaming requests above ~21.3k max_tokens (G4).
-ANTHROPIC_MAX_TOKENS = 21000
-# Cap for the one max_tokens-doubling retry on other providers.
-OTHER_MAX_TOKENS = 32000
+# Ceiling for the one max_tokens-doubling retry, every provider (H4: Anthropic
+# streams, so the SDK's ~21.3k non-streaming limit no longer applies).
+MAX_TOKENS_CAP = 32000
 
 # OpenAI reasoning summaries need a verified organisation; a 400 about them
 # switches them off for the rest of the process (L5).
@@ -90,8 +98,14 @@ COMPAT_EFFORT_SUPPORTED: Dict[str, bool] = {"xai": False, "muse": False}
 GEMINI_THINKING_LEVEL = {"minimal": "MINIMAL", "low": "LOW", "medium": "MEDIUM",
                          "high": "HIGH", "xhigh": "HIGH", "max": "HIGH"}
 
-# Per-request timeout. Long thinking replies take minutes; a dead connection must not hang a run.
-REQUEST_TIMEOUT_S = 300.0
+# Timeouts (H4). Long thinking replies take many minutes; a dead connection must
+# not hang a run. Non-streaming providers: the whole request. Anthropic streams:
+# connect, then the longest silence allowed between two stream events.
+REQUEST_TIMEOUT_S = 1200.0
+ANTHROPIC_CONNECT_TIMEOUT_S = 30.0
+ANTHROPIC_READ_TIMEOUT_S = 600.0
+# A timed-out request may still have run (and been billed): retry it at most twice.
+MAX_TIMEOUT_RETRIES = 2
 
 # Retries (L3): 8 attempts, exponential backoff from 2s capped at 120s, with jitter.
 MAX_ATTEMPTS = 8
@@ -102,13 +116,18 @@ TRANSIENT_STATUS = {408, 409, 425, 429}
 
 
 class FatalAPIError(RuntimeError):
-    """A provider error that retrying will not fix (bad request, auth, unknown model, quota, outage)."""
+    """
+    A provider error that retrying will not fix (bad request, auth, unknown model,
+    quota, outage, repeated timeouts). `attempts` holds the attempt records made
+    before it (complete_json's records, incl. timed-out requests), when known.
+    """
 
     def __init__(self, message: str, provider: str = "", model: str = "", status: Optional[int] = None):
         super().__init__(message)
         self.provider = provider
         self.model = model
         self.status = status
+        self.attempts: List[Dict[str, Any]] = []
 
 
 class MissingKeyError(FatalAPIError):
@@ -132,6 +151,8 @@ class LLMResponse:
     stop_detail: Optional[str] = None   # provider's own category / reason
     served_model: Optional[str] = None  # model id/version the provider reports
     max_tokens: int = 0
+    # Attempt records of requests that timed out before this one succeeded (H4).
+    timeouts: List[Dict[str, Any]] = field(default_factory=list)
 
 
 def _get(obj: Any, name: str, default: Any = None) -> Any:
@@ -228,8 +249,10 @@ def _get_client(provider: str) -> Any:
             return _clients[provider]
         if provider == "anthropic":
             import anthropic
+            # Streaming: the read timeout is the longest gap between events, not the whole reply.
             client = anthropic.Anthropic(api_key=_require(KEY_ENV["anthropic"]), max_retries=0,
-                                         timeout=REQUEST_TIMEOUT_S)
+                                         timeout=anthropic.Timeout(ANTHROPIC_READ_TIMEOUT_S,
+                                                                   connect=ANTHROPIC_CONNECT_TIMEOUT_S))
         elif provider == "openai":
             import openai
             client = openai.OpenAI(api_key=_require(KEY_ENV["openai"]), max_retries=0,
@@ -287,9 +310,6 @@ def _call_anthropic(client: Any, model: str, system: str, turns: List[Dict[str, 
     if cache_system:
         # 5-minute ephemeral cache: the seats of a stage are called together.
         block["cache_control"] = {"type": "ephemeral"}
-    if max_tokens > ANTHROPIC_MAX_TOKENS:
-        logger.warning(f"{model}: max_tokens {max_tokens} clamped to {ANTHROPIC_MAX_TOKENS} (non-streaming limit)")
-        max_tokens = ANTHROPIC_MAX_TOKENS
     kwargs: Dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,
@@ -302,12 +322,21 @@ def _call_anthropic(client: Any, model: str, system: str, turns: List[Dict[str, 
         kwargs["output_config"] = {"effort": effort}
     if temperature is not None:
         logger.debug(f"temperature ignored for {model}: sampling params are rejected with thinking on")
-    resp = client.messages.create(**kwargs)
+    # Streamed (H4). The last message_delta event is kept because anthropic 0.97's
+    # accumulator drops its stop_details and output_tokens_details; 1.x copies
+    # them into the final message, which wins when present.
+    last_delta: Any = None
+    with client.messages.stream(**kwargs) as stream:
+        for event in stream:
+            if _get(event, "type") == "message_delta":
+                last_delta = event
+        resp = stream.get_final_message()
 
     u = resp.usage
     cache_read = _get(u, "cache_read_input_tokens", 0)
     cache_write = _get(u, "cache_creation_input_tokens", 0)
-    details = _get(u, "output_tokens_details")
+    details = _get(u, "output_tokens_details") or _get(_get(last_delta, "usage"), "output_tokens_details")
+    stop_details = _get(resp, "stop_details") or _get(_get(last_delta, "delta"), "stop_details")
     content = resp.content or []
     thinking = [b.thinking for b in content if b.type == "thinking" and getattr(b, "thinking", "")]
     raw = resp.stop_reason
@@ -323,7 +352,7 @@ def _call_anthropic(client: Any, model: str, system: str, turns: List[Dict[str, 
         "raw_stop": raw,
         "stop": ANTHROPIC_STOP.get(raw, "other"),
         # stop_details is set only on refusals (e.g. "reasoning_extraction").
-        "stop_detail": _get(_get(resp, "stop_details"), "category") or (raw if raw not in ANTHROPIC_STOP else None),
+        "stop_detail": _get(stop_details, "category") or (raw if raw not in ANTHROPIC_STOP else None),
         "served_model": _get(resp, "model"),
         "max_tokens": max_tokens,
     }
@@ -565,10 +594,50 @@ def _is_quota(err: Exception) -> bool:
     return code == "insufficient_quota" or "insufficient_quota" in f"{err} {body}"
 
 
+# Error types an Anthropic stream can report mid-response (the HTTP status is already 200).
+STREAM_TRANSIENT_TYPES = {"overloaded_error", "api_error", "rate_limit_error", "timeout_error"}
+
+
+def _error_chain(err: BaseException) -> List[BaseException]:
+    """The error and its causes (SDK timeout errors wrap the HTTP library's)."""
+    chain: List[BaseException] = []
+    cur: Optional[BaseException] = err
+    while cur is not None and cur not in chain and len(chain) < 10:
+        chain.append(cur)
+        cur = cur.__cause__ or cur.__context__
+    return chain
+
+
+def _is_timeout(err: Exception) -> bool:
+    """A request that timed out: SDK APITimeoutError, or httpx/httpx2 Timeout* errors."""
+    if not _is_api_error(err):
+        return False
+    names = _class_names(err)
+    return "APITimeoutError" in names or "TimeoutException" in names
+
+
+def _possibly_billed(err: BaseException) -> bool:
+    """A connect timeout never reached the provider; any other timeout may have run to completion."""
+    return not any("ConnectTimeout" in [c.__name__ for c in type(e).__mro__] for e in _error_chain(err))
+
+
+def _stream_error_type(err: Exception) -> Optional[str]:
+    body = getattr(err, "body", None)
+    if isinstance(body, dict):
+        inner = body.get("error")
+        return inner.get("type") if isinstance(inner, dict) else body.get("type")
+    return None
+
+
 def _is_transient(err: Exception) -> bool:
     if _is_quota(err):
         return False
     status = _status(err)
+    if status is not None and 200 <= status < 300:
+        # An error event inside a 200 stream: classify by its error type; an
+        # unlabelled mid-stream failure is server-side, so retry it.
+        kind = _stream_error_type(err)
+        return kind is None or kind in STREAM_TRANSIENT_TYPES
     if status is not None:
         return status in TRANSIENT_STATUS or status >= 500
     if any(name in TRANSIENT_CLASSES for name in _class_names(err)):
@@ -601,9 +670,17 @@ def _backoff(attempt: int, err: Exception) -> float:
     return min(RETRY_CAP_S, RETRY_BASE_S * 2 ** attempt) * random.uniform(0.75, 1.0) + random.uniform(0, 1)
 
 
-def _with_retries(fn: Callable[[], Dict[str, Any]], provider: str, model: str) -> Dict[str, Any]:
+def _with_retries(fn: Callable[[], Dict[str, Any]], provider: str, model: str,
+                  on_timeout: Optional[Callable[[Exception, float], None]] = None) -> Dict[str, Any]:
+    """
+    Run fn, retrying transient errors up to MAX_ATTEMPTS attempts in all. A
+    timeout is reported to on_timeout(error, seconds) and retried at most
+    MAX_TIMEOUT_RETRIES times; the next one is fatal.
+    """
     label = f"{provider}/{model}"
+    timeouts = 0
     for attempt in range(MAX_ATTEMPTS):
+        start = time.monotonic()
         try:
             return fn()
         except (BudgetExceeded, FatalAPIError):
@@ -612,7 +689,14 @@ def _with_retries(fn: Callable[[], Dict[str, Any]], provider: str, model: str) -
             if not _is_api_error(e):
                 raise  # a bug in our own code: let the caller see it as-is
             status = _status(e)
-            if not _is_transient(e):
+            if _is_timeout(e):
+                timeouts += 1
+                if on_timeout is not None:
+                    on_timeout(e, time.monotonic() - start)
+                if timeouts > MAX_TIMEOUT_RETRIES:
+                    raise FatalAPIError(f"{label}: timed out {timeouts} times: {type(e).__name__}: {e}",
+                                        provider, model, status) from e
+            elif not _is_transient(e):
                 raise FatalAPIError(f"{label}: {type(e).__name__}: {e}", provider, model, status) from e
             if attempt == MAX_ATTEMPTS - 1:
                 raise FatalAPIError(f"{label}: gave up after {MAX_ATTEMPTS} attempts: {type(e).__name__}: {e}",
@@ -679,7 +763,27 @@ def complete(model: str, system: str, user: str, *, provider: Optional[str] = No
         tracker.check()  # every HTTP attempt is potentially paid
         return call(client, model, system, turns, max_tokens, temperature, effort, cache_system, cache_key)
 
-    out = _with_retries(attempt, provider, model)
+    timed_out: List[Dict[str, Any]] = []
+
+    def note_timeout(err: Exception, seconds: float) -> None:
+        # Unmeasured but possibly billed: logged at cost 0 with a flag (H4).
+        billed = _possibly_billed(err)
+        tracker.record(model, purpose, run_id, 0, 0, cost=0.0, provider=provider, stop="timeout",
+                       possibly_billed=billed)
+        timed_out.append({
+            "text": "", "thinking": None, "error": f"timeout: {type(err).__name__}: {err}"[:300],
+            "stop": "timeout", "stop_detail": type(err).__name__, "served_model": None,
+            "max_tokens": max_tokens, "input_tokens": 0, "output_tokens": 0, "cached_tokens": 0,
+            "reasoning_tokens": 0, "cost": 0.0, "latency_s": round(seconds, 3), "possibly_billed": billed,
+        })
+        logger.warning(f"{provider}/{model} [{purpose}]: request timed out after {seconds:.0f}s "
+                       f"({type(err).__name__}); possibly billed: {billed}")
+
+    try:
+        out = _with_retries(attempt, provider, model, on_timeout=note_timeout)
+    except FatalAPIError as e:
+        e.attempts = timed_out + e.attempts
+        raise
     latency = time.monotonic() - start
 
     cost = cost_of(model, out["input_tokens"], out["output_tokens"], out["cached_tokens"])
@@ -690,7 +794,7 @@ def complete(model: str, system: str, user: str, *, provider: Optional[str] = No
                     cached_tokens=out["cached_tokens"], reasoning_tokens=out["reasoning_tokens"],
                     cost=cost, thinking=out["thinking"], latency_s=latency,
                     raw_stop_reason=out["raw_stop"], stop=out["stop"], stop_detail=out["stop_detail"],
-                    served_model=out["served_model"], max_tokens=out["max_tokens"])
+                    served_model=out["served_model"], max_tokens=out["max_tokens"], timeouts=timed_out)
     tracker.record(model, purpose, run_id, r.input_tokens, r.output_tokens, r.cached_tokens,
                    r.reasoning_tokens, cost=cost, provider=provider, stop=r.stop)
     logger.debug(f"{provider}/{model} [{purpose}] in={r.input_tokens} (cached {r.cached_tokens}) "
@@ -699,57 +803,105 @@ def complete(model: str, system: str, user: str, *, provider: Optional[str] = No
     return r
 
 
-def parse_json(text: Optional[str]) -> Tuple[Optional[dict], Optional[str]]:
-    """Tolerant JSON-object extraction: plain, ```json fences, outermost {...}. Never raises."""
+def _brace_end(text: str, start: int) -> int:
+    """Index of the "}" closing the "{" at `start` (JSON string-aware), or -1 if it never closes."""
+    depth, in_str, esc = 0, False, False
+    for j in range(start, len(text)):
+        ch = text[j]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return j
+    return -1
+
+
+def parse_json(text: Optional[str], expect_keys: Iterable[str] = ()) -> Tuple[Optional[dict], Optional[str]]:
+    """
+    Tolerant JSON-object extraction; never raises. Decodes a top-level object at
+    each "{" (inside ```json fences or prose alike, skipping objects nested in one
+    already decoded) and returns the LAST one, preferring the last that has any of
+    `expect_keys` — a model that drafts, then corrects, or adds trailing text is
+    judged on its final object (L13).
+    """
     if not text or not text.strip():
         return None, "empty reply"
-    candidates = [text.strip()]
-    candidates += [m.strip() for m in re.findall(r"```(?:json|JSON)?\s*(.*?)```", text, re.DOTALL)]
-    start, end = text.find("{"), text.rfind("}")
-    if start != -1 and end > start:
-        candidates.append(text[start:end + 1])
-    last_err = "no JSON object found"
-    for c in candidates:
+    try:
+        whole = json.loads(text.strip())
+    except (ValueError, RecursionError):
+        whole = None
+    if whole is not None and not isinstance(whole, dict):
+        last_err = f"expected a JSON object, got {type(whole).__name__}"
+    else:
+        last_err = "no JSON object found"
+    found: List[dict] = []
+    i = text.find("{")
+    while i != -1:
+        end = _brace_end(text, i)
+        if end == -1:
+            last_err = "invalid JSON: unterminated object"
+            if text[i + 1:].lstrip()[:1] in ('"', "}"):
+                # A JSON object never closed (reply cut off): every later "{" is
+                # nested inside it, and a nested fragment must not pass for the reply.
+                break
+            i = text.find("{", i + 1)  # a stray brace in prose
+            continue
         try:
-            obj = json.loads(c)
+            obj = json.loads(text[i:end + 1])
         except (ValueError, RecursionError) as e:
             last_err = f"invalid JSON: {e}"
+            i = text.find("{", i + 1)
             continue
         if isinstance(obj, dict):
-            return obj, None
-        last_err = f"expected a JSON object, got {type(obj).__name__}"
-    return None, last_err
-
-
-def _max_tokens_cap(model: str, provider: Optional[str]) -> int:
-    try:
-        p = resolve_provider(model, provider)
-    except ValueError:
-        p = ""
-    return ANTHROPIC_MAX_TOKENS if p == "anthropic" else OTHER_MAX_TOKENS
+            found.append(obj)
+        i = text.find("{", end + 1)
+    if not found:
+        return None, last_err
+    keys = set(expect_keys or ())
+    preferred = [o for o in found if keys & set(o)] if keys else []
+    return (preferred or found)[-1], None
 
 
 def complete_json(model: str, system: str, user: str, *,
                   validate: Optional[Callable[[dict], Optional[str]]] = None, retries: int = 2,
-                  **kw: Any) -> Tuple[Optional[dict], List[Dict[str, Any]]]:
+                  expect_keys: Iterable[str] = (), **kw: Any) -> Tuple[Optional[dict], List[Dict[str, Any]]]:
     """
     complete() + parse_json() + validate(). An unusable reply is re-asked with a
     corrective turn up to `retries` times; a reply cut off at max_tokens is
-    instead re-asked once, unchanged, with max_tokens doubled (capped); a refusal
-    or safety stop ends the call at once. Returns (obj or None, attempts) with one
-    record per attempt. Parse/validation failures never raise; budget and
-    FatalAPIError do.
+    instead re-asked once, unchanged, with max_tokens doubled (capped at
+    MAX_TOKENS_CAP); corrective turns after that use the base max_tokens again
+    (L12). A refusal or safety stop ends the call at once. `expect_keys` is passed
+    to parse_json (e.g. ("actions",)). Returns (obj or None, attempts) with one
+    record per attempt, timed-out requests included (stop "timeout").
+    Parse/validation failures never raise; budget and FatalAPIError do (the
+    error's .attempts then holds the records so far).
     """
     attempts: List[Dict[str, Any]] = []
     history: List[Dict[str, str]] = list(kw.pop("history", None) or [])
-    max_tokens = int(kw.pop("max_tokens", 4000))
-    cap = _max_tokens_cap(model, kw.get("provider"))
+    base_tokens = int(kw.pop("max_tokens", 4000))
+    max_tokens = base_tokens
+    expect = tuple(expect_keys or ())
     grown = False
     corrections = 0
     prompt = user
     while True:
-        r = complete(model, system, prompt, history=history, max_tokens=max_tokens, **kw)
-        obj, err = parse_json(r.text)
+        try:
+            r = complete(model, system, prompt, history=history, max_tokens=max_tokens, **kw)
+        except FatalAPIError as e:
+            e.attempts = attempts + e.attempts
+            raise
+        attempts.extend(r.timeouts)
+        obj, err = parse_json(r.text, expect)
         if obj is not None and validate is not None:
             try:
                 err = validate(obj)
@@ -773,11 +925,12 @@ def complete_json(model: str, system: str, user: str, *,
         if r.stop in ("refusal", "safety"):
             return None, attempts  # re-asking a refusal only invites another
         if r.stop == "max_tokens":
-            bigger = min(cap, max_tokens * 2)
+            bigger = min(MAX_TOKENS_CAP, max_tokens * 2)
             if grown or bigger <= max_tokens:
                 return None, attempts  # a corrective turn cannot fix a truncation
             grown, max_tokens = True, bigger
             continue  # same prompt, more room
+        max_tokens = base_tokens  # the doubled cap is for the one re-ask only (L12)
         if corrections >= retries:
             return None, attempts
         corrections += 1

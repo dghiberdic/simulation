@@ -77,3 +77,28 @@ def test_budget_guard(tmp_path):
         CostTracker(f, budget=5.0).check()
     t.set_budget(None)
     t.check()
+
+
+def test_possibly_billed_timeout_logged_but_not_counted(tmp_path):
+    """H4: a timed-out request is logged at cost 0 with a flag; the ledger total is untouched."""
+    import json
+    f = tmp_path / "spend.json"
+    t = CostTracker(f)
+    t.record("claude-opus-5-5", "actor", "r", 0, 0, cost=0.0, provider="anthropic", stop="timeout",
+             possibly_billed=True)
+    assert not f.exists()   # nothing measured, nothing added to the guard's total
+    rec = json.loads(t.calls_file.read_text().splitlines()[0])
+    assert rec["stop"] == "timeout" and rec["cost"] == 0.0 and rec["possibly_billed"] is True
+    t.record("claude-opus-5-5", "actor", "r", 1000, 0)
+    lines = [json.loads(x) for x in t.calls_file.read_text().splitlines()]
+    assert [x["possibly_billed"] for x in lines] == [True, False]
+    assert t.persisted_total() == pytest.approx(0.004)
+
+
+def test_overshoot_note_states_one_stage_bound():
+    """D5: README text for the parallel overshoot bound, priced at the highest rates on file."""
+    note = CostTracker().overshoot_note(concurrency=5, prompt_tokens=50_000, output_tokens=32_000)
+    per = (50_000 * 10.0 + 32_000 * 50.0) / 1e6
+    assert f"${5 * per:.2f}" in note and f"${per:.2f} each" in note
+    assert "one stage of calls" in note and "possibly_billed" in note
+    assert "checked first" in note
