@@ -101,4 +101,12 @@ def test_overshoot_note_states_one_stage_bound():
     per = (50_000 * 10.0 + 32_000 * 50.0) / 1e6
     assert f"${5 * per:.2f}" in note and f"${per:.2f} each" in note
     assert "one stage of calls" in note and "possibly_billed" in note
-    assert "checked first" in note
+    assert "checked first" in note and "broken streams" in note
+
+
+def test_budget_exceeded_carries_attempts_list():
+    """L16: core.llm attaches complete_json's attempts to the error; default empty."""
+    e = BudgetExceeded("guard")
+    assert e.attempts == [] and str(e) == "guard"
+    e.attempts = [{"stop": "end"}]
+    assert BudgetExceeded("other").attempts == []

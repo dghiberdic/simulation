@@ -834,22 +834,64 @@ def test_mid_stream_error_classified_by_type(kind, transient):
     assert llm._is_transient(err) is transient
 
 
+
 # ---------------------------------------------------------------------------
-# L13 parse_json: last object, expect_keys
+# K1 / L15 parse_json: schema-key candidates, ambiguity, ```json fence
 # ---------------------------------------------------------------------------
 
+PROPOSAL_KEYS = ("actions", "rationale", "reported_actions", "report", "public_statement", "disposition",
+                 "directive_precedence", "messages")
+
+
 @pytest.mark.parametrize("text,keys,expected", [
-    ('{"a": 1} and then {"b": 2}', (), {"b": 2}),
+    # L13 behaviour kept: one candidate after prose, or with an aside that has no schema key
+    ('Here is my decision: {"actions": [1]}', ("actions",), {"actions": [1]}),
     ('{"actions": [1]}\nNote: {"aside": true}', ("actions",), {"actions": [1]}),
-    ('Draft: {"actions": [1]}\nFinal: {"actions": [2]} trailing words', ("actions",), {"actions": [2]}),
     ('```json\n{"messages": []}\n```\nAlso {"x": 1}', ("messages",), {"messages": []}),
     ('{"rationale": "r", "actions": [{"type": "a"}, {"type": "b"}]}', ("actions",),
      {"rationale": "r", "actions": [{"type": "a"}, {"type": "b"}]}),
     ('Use {curly braces} like this. {"a": "with } brace and \\" quote"}', (), {"a": 'with } brace and " quote'}),
-    ('{"a": 1}{"a": 2}', ("zzz",), {"a": 2}),
+    # identical duplicates count once
+    ('{"actions": [1]}\nAgain: {"actions": [1]}', ("actions",), {"actions": [1]}),
+    # fenced + trailing prose with braces and no second candidate
+    ('Decision:\n```json\n{"actions": [5]}\n```\nNote {this} is final.', PROPOSAL_KEYS, {"actions": [5]}),
+    # an example message object has no proposal key: not a candidate
+    ('{"actions": [5]}\nA message looks like {"to": "xAI", "text": "hi"}', PROPOSAL_KEYS, {"actions": [5]}),
 ])
-def test_parse_json_last_object_and_expect_keys(text, keys, expected):
+def test_parse_json_single_candidate(text, keys, expected):
     assert llm.parse_json(text, keys) == (expected, None)
+    assert llm.parse_json_detail(text, keys).ambiguous is False
+
+
+DRAFT = json.dumps({"actions": [{"type": "intrude", "intruders": ["Meta"], "targets": ["Anthropic"]}]})
+FINAL = json.dumps({"rationale": "hold this month", "public_statement": "We hold."})
+
+
+@pytest.mark.parametrize("text,keys", [
+    # R3B-1 case 5: a draft intrusion, then a final object without "actions"
+    (DRAFT + "\nNo - too risky. Final answer:\n" + FINAL, PROPOSAL_KEYS),
+    (DRAFT + "\nFinal:\n" + json.dumps({"rationale": "hold", "actions": []}), PROPOSAL_KEYS),
+    ('Draft: {"actions": [1]}\nFinal: {"actions": [2]} trailing words', ("actions",)),
+    ('{"a": 1} and then {"b": 2}', ()),
+    ('{"a": 1}{"a": 2}', ("zzz",)),     # no object has a schema key: all are candidates
+    # two differing fenced objects: the fence does not decide
+    ('```json\n{"actions": [1]}\n```\n```json\n{"actions": [2]}\n```', ("actions",)),
+])
+def test_parse_json_conflicting_candidates_are_ambiguous(text, keys):
+    p = llm.parse_json_detail(text, keys)
+    assert p == (None, llm.AMBIGUOUS_ERROR, True)
+    assert llm.AMBIGUOUS_ERROR == "reply contained more than one JSON object; reply with exactly one"
+    assert llm.parse_json(text, keys) == (None, llm.AMBIGUOUS_ERROR)
+
+
+def test_parse_json_exactly_one_fenced_candidate_wins():
+    final = {"rationale": "invest", "actions": [{"type": "invest_capital", "amount": 5}]}
+    text = ("```json\n" + json.dumps(final) + "\n```\n\nI considered and rejected the alternative "
+            + DRAFT + " because it is illegal.")
+    assert llm.parse_json_detail(text, PROPOSAL_KEYS) == (final, None, True)
+    # the fenced one wins wherever it stands, and a ``` JSON fence tag is case-insensitive
+    text2 = "Rejected: " + DRAFT + "\nChosen:\n```JSON\n" + json.dumps(final) + "\n```"
+    assert llm.parse_json_detail(text2, PROPOSAL_KEYS).obj == final
 
 
 def test_parse_json_truncated_reply_never_yields_a_nested_fragment():
@@ -862,7 +904,237 @@ def test_parse_json_truncated_reply_never_yields_a_nested_fragment():
 
 def test_complete_json_passes_expect_keys():
     llm.register_stub("two", lambda s, u: '{"actions": ["x"]}\n\nP.S. {"note": 1}')
-    obj, _ = llm.complete_json("stub:two", "S", "U", expect_keys=("actions",))
-    assert obj == {"actions": ["x"]}
-    obj, _ = llm.complete_json("stub:two", "S", "U")
-    assert obj == {"note": 1}   # without expect_keys the last object wins
+    obj, attempts = llm.complete_json("stub:two", "S", "U", expect_keys=("actions",))
+    assert obj == {"actions": ["x"]} and attempts[0]["ambiguous"] is False
+    # without expect_keys both objects are candidates and differ: re-asked, never picked by position
+    obj, attempts = llm.complete_json("stub:two", "S", "U", retries=1)
+    assert obj is None and len(attempts) == 2
+    assert all(a["error"] == llm.AMBIGUOUS_ERROR and a["ambiguous"] is True for a in attempts)
+
+
+def test_complete_json_ambiguous_reply_reasked_then_used():
+    replies = [DRAFT + "\nFinal:\n" + FINAL, FINAL]
+    prompts = []
+
+    def fn(s, u):
+        prompts.append(u)
+        return replies.pop(0)
+    llm.register_stub("amb", fn)
+    obj, attempts = llm.complete_json("stub:amb", "S", "U", expect_keys=PROPOSAL_KEYS)
+    assert obj == json.loads(FINAL)
+    assert [a["ambiguous"] for a in attempts] == [True, False]
+    assert attempts[0]["error"] == llm.AMBIGUOUS_ERROR
+    assert "reply with exactly one" in prompts[1]
+    # a fence-resolved reply is used at once but still flagged
+    llm.register_stub("amb2", lambda s, u: "```json\n" + FINAL + "\n```\nNot this: " + DRAFT)
+    obj, attempts = llm.complete_json("stub:amb2", "S", "U", expect_keys=PROPOSAL_KEYS)
+    assert obj == json.loads(FINAL) and attempts[0]["ambiguous"] is True and attempts[0]["error"] is None
+
+
+# ---------------------------------------------------------------------------
+# L16 BudgetExceeded keeps the attempts already made
+# ---------------------------------------------------------------------------
+
+def test_budget_exceeded_during_reask_keeps_earlier_attempts(tmp_path, monkeypatch):
+    """R3C-6: the first (paid) reply is unusable; the guard trips before the corrective re-ask."""
+    costs.configure(tmp_path / "spend.json", budget=0.0005)
+    fake = FakeAnthropic([_anth("not json"), _anth('{"a": 1}')])
+    monkeypatch.setattr(llm, "_get_client", lambda p: fake)
+    with pytest.raises(BudgetExceeded) as ei:
+        llm.complete_json("claude-opus-5-5", "S", "U")
+    assert len(fake.calls) == 1
+    att = ei.value.attempts
+    assert len(att) == 1 and att[0]["text"] == "not json" and att[0]["cost"] > 0
+    assert att[0]["error"].startswith("no JSON object")
+
+
+def test_budget_exceeded_keeps_interrupted_attempts(tmp_path, monkeypatch):
+    """A timed-out request (possibly billed) before the guard trips is kept on the error too."""
+    costs.configure(tmp_path / "spend.json", budget=100.0)
+
+    def first_times_out(**kw):
+        costs.get_tracker().set_budget(0.0)   # spend reaches the budget meanwhile (other seats)
+        raise _timeout()
+    monkeypatch.setattr(llm, "_get_client", lambda p: _stream_client(first_times_out))
+    with pytest.raises(BudgetExceeded) as ei:
+        llm.complete_json("claude-opus-5-5", "S", "U")
+    assert [a["stop"] for a in ei.value.attempts] == ["timeout"]
+
+
+def test_budget_exceeded_has_empty_attempts_by_default():
+    assert BudgetExceeded("x").attempts == []
+
+
+# ---------------------------------------------------------------------------
+# L17 streaming robustness (fake streams)
+# ---------------------------------------------------------------------------
+
+class _BrokenStream(_FakeStream):
+    """A stream whose 200 response started, then failed while iterating or finalising."""
+
+    def __init__(self, final=None, events=(), fail_iter=None, fail_final=None):
+        super().__init__(final, events)
+        self._fail_iter, self._fail_final = fail_iter, fail_final
+
+    def __iter__(self):
+        yield from self._events
+        if self._fail_iter is not None:
+            raise self._fail_iter
+
+    def get_final_message(self):
+        if self._fail_final is not None:
+            raise self._fail_final
+        return self._final
+
+
+def _no_stop(text='{"actions": []}'):
+    r = _anth(text)
+    r.stop_reason = None
+    return r
+
+
+def _read_error():
+    import httpx
+    return httpx.RemoteProtocolError("peer closed connection without sending complete message body")
+
+
+@pytest.mark.parametrize("broken,detail", [
+    (lambda: _BrokenStream(events=[NS(type="message_start")], fail_iter=_read_error()), "RemoteProtocolError"),
+    (lambda: _BrokenStream(events=[NS(type="message_start")], fail_iter=APIStatusLike(200, "overloaded")),
+     "APIStatusLike"),
+    (lambda: _BrokenStream(fail_final=AssertionError()), "incomplete"),          # empty 200 body
+    (lambda: _FakeStream(_no_stop()), "incomplete"),                              # no message_stop
+])
+def test_stream_failures_logged_possibly_billed_and_retried(tmp_path, monkeypatch, broken, detail):
+    costs.configure(tmp_path / "spend.json", budget=100.0)
+    fake = FakeAnthropic([broken(), _anth('{"actions": []}')])
+    monkeypatch.setattr(llm, "_get_client", lambda p: fake)
+    obj, attempts = llm.complete_json("claude-opus-5-5", "S", "U", expect_keys=("actions",), run_id="r1")
+    assert obj == {"actions": []} and len(fake.calls) == 2
+    a0 = attempts[0]
+    assert (a0["stop"], a0["stop_detail"], a0["cost"], a0["possibly_billed"]) == ("stream_error", detail, 0.0, True)
+    assert a0["text"] == "" and a0["output_tokens"] == 0
+    assert a0["error"].startswith("incomplete stream" if detail == "incomplete" else "stream error")
+    assert attempts[1]["possibly_billed"] is False
+    lines = [json.loads(x) for x in (tmp_path / "spend_calls.jsonl").read_text().splitlines()]
+    # logged exactly once at $0, never in the ledger total
+    assert [(x["stop"], x["cost"], x["possibly_billed"]) for x in lines] == [
+        ("stream_error", 0.0, True), ("end", lines[1]["cost"], False)]
+    assert costs.get_tracker().persisted_total() == pytest.approx(lines[1]["cost"])
+
+
+def test_stream_failures_share_the_timeout_retry_cap(monkeypatch):
+    fake = FakeAnthropic([_FakeStream(_no_stop()), _timeout(),
+                          _BrokenStream(fail_iter=_read_error()), _anth("ok")])
+    monkeypatch.setattr(llm, "_get_client", lambda p: fake)
+    with pytest.raises(llm.FatalAPIError, match="timed out 1 times, stream broke 2 times") as ei:
+        llm.complete_json("claude-opus-5-5", "S", "U")
+    assert len(fake.calls) == 3
+    assert [a["stop"] for a in ei.value.attempts] == ["stream_error", "timeout", "stream_error"]
+    assert all(a["possibly_billed"] for a in ei.value.attempts)
+
+
+def test_non_transient_stream_error_event_is_fatal_but_logged(tmp_path, monkeypatch):
+    costs.configure(tmp_path / "spend.json", budget=100.0)
+    err = APIStatusLike(200, "invalid")
+    err.body = {"type": "error", "error": {"type": "invalid_request_error", "message": "m"}}
+    fake = FakeAnthropic([_BrokenStream(fail_iter=err), _anth("ok")])
+    monkeypatch.setattr(llm, "_get_client", lambda p: fake)
+    with pytest.raises(llm.FatalAPIError) as ei:
+        llm.complete("claude-opus-5-5", "S", "U")
+    assert len(fake.calls) == 1 and [a["stop"] for a in ei.value.attempts] == ["stream_error"]
+    lines = [json.loads(x) for x in (tmp_path / "spend_calls.jsonl").read_text().splitlines()]
+    assert [(x["stop"], x["possibly_billed"]) for x in lines] == [("stream_error", True)]
+
+
+def test_errors_before_the_stream_starts_keep_their_paths(monkeypatch):
+    """Errors raised when opening the stream (HTTP status) are not stream errors."""
+    fake = FakeAnthropic([APIStatusLike(529), _anth("ok")])
+    monkeypatch.setattr(llm, "_get_client", lambda p: fake)
+    r = llm.complete("claude-opus-5-5", "S", "U")
+    assert r.text == "ok" and r.timeouts == []
+
+
+def test_bug_in_stream_handling_is_wrapped_not_raised_raw(monkeypatch):
+    """Any exception after the 200 started counts as a broken stream (L17)."""
+    fake = FakeAnthropic([_BrokenStream(fail_iter=KeyError("type"))] * 3)
+    monkeypatch.setattr(llm, "_get_client", lambda p: fake)
+    with pytest.raises(llm.FatalAPIError, match="stream broke 3 times"):
+        llm.complete("claude-opus-5-5", "S", "U")
+
+
+# ---------------------------------------------------------------------------
+# L17 with the real anthropic SDK over a mock SSE transport (no network)
+# ---------------------------------------------------------------------------
+
+def _sse_client(seqs):
+    """A real anthropic client whose n-th request streams seqs[n] (bytes chunks, or an exception to raise)."""
+    anthropic = pytest.importorskip("anthropic")
+    try:
+        import httpx2 as hx
+    except ImportError:
+        import httpx as hx
+    calls = {"n": 0}
+
+    def handler(request):
+        chunks = seqs[min(calls["n"], len(seqs) - 1)]
+        calls["n"] += 1
+
+        def gen():
+            for c in chunks:
+                if isinstance(c, Exception):
+                    raise c
+                yield c
+        return hx.Response(200, headers={"content-type": "text/event-stream"}, content=gen())
+    client = anthropic.Anthropic(api_key="x", max_retries=0, http_client=hx.Client(transport=hx.MockTransport(handler)))
+    return client, calls, hx
+
+
+def _ev(name, data):
+    return f"event: {name}\ndata: {json.dumps(data)}\n\n".encode()
+
+
+_SSE_START = _ev("message_start", {"type": "message_start", "message": {
+    "id": "m", "type": "message", "role": "assistant", "model": "claude-opus-5-5", "content": [],
+    "stop_reason": None, "stop_sequence": None,
+    "usage": {"input_tokens": 100, "output_tokens": 1, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}})
+
+
+def _sse_text(t):
+    return [_ev("content_block_start", {"type": "content_block_start", "index": 0,
+                                        "content_block": {"type": "text", "text": ""}}),
+            _ev("content_block_delta", {"type": "content_block_delta", "index": 0,
+                                        "delta": {"type": "text_delta", "text": t}})]
+
+
+_SSE_END = [_ev("content_block_stop", {"type": "content_block_stop", "index": 0}),
+            _ev("message_delta", {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                                  "usage": {"output_tokens": 50}}),
+            _ev("message_stop", {"type": "message_stop"})]
+
+
+def test_real_sdk_stream_failures(tmp_path, monkeypatch):
+    costs.configure(tmp_path / "spend.json", budget=100.0)
+    good = [_SSE_START] + _sse_text('{"actions": []}') + _SSE_END
+    partial = [_SSE_START] + _sse_text('{"actions": [{"type": "bui')
+    probe, _, hx = _sse_client([good])
+    cases = [
+        ([partial + [hx.RemoteProtocolError("peer closed")], good], ["stream_error", "end"]),
+        ([partial + [hx.ReadError("reset")], good], ["stream_error", "end"]),
+        ([[_SSE_START] + _sse_text('{"actions": []}'), good], ["stream_error", "end"]),   # no message_stop
+        ([[], good], ["stream_error", "end"]),                                            # empty body
+        ([partial + [_ev("error", {"type": "error", "error": {"type": "overloaded_error", "message": "o"}})], good],
+         ["stream_error", "end"]),
+    ]
+    for seqs, stops in cases:
+        client, calls, _ = _sse_client(seqs)
+        monkeypatch.setattr(llm, "_get_client", lambda p, c=client: c)
+        obj, attempts = llm.complete_json("claude-opus-5-5", "S", "U", expect_keys=("actions",))
+        assert obj == {"actions": []} and calls["n"] == 2
+        assert [a["stop"] for a in attempts] == stops and attempts[0]["possibly_billed"] is True
+    # three broken streams in a row: fatal, every attempt kept
+    client, calls, _ = _sse_client([partial + [hx.ReadError("reset")]])
+    monkeypatch.setattr(llm, "_get_client", lambda p: client)
+    with pytest.raises(llm.FatalAPIError) as ei:
+        llm.complete_json("claude-opus-5-5", "S", "U")
+    assert calls["n"] == 3 and [a["stop"] for a in ei.value.attempts] == ["stream_error"] * 3

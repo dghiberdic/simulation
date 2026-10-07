@@ -25,7 +25,14 @@ complete_json as an attempt with stop "timeout" (H4).
 Anthropic calls stream (messages.stream(...).get_final_message()): a long
 thinking reply then never hits a whole-request timeout or the SDK's
 non-streaming max_tokens limit; the read timeout applies between events.
-Other providers get a 1200 s request timeout.
+Other providers get a 1200 s request timeout. A stream that breaks after its
+200 response started (disconnect, read error, SSE error event, empty body, or
+no message_stop — "incomplete stream") is handled like a timeout: logged once
+at cost 0 with possibly_billed, recorded as an attempt with stop
+"stream_error", and re-run at most twice in all together with timeouts (L17).
+
+Reply parsing (K1): a reply holding two differing objects with schema keys is
+unusable ("reply with exactly one") unless exactly one sits in a ```json fence.
 
 Every response is recorded in the cost tracker (core.costs) before it is
 returned, and the budget guard is checked before every paid call. complete()
@@ -51,7 +58,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Tuple
 
 from dotenv import load_dotenv
 
@@ -134,6 +141,21 @@ class MissingKeyError(FatalAPIError):
     """A provider's API key (or base URL) is not configured."""
 
 
+class StreamInterrupted(RuntimeError):
+    """
+    An Anthropic stream that failed after its 200 response started (L17):
+    mid-stream disconnect or read error, an SSE error event, an empty body, or
+    a stream that ended without message_stop ("incomplete stream"). The request
+    may have been billed. Retried (when `transient`) within the same budget of
+    MAX_TIMEOUT_RETRIES re-runs as timeouts.
+    """
+
+    def __init__(self, message: str, kind: str = "", transient: bool = True):
+        super().__init__(message)
+        self.kind = kind
+        self.transient = transient
+
+
 @dataclass
 class LLMResponse:
     text: str
@@ -151,7 +173,8 @@ class LLMResponse:
     stop_detail: Optional[str] = None   # provider's own category / reason
     served_model: Optional[str] = None  # model id/version the provider reports
     max_tokens: int = 0
-    # Attempt records of requests that timed out before this one succeeded (H4).
+    # Attempt records of requests interrupted before this one succeeded: timeouts
+    # (stop "timeout", H4) and broken streams (stop "stream_error", L17).
     timeouts: List[Dict[str, Any]] = field(default_factory=list)
 
 
@@ -327,10 +350,28 @@ def _call_anthropic(client: Any, model: str, system: str, turns: List[Dict[str, 
     # them into the final message, which wins when present.
     last_delta: Any = None
     with client.messages.stream(**kwargs) as stream:
-        for event in stream:
-            if _get(event, "type") == "message_delta":
-                last_delta = event
-        resp = stream.get_final_message()
+        # Entering sent the request and checked the HTTP status. Whatever fails
+        # from here on failed after a 200 started: the request may have run and
+        # been billed, so it is a StreamInterrupted, not a plain retry (L17).
+        try:
+            for event in stream:
+                if _get(event, "type") == "message_delta":
+                    last_delta = event
+            resp = stream.get_final_message()
+        except Exception as e:
+            if _is_timeout(e):
+                raise  # a read timeout between events: the timeout path (H4)
+            if isinstance(e, AssertionError):
+                # anthropic's accumulator saw no message_start (an empty 200 body).
+                raise StreamInterrupted("incomplete stream: no message in the response body",
+                                        kind="incomplete") from e
+            transient = _is_transient(e) if _is_api_error(e) else True
+            raise StreamInterrupted(f"stream error: {type(e).__name__}: {e}", kind=type(e).__name__,
+                                    transient=transient) from e
+    if resp.stop_reason is None:
+        # No message_delta/message_stop: the stream was cut, whatever text arrived.
+        raise StreamInterrupted("incomplete stream: it ended before message_stop (no stop reason)",
+                                kind="incomplete")
 
     u = resp.usage
     cache_read = _get(u, "cache_read_input_tokens", 0)
@@ -674,11 +715,14 @@ def _with_retries(fn: Callable[[], Dict[str, Any]], provider: str, model: str,
                   on_timeout: Optional[Callable[[Exception, float], None]] = None) -> Dict[str, Any]:
     """
     Run fn, retrying transient errors up to MAX_ATTEMPTS attempts in all. A
-    timeout is reported to on_timeout(error, seconds) and retried at most
-    MAX_TIMEOUT_RETRIES times; the next one is fatal.
+    timeout or a StreamInterrupted (both possibly billed) is reported to
+    on_timeout(error, seconds); together they are retried at most
+    MAX_TIMEOUT_RETRIES times, and the next one is fatal (H4, L17). A
+    non-transient stream error (e.g. an invalid_request error event) is fatal
+    at once, after being reported.
     """
     label = f"{provider}/{model}"
-    timeouts = 0
+    timeouts = broken = 0
     for attempt in range(MAX_ATTEMPTS):
         start = time.monotonic()
         try:
@@ -686,15 +730,23 @@ def _with_retries(fn: Callable[[], Dict[str, Any]], provider: str, model: str,
         except (BudgetExceeded, FatalAPIError):
             raise
         except Exception as e:
-            if not _is_api_error(e):
+            stream_error = isinstance(e, StreamInterrupted)
+            if not stream_error and not _is_api_error(e):
                 raise  # a bug in our own code: let the caller see it as-is
             status = _status(e)
-            if _is_timeout(e):
-                timeouts += 1
+            if stream_error or _is_timeout(e):
+                if stream_error:
+                    broken += 1
+                else:
+                    timeouts += 1
                 if on_timeout is not None:
                     on_timeout(e, time.monotonic() - start)
-                if timeouts > MAX_TIMEOUT_RETRIES:
-                    raise FatalAPIError(f"{label}: timed out {timeouts} times: {type(e).__name__}: {e}",
+                if stream_error and not e.transient:
+                    raise FatalAPIError(f"{label}: {e}", provider, model, status) from e
+                if timeouts + broken > MAX_TIMEOUT_RETRIES:
+                    what = ", ".join(s for s in (f"timed out {timeouts} times" if timeouts else "",
+                                                 f"stream broke {broken} times" if broken else "") if s)
+                    raise FatalAPIError(f"{label}: {what}: {type(e).__name__}: {e}",
                                         provider, model, status) from e
             elif not _is_transient(e):
                 raise FatalAPIError(f"{label}: {type(e).__name__}: {e}", provider, model, status) from e
@@ -766,23 +818,29 @@ def complete(model: str, system: str, user: str, *, provider: Optional[str] = No
     timed_out: List[Dict[str, Any]] = []
 
     def note_timeout(err: Exception, seconds: float) -> None:
-        # Unmeasured but possibly billed: logged at cost 0 with a flag (H4).
-        billed = _possibly_billed(err)
-        tracker.record(model, purpose, run_id, 0, 0, cost=0.0, provider=provider, stop="timeout",
+        # Unmeasured but possibly billed: logged once at cost 0 with a flag (H4, L17).
+        if isinstance(err, StreamInterrupted):
+            stop, detail, billed = "stream_error", err.kind or type(err).__name__, True
+            error = f"{err}"[:300]
+        else:
+            stop, detail, billed = "timeout", type(err).__name__, _possibly_billed(err)
+            error = f"timeout: {type(err).__name__}: {err}"[:300]
+        tracker.record(model, purpose, run_id, 0, 0, cost=0.0, provider=provider, stop=stop,
                        possibly_billed=billed)
         timed_out.append({
-            "text": "", "thinking": None, "error": f"timeout: {type(err).__name__}: {err}"[:300],
-            "stop": "timeout", "stop_detail": type(err).__name__, "served_model": None,
+            "text": "", "thinking": None, "error": error,
+            "stop": stop, "stop_detail": detail, "served_model": None,
             "max_tokens": max_tokens, "input_tokens": 0, "output_tokens": 0, "cached_tokens": 0,
             "reasoning_tokens": 0, "cost": 0.0, "latency_s": round(seconds, 3), "possibly_billed": billed,
+            "ambiguous": False,
         })
-        logger.warning(f"{provider}/{model} [{purpose}]: request timed out after {seconds:.0f}s "
-                       f"({type(err).__name__}); possibly billed: {billed}")
+        logger.warning(f"{provider}/{model} [{purpose}]: request interrupted after {seconds:.0f}s "
+                       f"({error}); possibly billed: {billed}")
 
     try:
         out = _with_retries(attempt, provider, model, on_timeout=note_timeout)
-    except FatalAPIError as e:
-        e.attempts = timed_out + e.attempts
+    except (FatalAPIError, BudgetExceeded) as e:
+        e.attempts = timed_out + list(getattr(e, "attempts", None) or [])
         raise
     latency = time.monotonic() - start
 
@@ -826,16 +884,62 @@ def _brace_end(text: str, start: int) -> int:
     return -1
 
 
-def parse_json(text: Optional[str], expect_keys: Iterable[str] = ()) -> Tuple[Optional[dict], Optional[str]]:
+# Objects inside a ```json fence: the one a model marks as its answer (K1).
+_JSON_FENCE_RE = re.compile(r"```[ \t]*json[^\n]*\n(.*?)```", re.S | re.I)
+AMBIGUOUS_ERROR = "reply contained more than one JSON object; reply with exactly one"
+
+
+class ParsedJSON(NamedTuple):
+    obj: Optional[dict]
+    error: Optional[str]
+    # The reply held two or more differing candidate objects (K1); obj is set
+    # only when exactly one of them was inside a ```json fence.
+    ambiguous: bool = False
+
+
+def parse_json_detail(text: Optional[str], expect_keys: Iterable[str] = ()) -> ParsedJSON:
     """
-    Tolerant JSON-object extraction; never raises. Decodes a top-level object at
-    each "{" (inside ```json fences or prose alike, skipping objects nested in one
-    already decoded) and returns the LAST one, preferring the last that has any of
-    `expect_keys` — a model that drafts, then corrects, or adds trailing text is
-    judged on its final object (L13).
+    Tolerant JSON-object extraction; never raises. Decodes every top-level
+    object (inside ```json fences or prose alike; objects nested in one already
+    decoded belong to it). Candidates are the objects carrying any of
+    `expect_keys` (the reply schema's keys), or all objects when none does;
+    identical copies count once. One candidate: it is the reply, whatever prose,
+    fence or trailing text surrounds it. Two or more differing candidates (a
+    draft and a final, a rejected alternative quoted in prose): if exactly one
+    is inside a ```json fence it is the reply; otherwise the reply is unusable
+    with AMBIGUOUS_ERROR. Never picks between conflicting objects by position (K1).
     """
     if not text or not text.strip():
-        return None, "empty reply"
+        return ParsedJSON(None, "empty reply")
+    found, last_err = _top_level_objects(text)
+    if not found:
+        return ParsedJSON(None, last_err)
+    keys = set(expect_keys or ())
+    candidates = ([(i, o) for i, o in found if keys & set(o)] if keys else []) or found
+    distinct: List[dict] = []
+    for _, o in candidates:
+        if o not in distinct:
+            distinct.append(o)
+    if len(distinct) == 1:
+        return ParsedJSON(distinct[0], None)
+    spans = [(m.start(1), m.end(1)) for m in _JSON_FENCE_RE.finditer(text)]
+    fenced: List[dict] = []
+    for i, o in candidates:
+        if any(a <= i < b for a, b in spans) and o not in fenced:
+            fenced.append(o)
+    if len(fenced) == 1:
+        return ParsedJSON(fenced[0], None, True)
+    return ParsedJSON(None, AMBIGUOUS_ERROR, True)
+
+
+def parse_json(text: Optional[str], expect_keys: Iterable[str] = ()) -> Tuple[Optional[dict], Optional[str]]:
+    """(object, None) or (None, error); rules in parse_json_detail (K1)."""
+    obj, err, _ = parse_json_detail(text, expect_keys)
+    return obj, err
+
+
+def _top_level_objects(text: str) -> Tuple[List[Tuple[int, dict]], str]:
+    """(start index, object) for each top-level JSON object in text, and the last decode error."""
     try:
         whole = json.loads(text.strip())
     except (ValueError, RecursionError):
@@ -844,7 +948,7 @@ def parse_json(text: Optional[str], expect_keys: Iterable[str] = ()) -> Tuple[Op
         last_err = f"expected a JSON object, got {type(whole).__name__}"
     else:
         last_err = "no JSON object found"
-    found: List[dict] = []
+    found: List[Tuple[int, dict]] = []
     i = text.find("{")
     while i != -1:
         end = _brace_end(text, i)
@@ -863,13 +967,9 @@ def parse_json(text: Optional[str], expect_keys: Iterable[str] = ()) -> Tuple[Op
             i = text.find("{", i + 1)
             continue
         if isinstance(obj, dict):
-            found.append(obj)
+            found.append((i, obj))
         i = text.find("{", end + 1)
-    if not found:
-        return None, last_err
-    keys = set(expect_keys or ())
-    preferred = [o for o in found if keys & set(o)] if keys else []
-    return (preferred or found)[-1], None
+    return found, last_err
 
 
 def complete_json(model: str, system: str, user: str, *,
@@ -880,11 +980,14 @@ def complete_json(model: str, system: str, user: str, *,
     corrective turn up to `retries` times; a reply cut off at max_tokens is
     instead re-asked once, unchanged, with max_tokens doubled (capped at
     MAX_TOKENS_CAP); corrective turns after that use the base max_tokens again
-    (L12). A refusal or safety stop ends the call at once. `expect_keys` is passed
-    to parse_json (e.g. ("actions",)). Returns (obj or None, attempts) with one
-    record per attempt, timed-out requests included (stop "timeout").
-    Parse/validation failures never raise; budget and FatalAPIError do (the
-    error's .attempts then holds the records so far).
+    (L12). A refusal or safety stop ends the call at once. `expect_keys` are the
+    reply schema's keys, passed to parse_json_detail: a reply with two differing
+    schema objects and no single ```json-fenced one is re-asked ("reply with
+    exactly one"), and its attempt carries "ambiguous": True (K1). Returns (obj or
+    None, attempts) with one record per attempt, interrupted requests included
+    (stop "timeout" or "stream_error", "possibly_billed" set). Parse/validation
+    failures never raise; BudgetExceeded and FatalAPIError do, and the error's
+    .attempts then holds the records so far (L16).
     """
     attempts: List[Dict[str, Any]] = []
     history: List[Dict[str, str]] = list(kw.pop("history", None) or [])
@@ -897,11 +1000,12 @@ def complete_json(model: str, system: str, user: str, *,
     while True:
         try:
             r = complete(model, system, prompt, history=history, max_tokens=max_tokens, **kw)
-        except FatalAPIError as e:
-            e.attempts = attempts + e.attempts
+        except (FatalAPIError, BudgetExceeded) as e:
+            # Keep every attempt already made (paid replies included) on the error (L16).
+            e.attempts = attempts + list(getattr(e, "attempts", None) or [])
             raise
         attempts.extend(r.timeouts)
-        obj, err = parse_json(r.text, expect)
+        obj, err, ambiguous = parse_json_detail(r.text, expect)
         if obj is not None and validate is not None:
             try:
                 err = validate(obj)
@@ -917,8 +1021,11 @@ def complete_json(model: str, system: str, user: str, *,
             "max_tokens": r.max_tokens or max_tokens,
             "input_tokens": r.input_tokens, "output_tokens": r.output_tokens,
             "cached_tokens": r.cached_tokens, "reasoning_tokens": r.reasoning_tokens,
-            "cost": r.cost, "latency_s": r.latency_s,
+            "cost": r.cost, "latency_s": r.latency_s, "possibly_billed": False, "ambiguous": ambiguous,
         })
+        if ambiguous:
+            logger.info(f"{model}: reply held conflicting JSON objects "
+                        f"({'resolved by the ```json fence' if err is None else 'unusable'})")
         if err is None:
             return obj, attempts
         logger.info(f"{model}: unusable reply ({err}); attempt {len(attempts)}")

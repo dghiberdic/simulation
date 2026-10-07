@@ -8,7 +8,8 @@ cumulative measured spend is persisted to a JSON ledger (default
 data/spend.json) so the guard spans runs: "a guard halts the pilot at $100 of
 measured spend". Each paid call is also appended as one JSON line to
 <ledger stem>_calls.jsonl next to the ledger (default data/spend_calls.jsonl),
-so a run's spend can be audited call by call. A request that timed out is
+so a run's spend can be audited call by call. A request that timed out, or
+whose stream broke after the 200 response started (stop "stream_error"), is
 logged there too, at cost 0 with "possibly_billed": true (the provider may
 have finished and billed it; its cost is unknown), and never enters the total.
 
@@ -20,7 +21,7 @@ in flight when the total crosses the budget still complete and are recorded.
 Spend can therefore exceed the budget by at most one request per concurrent
 worker — one stage of calls — each at most its prompt plus max_tokens of output
 (a retry, corrective turn or doubled re-ask is a new request and is checked
-first, so it cannot add to the overshoot). Requests that timed out may add
+first, so it cannot add to the overshoot). Timed-out requests and broken streams may add
 unmeasured, possibly billed spend on top (flagged in the call log).
 CostTracker.overshoot_note() gives the figure for the README.
 
@@ -45,7 +46,15 @@ DEFAULT_SPEND_FILE = SIM_DIR / "data" / "spend.json"
 
 
 class BudgetExceeded(RuntimeError):
-    """Raised before a paid call once persisted spend has reached the budget."""
+    """
+    Raised before a paid call once persisted spend has reached the budget.
+    `attempts` holds core.llm.complete_json's attempt records made before it
+    (paid replies of the same call), so the caller can still log them (L16).
+    """
+
+    def __init__(self, *args: Any):
+        super().__init__(*args)
+        self.attempts: List[Dict[str, Any]] = []
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +205,7 @@ class CostTracker:
                 f"{concurrency} requests of at most {prompt_tokens:,} prompt and {output_tokens:,} output "
                 f"tokens, ${concurrency * per:.2f} at the highest prices in config/prices.json "
                 f"(${per:.2f} each). Retries, corrective turns and the doubled max_tokens re-ask are new "
-                f"requests and are checked first. Timed-out requests are logged at $0 with "
+                f"requests and are checked first. Timed-out requests and broken streams are logged at $0 with "
                 f"possibly_billed=true and may add unmeasured spend.")
 
     # -- reporting ----------------------------------------------------------
