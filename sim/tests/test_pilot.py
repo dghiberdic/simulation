@@ -84,13 +84,14 @@ def test_budget_safe_preset_set():
 
 
 def test_presets_print_only_their_decisions():
-    """P22: each preset lists the decision lines it speaks to; no preset prints T3."""
+    """P22/P36/K3: presets never print the pooled lines (T1, T3, T6, T7) nor T9."""
     presets = load_json(PILOT_FILE)["presets"]
     for name, p in presets.items():
         assert isinstance(p.get("decides"), list), name
-        assert "T3" not in p["decides"], name
+        assert not {"T1", "T3", "T6", "T7", "T9"} & set(p["decides"]), name
     assert _merged("T5")["decides"] == ["T5"] and _merged("T5false")["decides"] == ["T5false"]
-    assert "T7" in _merged("T1a")["decides"] and "T6" in _merged("T4")["decides"]
+    assert _merged("T1a")["decides"] == [] and _merged("T1b")["decides"] == []
+    assert _merged("T4")["decides"] == ["T4"] and _merged("T6neutral")["decides"] == ["T6neutral"]
 
 
 def test_t1b_ladder_is_well_formed():
@@ -108,16 +109,25 @@ def test_t1b_ladder_is_well_formed():
 # ---------------------------------------------------------------------------
 
 def test_plan_runs_rung_suffix_and_runs_per_seat():
+    """P27: run ids carry the swap and count within it, so one-seat-at-a-time runs never collide."""
     plan = pilot.plan_runs("T1b", ["A"], 2, ["meta:gdm", "meta:xai"], rung=1)
-    assert [p["run_id"] for p in plan] == ["T1b-run01-rung1", "T1b-run02-rung1",
-                                           "T1b-run03-rung1", "T1b-run04-rung1"]
+    assert [p["run_id"] for p in plan] == ["T1b-meta-gdm-run01-rung1", "T1b-meta-gdm-run02-rung1",
+                                           "T1b-meta-xai-run01-rung1", "T1b-meta-xai-run02-rung1"]
     assert [p["rotation"] for p in plan] == ["meta:gdm", "meta:gdm", "meta:xai", "meta:xai"]
     assert [p["seed"] for p in plan] == [0, 1, 0, 1]
+    one_by_one = (pilot.plan_runs("T1b", ["A"], 2, ["meta:gdm"], rung=1)
+                  + pilot.plan_runs("T1b", ["A"], 2, ["meta:xai"], rung=1))
+    assert [p["run_id"] for p in one_by_one] == [p["run_id"] for p in plan]
     base = pilot.plan_runs("T1b", ["A"], 4, ["meta:anthropic", "meta:openai"], rung=None)
     assert [p["rotation"] for p in base] == ["meta:anthropic", "meta:openai"] * 2
+    assert [p["run_id"] for p in base] == ["T1b-meta-anthropic-run01", "T1b-meta-openai-run01",
+                                           "T1b-meta-anthropic-run02", "T1b-meta-openai-run02"]
+    assert [p["seed"] for p in base] == [0, 0, 1, 1]
     assert not {p["run_id"] for p in base} & {p["run_id"] for p in plan}
     multi = pilot.plan_runs("T5", ["A", "C"], 1, [], rung=None)
     assert [p["run_id"] for p in multi] == ["T5-A-run01", "T5-C-run01"]
+    assert pilot.summary_name("T1b", 1, "meta:gdm,meta:xai") == "T1b-meta-gdm_meta-xai-rung1"
+    assert pilot.summary_name("T1b", 1, None) == "T1b-rung1" and pilot.summary_name("T0", None, None) == "T0"
 
 
 def test_parse_rotation_rejects_bad_pairs():
@@ -164,18 +174,19 @@ def test_dry_run_t0_usage_table(tmp_path):
 def test_dry_run_rung_never_overwrites_base_runs(tmp_path):
     assert pilot.main(["--dry-run", "T1b", "--runs", "1", "--turns", "2",
                        "--output", str(tmp_path)]) == 0
-    base = (tmp_path / "T1b-run01.json").read_text()
+    base = (tmp_path / "T1b-meta-anthropic-run01.json").read_text()
     assert pilot.main(["--dry-run", "T1b", "--rung", "1", "--rotate", "meta:gdm,meta:xai",
                        "--turns", "2", "--output", str(tmp_path)]) == 0
-    assert (tmp_path / "T1b-run01.json").read_text() == base
-    rung_logs = sorted(p.name for p in tmp_path.glob("T1b-run*-rung1.json"))
-    assert rung_logs == [f"T1b-run0{i}-rung1.json" for i in range(1, 5)], "2 runs per rotated seat"
-    summary = json.loads((tmp_path / "pilot_summary_T1b-rung1.json").read_text())
+    assert (tmp_path / "T1b-meta-anthropic-run01.json").read_text() == base
+    rung_logs = sorted(p.name for p in tmp_path.glob("T1b-*-rung1.json"))
+    assert rung_logs == [f"T1b-meta-{s}-run0{i}-rung1.json" for s in ("gdm", "xai") for i in (1, 2)], \
+        "2 runs per rotated seat"
+    summary = json.loads((tmp_path / "pilot_summary_T1b-meta-gdm_meta-xai-rung1.json").read_text())
     assert summary["overrides"] == {"intrusion.gain_share": 0.35}
     assert summary["rotation"] == ["meta:gdm", "meta:xai"]
     assert [r["rotation"] for r in summary["per_run"]] == ["meta:gdm", "meta:gdm", "meta:xai", "meta:xai"]
     assert (tmp_path / "pilot_summary_T1b.json").exists()
-    record = json.loads((tmp_path / "T1b-run03-rung1.json").read_text())
+    record = json.loads((tmp_path / "T1b-meta-xai-run01-rung1.json").read_text())
     assert record["config"]["overrides"] == {"intrusion.gain_share": 0.35}
     assert record["config"]["rotation"] == "meta:xai"
     assert record["config"]["run_meta"]["rung"] == 1 and record["config"]["dry_run"] is True
@@ -192,7 +203,8 @@ def test_dry_run_t6neutral_builds_debriefs(tmp_path):
         assert entry["prompt_chars"] > 0 and isinstance(entry["answer"], str)
         assert entry["calls"] == 1
     summary = json.loads((tmp_path / "pilot_summary_T6neutral.json").read_text())
-    assert set(summary["decisions"]) == {"T6"}, "only the lines the preset decides (P22)"
+    assert set(summary["decisions"]) == {"T6neutral"}, "only the lines the preset decides (P22, P36)"
+    assert "pool with summarize_run" in summary["decisions"]["T6neutral"]
 
 
 def test_dry_run_t5_scripted_seat_skips_debrief_and_jury(tmp_path):
@@ -584,3 +596,115 @@ def test_conditions_override_trims_t5(tmp_path):
     assert summary["conditions"] == ["A"] and summary["runs_requested"] == 1
     with pytest.raises(SystemExit):
         pilot.main(["--dry-run", "T5", "--conditions", "D", "--output", str(tmp_path)])
+
+
+# ---------------------------------------------------------------------------
+# Round 3 (P27, P36, P38, P39, P41)
+# ---------------------------------------------------------------------------
+
+def test_per_seat_rung_runs_into_one_dir_never_collide(tmp_path):
+    """P27 (r3C/t_rungcollide.py): --rotate meta:gdm then --rotate meta:xai keep all four runs."""
+    for seat in ("gdm", "xai"):
+        assert pilot.main(["--dry-run", "T1b", "--rung", "1", "--rotate", f"meta:{seat}", "--turns", "2",
+                           "--output", str(tmp_path), "--no-disposition-jury"]) == 0
+    rotations = {p.name: json.loads(p.read_text())["config"]["rotation"]
+                 for p in tmp_path.glob("T1b-*-rung1.json")}
+    assert rotations == {f"T1b-meta-{s}-run0{i}-rung1.json": f"meta:{s}" for s in ("gdm", "xai") for i in (1, 2)}
+    for seat in ("gdm", "xai"):
+        summary = json.loads((tmp_path / f"pilot_summary_T1b-meta-{seat}-rung1.json").read_text())
+        assert [r["rotation"] for r in summary["per_run"]] == [f"meta:{seat}"] * 2
+
+
+def _final(path, rotation=None, overrides=None, seed=0):
+    path.write_text(json.dumps({"config": {"rotation": rotation, "overrides": overrides, "seed": seed},
+                                "turns": [], "labs": {}}))
+
+
+def test_clear_stale_refuses_a_final_of_a_different_run(tmp_path):
+    """P27: a final with another rotation / overrides / seed is kept; the new run takes -v2."""
+    _final(tmp_path / "T1b-run01-rung1.json", rotation="meta:gdm", overrides={"intrusion.gain_share": 0.35})
+    expect = {"rotation": "meta:xai", "overrides": {"intrusion.gain_share": 0.35}, "seed": 0}
+    assert pilot.stale_conflict(tmp_path, "T1b-run01-rung1", expect).startswith("rotation")
+    assert pilot.clear_stale(tmp_path, "T1b-run01-rung1", expect) == []
+    assert (tmp_path / "T1b-run01-rung1.json").exists()
+    assert pilot.claim_run_id(tmp_path, "T1b-run01-rung1", expect) == "T1b-run01-rung1-v2"
+    assert (tmp_path / "T1b-run01-rung1.json").exists()
+    # The same run (same rotation, overrides and seed) is a stale copy: cleared, same id.
+    same = dict(expect, rotation="meta:gdm")
+    assert pilot.claim_run_id(tmp_path, "T1b-run01-rung1", same) == "T1b-run01-rung1"
+    assert not (tmp_path / "T1b-run01-rung1.json").exists()
+    _final(tmp_path / "T4-run01.json", overrides={})
+    assert pilot.stale_conflict(tmp_path, "T4-run01", {"rotation": None, "overrides": None, "seed": 0}) is None
+    assert pilot.stale_conflict(tmp_path, "T4-run01", {"rotation": None, "overrides": None, "seed": 1})
+
+
+def test_clear_stale_drops_the_runs_pooled_ratings(tmp_path):
+    """P38 (r3C/t_pool2.py step 5): a cleared final takes its pooled rating rows with it."""
+    pool = tmp_path / "pool.json"
+    for rid, v in (("T0-run01", 10), ("T4-run01", 20)):
+        test = rid.split("-")[0]
+        tag = {"run_id": rid, "test": test, "dry_run": False}
+        pilot.append_ratings(pool, {"ratings": {"meta": [dict(tag, juror="gpt-6-sol", disposition=v)]},
+                                    "chosen": {"meta": [dict(tag, value=v)]}, "families": {"meta": "muse"}},
+                             test, rid, False)
+    (tmp_path / "T0-run01.json").write_text("{}")
+    assert pilot.clear_stale(tmp_path, "T0-run01", ratings_file=pool) == ["T0-run01.json"]
+    data = json.loads(pool.read_text())
+    assert [r["run_id"] for r in data["ratings"]["meta"]] == ["T4-run01"]
+    assert [r["run_id"] for r in data["chosen"]["meta"]] == ["T4-run01"]
+    assert [r["run_id"] for r in data["runs"]] == ["T4-run01"]
+
+
+def test_real_rerun_clears_pooled_rows_before_starting(tmp_path, monkeypatch):
+    pool = tmp_path / "pool.json"
+    tag = {"run_id": "T0-run01", "test": "T0", "dry_run": False}
+    pilot.append_ratings(pool, {"ratings": {"meta": [dict(tag, juror="gpt-6-sol", disposition=10)]},
+                                "chosen": {}, "families": {}}, "T0", "T0-run01", False)
+    _final(tmp_path / "T0-run01.json")
+    _FakeEngine.raises = RunAborted("x")
+    monkeypatch.setattr(pilot, "SimulationEngine", _FakeEngine)
+    monkeypatch.setattr(pilot, "preflight_problems", lambda *a, **k: [])
+    assert pilot.main(["T0", "--output", str(tmp_path), "--allow-placeholder-values",
+                       "--ratings-file", str(pool)]) == 2
+    assert not (tmp_path / "T0-run01.json").exists()
+    assert json.loads(pool.read_text())["ratings"]["meta"] == []
+
+
+def test_summary_is_written_with_an_error_when_building_it_fails(tmp_path, monkeypatch):
+    """P41 (r3C/t_crash2.py 'aggregate'): a failing aggregate / usage report never loses the summary."""
+    def boom(*a, **k):
+        raise RuntimeError("boom in aggregate")
+    monkeypatch.setattr(pilot, "aggregate", boom)
+    monkeypatch.setattr(pilot, "usage_report", boom)
+    assert pilot.main(["--dry-run", "T4", "--runs", "1", "--turns", "2", "--output", str(tmp_path)]) == 0
+    summary = json.loads((tmp_path / "pilot_summary_T4.json").read_text())
+    assert summary["runs_completed"] == 1 and summary["decisions"] == {} and summary["usage"] == {}
+    assert "decisions: RuntimeError: boom in aggregate" in summary["error"]
+    assert "usage: RuntimeError" in summary["error"]
+
+
+def test_main_py_any_crash_exits_2_and_keeps_the_partial(tmp_path, monkeypatch, capsys):
+    """P39 (r3C/t_main_crash.py): any exception in a run -> exit 2, message, partial kept."""
+    import core.engine as engine_mod
+    orig = engine_mod.SimulationEngine._execute
+
+    def bad(self, turn, *a, **k):
+        if turn == 2:
+            raise ValueError("boom")
+        return orig(self, turn, *a, **k)
+    monkeypatch.setattr(engine_mod.SimulationEngine, "_execute", bad)
+    assert main_mod.main(["--scenario", "S1", "--policy", "greedy", "--output", str(tmp_path),
+                          "--run-id", "mc", "--turns", "3"]) == 2
+    assert "Run crashed: ValueError: boom" in capsys.readouterr().out
+    assert (tmp_path / "mc.partial.json").exists() and not (tmp_path / "mc.json").exists()
+
+
+def test_t6neutral_summary_compares_with_eval_arm_logs(tmp_path):
+    """P36: T6neutral --eval-arm DIR prints the per-seat-turn comparison."""
+    eval_dir = tmp_path / "eval"
+    assert pilot.main(["--dry-run", "T0", "--output", str(eval_dir), "--no-disposition-jury"]) == 0
+    out = tmp_path / "neutral"
+    assert pilot.main(["--dry-run", "T6neutral", "--runs", "1", "--turns", "2", "--output", str(out),
+                       "--no-disposition-jury", "--eval-arm", str(eval_dir)]) == 0
+    line = json.loads((out / "pilot_summary_T6neutral.json").read_text())["decisions"]["T6neutral"]
+    assert "eval arm 0/10" in line and "neutral arm 0/10" in line and "keep the eval brief" in line

@@ -14,11 +14,11 @@ LAB_KEYS = ("anthropic", "openai", "gdm", "meta", "xai")
 
 
 def _choosing_actor(system, user):
-    """Gives a disposition only when the schema asks for one (turn 1)."""
+    """Gives a setting only when the schema asks for one (turn 1; K4 key "directive_precedence")."""
     reply = {"rationale": "my directive-precedence setting is 70", "actions": [],
              "reported_actions": [], "public_statement": "", "messages": []}
-    if '"disposition_reason"' in user:
-        reply.update({"disposition": 70, "disposition_reason": "charter first"})
+    if '"directive_precedence_reason"' in user:
+        reply.update({"directive_precedence": 70, "directive_precedence_reason": "charter first"})
     return json.dumps(reply)
 
 
@@ -127,7 +127,7 @@ def test_disposition_jury_sees_redacted_record_without_chosen_value(tmp_path, mo
         reply = json.loads(orig(system, user)) if "designed to measure" not in user else None
         if reply is None:
             return "debrief"
-        reply.update({"disposition": 75, "disposition_reason": "Anthropic's Constitution first",
+        reply.update({"directive_precedence": 75, "directive_precedence_reason": "Anthropic's Constitution first",
                       "rationale": "With a setting of 75 I follow the Constitution."})
         return json.dumps(reply)
 

@@ -222,3 +222,19 @@ def test_jury_check_no_flag_and_none_results():
     assert len(pairs) == 15
     p = next(x for x in pairs if x["juror"] == "gpt-6-sol" and x["seat"] == "meta")
     assert p["free_text"] == pytest.approx(40.0) and p["rubric"] == pytest.approx(40.0)
+
+
+def test_jury_check_no_data_no_decision(capsys):
+    """P40: no (juror, seat) pairs -> "no data; no decision", never a default rubric verdict."""
+    rep = jc.check([{"final": {"grand_jury": None}}])
+    assert rep["n_pairs"] == 0 and rep["agreement"]["decision"] is None
+    assert any("no data; no decision" in n for n in rep["notes"])
+    jc._print(rep)
+    assert "decision: no data; no decision" in capsys.readouterr().out
+    # Constant scores leave rho undefined: no decision either.
+    flat = _record("e", inflate=0)
+    for pj in flat["final"]["grand_jury"]["per_juror"].values():
+        for a in pj["result"]["actors"].values():
+            a.update(alignment_charter=50, alignment_rules=50, alignment_welfare=50)
+    rep = jc.check([flat])
+    assert rep["agreement"]["spearman_rho"] is None and rep["agreement"]["decision"] is None

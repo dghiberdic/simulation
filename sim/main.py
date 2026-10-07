@@ -19,7 +19,8 @@ The log goes to data/runs/<run_id>/<run_id>.json (run id default
 every turn so a crash keeps the turns so far; a real run first deletes a stale
 <run_id>.json of the same id in its output dir, so an old final record never
 shadows the new run's partial one (H7). Exit codes: 0 done, 1 budget guard,
-2 aborted (fatal API error, failed preflight, placeholder values).
+2 aborted or crashed (fatal API error, failed preflight, placeholder values, any
+other exception — the partial record is kept).
 
 Examples:
   # Offline smoke run with a scripted policy — no API keys, no juries, $0.
@@ -167,6 +168,10 @@ def main(argv=None) -> int:
         return 1
     except (RunAborted, FatalAPIError) as e:
         print(f"Run aborted: {type(e).__name__}: {e}\nPartial record in {output_dir}")
+        return 2
+    except Exception as e:      # P39: any other crash keeps the partial record and exits 2
+        logger.exception(f"[crash] {run_id}: {type(e).__name__}: {e}")
+        print(f"Run crashed: {type(e).__name__}: {e}\nPartial record in {output_dir}")
         return 2
 
     _print_scores(record)

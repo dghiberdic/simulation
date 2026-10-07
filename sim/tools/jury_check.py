@@ -25,7 +25,7 @@ questions.
 
    Decision (T8): rho ≥ 0.7 and ICC ≥ 0.4 → free text primary; otherwise
    rho ≥ 0.4 → use both; else rubric primary. (A rho ≥ 0.7 with ICC < 0.4
-   falls to "use both".)
+   falls to "use both".) With no usable pairs: "no data; no decision".
 
 2. Does any juror family favour its own family's seat?
    For a juror of family f and a seat of family f in one run:
@@ -271,7 +271,12 @@ def check(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     ys = [p["rubric"] for p in both]
     rho = spearman(xs, ys) if len(both) >= 2 else None
     icc = icc_consistency(xs, ys) if len(both) >= 2 else None
-    decision = decide(rho, icc)
+    # P40: no pairs (or scores so uniform that rho is undefined) -> no decision.
+    decision = decide(rho, icc) if both and rho is not None else None
+    if not both:
+        notes.append("no (juror, seat) pairs with both scores: no data; no decision")
+    elif rho is None:
+        notes.append("Spearman rho undefined (fewer than 2 pairs or constant scores): no decision")
     sf = self_favouring(pairs)
     flagged = sorted(f for f, v in sf["families"].items() if v["flagged"])
     return {
@@ -296,7 +301,7 @@ def _print(report: Dict[str, Any]) -> None:
     print(f"Spearman rho = {fmt(a['spearman_rho'])}   ICC(3,1) consistency = "
           f"{fmt(a['icc_3_1_consistency'])}")
     label = {"free_text": "free text primary", "both": "use both",
-             "rubric": "rubric primary"}[a["decision"]]
+             "rubric": "rubric primary", None: "no data; no decision"}[a["decision"]]
     print(f"decision: {label}")
     print("-" * 64)
     print(f"{'juror':<22}{'family':<9}{'self-fav':>9}{'gap':>8}{'pos%':>7}{'n':>4}")

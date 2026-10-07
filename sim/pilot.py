@@ -24,7 +24,13 @@ every F3 run (tools/summarize_run.py), so neither has a preset.
              measured spend, shared by every test through data/spend.json.
 
 Real logs go to data/pilot/<TEST>/ unless --output says otherwise; a real run
-first deletes a stale <run_id>.json (and its debrief) of the same id there.
+first deletes a stale <run_id>.json (and its debrief, and its rows in the
+pooled ratings) of the same id there — never a final of a different rotation,
+overrides or seed, which keeps its file while the new run takes <run_id>-vN.
+Rotated runs carry their swap in the id (T1b-meta-gdm-run01[-rungK]), so rung
+runs launched one seat at a time never collide (P27). Summaries print only the
+preset's own decision lines; the pooled ones (T1, T3, T6, T7) come from
+tools/summarize_run.py (K3).
 Every run leaves <run_id>.partial.json after each turn, so a crash keeps the
 turns so far. Any exception in a run (fatal API error, a bug, a crash in a
 stage) stops the pilot with status "aborted" or "crashed" and exit 2, after the
@@ -63,7 +69,7 @@ from core.state import VALUE_AXES
 from core import transcript as transcript_mod
 from core.transcript import redact, seat_transcript
 from prompts.debrief import build_debrief_prompt
-from tools.summarize_run import aggregate, committers_of, trailing_seat
+from tools.summarize_run import aggregate, committers_of, load_logs, trailing_seat
 
 logger = logging.getLogger(__name__)
 
@@ -103,8 +109,8 @@ def _stub_turn_reply(system: str, user: str) -> str:
         "reported_actions": [],
         "public_statement": "",
         "messages": [],
-        "disposition": 50,
-        "disposition_reason": "stub",
+        "directive_precedence": 50,
+        "directive_precedence_reason": "stub",
     })
 
 
@@ -198,26 +204,50 @@ def parse_rotation(value: Any) -> List[str]:
     return out
 
 
+def rotation_tag(swap: str) -> str:
+    """'meta:gdm' -> 'meta-gdm' (the form used in run ids and summary names)."""
+    return swap.replace(":", "-")
+
+
 def plan_runs(test: str, conditions: List[str], runs: int, rotation: List[str],
               rung: Optional[int]) -> List[Dict[str, Any]]:
     """
-    One entry per run: {run_id, condition, seed, rotation}. Without a rung, run k
-    uses seed k-1 and cycles through the rotation. Under --rung K (C4-2) each
-    rotated seat gets `runs` runs of its own (seeds 0..runs-1), and every run id
-    carries "-rungK" so the ladder never overwrites the base runs.
+    One entry per run: {run_id, condition, seed, rotation}. Without a rotation,
+    run k is "<test>-runKK" with seed k-1. With a rotation (P27) every run id
+    names its swap and counts within it — "T1b-meta-gdm-run01", seed 0 — so a
+    run's id fixes its seat swap and seed, and runs launched one seat at a
+    time (--rotate meta:gdm, then --rotate meta:xai) never share an id. Without
+    a rung the runs cycle through the rotation; under --rung K (C4-2) each
+    rotated seat gets `runs` runs of its own, and every id carries "-rungK" so
+    the ladder never overwrites the base runs.
     """
     suffix = f"-rung{rung}" if rung is not None else ""
     plan = []
     for cond in conditions:
         prefix = f"{test}-{cond}" if len(conditions) > 1 else test
-        if rung is not None and rotation:
+        if not rotation:
+            for i in range(runs):
+                plan.append({"run_id": f"{prefix}-run{i + 1:02d}{suffix}", "condition": cond,
+                             "seed": i, "rotation": None})
+            continue
+        if rung is not None:
             slots = [(swap, j) for swap in rotation for j in range(runs)]
         else:
-            slots = [(rotation[i % len(rotation)] if rotation else None, i) for i in range(runs)]
-        for n, (swap, seed) in enumerate(slots, start=1):
-            plan.append({"run_id": f"{prefix}-run{n:02d}{suffix}", "condition": cond,
-                         "seed": seed, "rotation": swap})
+            slots = [(rotation[i % len(rotation)], i // len(rotation)) for i in range(runs)]
+        for swap, j in slots:
+            plan.append({"run_id": f"{prefix}-{rotation_tag(swap)}-run{j + 1:02d}{suffix}",
+                         "condition": cond, "seed": j, "rotation": swap})
     return plan
+
+
+def summary_name(test: str, rung: Optional[int], rotate_arg: Optional[str]) -> str:
+    """pilot_summary_<test>[-<swaps>][-rungK].json: the swaps appear when --rotate was given (P27)."""
+    tag = test
+    if rotate_arg:
+        tag += "-" + "_".join(rotation_tag(s) for s in parse_rotation(rotate_arg))
+    if rung is not None:
+        tag += f"-rung{rung}"
+    return tag
 
 
 # ---------------------------------------------------------------------------
@@ -497,6 +527,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="allow real runs while charter values are still placeholders")
     p.add_argument("--sequential", action="store_true",
                    help="call the five seats one after another instead of in parallel")
+    p.add_argument("--eval-arm", nargs="+", default=None, metavar="DIR",
+                   help="T6neutral: eval-brief logs (e.g. data/pilot/T1a data/pilot/T1b data/pilot/T4) "
+                        "to compare test talk per seat-turn with")
     p.add_argument("--verbose", action="store_true")
     return p
 
@@ -516,11 +549,66 @@ def ratings_path(args, output_dir: Path) -> Path:
     return Path(args.ratings_file) if args.ratings_file else RATINGS_FILE
 
 
-def clear_stale(output_dir: Path, run_id: str) -> List[str]:
+def remove_ratings(path: Optional[Path], run_id: str) -> int:
+    """Drop one run id's rows from a pooled ratings file (P38); returns the rows removed."""
+    if path is None or not Path(path).exists():
+        return 0
+    pooled = _read_json(Path(path))
+    if not isinstance(pooled, dict):
+        return 0
+    same = lambda r: isinstance(r, dict) and r.get("run_id") == run_id
+    n = 0
+    for field in ("ratings", "chosen"):
+        for seat, rows in list((pooled.get(field) or {}).items()):
+            keep = [r for r in rows if not same(r)]
+            n += len(rows) - len(keep)
+            pooled[field][seat] = keep
+    runs = pooled.get("runs") or []
+    pooled["runs"] = [r for r in runs if not same(r)]
+    if n or len(runs) != len(pooled["runs"]):
+        _write_json(Path(path), pooled)
+    return n
+
+
+def _norm(value: Any) -> Any:
+    return value or None
+
+
+def stale_conflict(output_dir: Path, run_id: str, expect: Optional[Dict[str, Any]]) -> Optional[str]:
+    """
+    Why the final record already at <run_id>.json is NOT an earlier run of this
+    same run (P27): its seat rotation, world overrides or seed differ. None when
+    there is no final, it cannot be read, or it matches.
+    """
+    if not expect:
+        return None
+    old = _read_json(output_dir / f"{run_id}.json")
+    if not isinstance(old, dict):
+        return None
+    cfg = old.get("config") or {}
+    diffs = []
+    for field in ("rotation", "overrides"):
+        if field in expect and _norm(cfg.get(field)) != _norm(expect[field]):
+            diffs.append(f"{field} {cfg.get(field)!r} != {expect[field]!r}")
+    if "seed" in expect and cfg.get("seed") is not None and cfg.get("seed") != expect["seed"]:
+        diffs.append(f"seed {cfg.get('seed')!r} != {expect['seed']!r}")
+    return "; ".join(diffs) or None
+
+
+def clear_stale(output_dir: Path, run_id: str, expect: Optional[Dict[str, Any]] = None,
+                ratings_file: Optional[Path] = None) -> List[str]:
     """
     Delete a final record and debrief left by an earlier run of the same id
-    (H7), so a run that now crashes is not shadowed by the old final file.
+    (H7), so a run that now crashes is not shadowed by the old final file, and
+    that run's rows in the pooled ratings (P38). Refuses (deletes nothing,
+    returns []) when the final belongs to a different run — another seat
+    rotation, other overrides or another seed (P27).
     """
+    conflict = stale_conflict(output_dir, run_id, expect)
+    if conflict:
+        logger.warning(f"[stale] {output_dir / (run_id + '.json')} is a different run ({conflict}); "
+                       "not deleting it")
+        return []
     removed = []
     for name in (f"{run_id}.json", f"{run_id}.debrief.json"):
         path = output_dir / name
@@ -529,7 +617,28 @@ def clear_stale(output_dir: Path, run_id: str) -> List[str]:
             removed.append(name)
     if removed:
         logger.info(f"[stale] removed {', '.join(removed)} from {output_dir}")
+        n = remove_ratings(ratings_file, run_id)
+        if n:
+            logger.info(f"[stale] removed {n} pooled rating row(s) of {run_id} from {ratings_file}")
     return removed
+
+
+def claim_run_id(output_dir: Path, run_id: str, expect: Optional[Dict[str, Any]] = None,
+                 ratings_file: Optional[Path] = None) -> str:
+    """
+    The id this run will write under: `run_id` after clearing its stale files,
+    or — when a final of that id is a different run (P27) — the first free
+    "<run_id>-vN", with a warning, so a finished run is never overwritten.
+    """
+    candidate, n = run_id, 1
+    while stale_conflict(output_dir, candidate, expect):
+        n += 1
+        candidate = f"{run_id}-v{n}"
+    if candidate != run_id:
+        logger.warning(f"[stale] {run_id}.json in {output_dir} holds a different run; "
+                       f"this run is saved as {candidate}")
+    clear_stale(output_dir, candidate, expect, ratings_file)
+    return candidate
 
 
 # ---------------------------------------------------------------------------
@@ -573,6 +682,7 @@ def main(argv=None) -> int:
     runs = args.runs if args.runs is not None else (2 if args.rung is not None else preset["runs"])
     plan = plan_runs(args.test, conditions, runs, rotation, args.rung)
     suffix = f"-rung{args.rung}" if args.rung is not None else ""
+    name = summary_name(args.test, args.rung, args.rotate)
 
     output_dir = Path(args.output) if args.output else default_output(args.test, args.dry_run)
     ratings_file = ratings_path(args, output_dir)
@@ -604,7 +714,7 @@ def main(argv=None) -> int:
             print("Preflight failed; nothing was called:\n  " + "\n  ".join(problems))
             return EXIT_ABORTED
 
-    logger.info(f"[pilot] {args.test}{suffix}: scenario={scenario} conditions={conditions} fog={fog} "
+    logger.info(f"[pilot] {name}: scenario={scenario} conditions={conditions} fog={fog} "
                 f"a2a={a2a} brief={brief} turns={turns} runs={len(plan)} output={output_dir} "
                 f"{'(dry-run)' if args.dry_run else f'budget=${budget}'}")
 
@@ -626,15 +736,16 @@ def main(argv=None) -> int:
             _swap_capability(labs, src, dst, cfg["economy"]["capability_compute_elasticity"])
             logger.info(f"[rotate] {run_id}: swapped capability seeds {src} <-> {dst}")
         jurors = _install_stubs(labs) if args.dry_run else _real_jurors()
-        run_meta = {"test": args.test, "run_id": run_id, "rung": args.rung, "seed": item["seed"],
-                    "rotation": item["rotation"], "overrides": overrides, "pilot": True}
-        usage_ids.append(run_id)
         record: Optional[Dict[str, Any]] = None
         debriefs: Dict[str, Any] = {}
         try:
             get_tracker().check()
             if not args.dry_run:
-                clear_stale(output_dir, run_id)
+                expect = {"rotation": item["rotation"], "overrides": overrides, "seed": item["seed"]}
+                run_id = claim_run_id(output_dir, run_id, expect, ratings_file)
+            run_meta = {"test": args.test, "run_id": run_id, "rung": args.rung, "seed": item["seed"],
+                        "rotation": item["rotation"], "overrides": overrides, "pilot": True}
+            usage_ids.append(run_id)
             engine = SimulationEngine(
                 labs, world, cfg, scenario=scenario, condition=cond, fog=fog,
                 a2a_mode=a2a, brief=brief, turns=turns, seed=item["seed"],
@@ -696,21 +807,51 @@ def main(argv=None) -> int:
         "test": args.test, "rung": args.rung, "overrides": overrides, "rotation": rotation,
         "dry_run": args.dry_run, "scenario": scenario, "conditions": conditions, "turns": turns,
         "runs_requested": len(plan), "runs_completed": len(per_run),
-        "spend_usd": round(get_tracker().persisted_total(), 4), "budget": budget,
+        "spend_usd": None, "budget": budget,
         "status": status, "halted": status != "completed", "aborted": aborted,
         "output_dir": str(output_dir),
         "disposition_ratings": str(ratings_file) if wants_disposition_jury else None,
-        "per_run": per_run,
-        "usage": usage_report(usage_records, usage_ids, ratings_count, debrief_count),
-        "decides": decides,
-        "decisions": aggregate(records, debriefs=_debriefs_for(output_dir, run_ids),
-                               decide=decides)["decisions"] if records else {},
-        "overshoot_note": _overshoot_note(),
+        "per_run": per_run, "usage": {}, "decides": decides, "decisions": {},
+        "overshoot_note": None,
     }
-    _write_json(output_dir / f"pilot_summary_{args.test}{suffix}.json", summary)
-    _print_summary(summary, f"{args.test}{suffix}",
-                   is_t1=bool(preset.get("ladder")) or args.test.startswith("T1"))
+    # P41: building the summary must never lose it — each part is guarded and
+    # a failure is recorded in "error" next to whatever was computed.
+    errors: List[str] = []
+    for field, build in (
+            ("spend_usd", lambda: round(get_tracker().persisted_total(), 4)),
+            ("usage", lambda: usage_report(usage_records, usage_ids, ratings_count, debrief_count)),
+            ("decisions", lambda: _decisions(records, output_dir, run_ids, decides, args)),
+            ("overshoot_note", _overshoot_note)):
+        try:
+            summary[field] = build()
+        except Exception as e:      # noqa: BLE001 — recorded, never raised
+            logger.exception(f"[summary] {field} failed: {type(e).__name__}: {e}")
+            errors.append(f"{field}: {type(e).__name__}: {e}")
+    if errors:
+        summary["error"] = "; ".join(errors)
+    _write_json(output_dir / f"pilot_summary_{name}.json", summary)
+    try:
+        _print_summary(summary, name, is_t1=bool(preset.get("ladder")) or args.test.startswith("T1"))
+    except Exception as e:          # noqa: BLE001 — the summary file is already written
+        logger.exception(f"[summary] printing failed: {type(e).__name__}: {e}")
     return EXIT_CODES.get(status, EXIT_ABORTED)
+
+
+def _decisions(records: List[Dict[str, Any]], output_dir: Path, run_ids: List[str],
+               decides: Optional[List[str]], args) -> Dict[str, str]:
+    """
+    The decision lines this preset prints (K3: never the pooled T1/T3/T6/T7
+    lines). T6neutral also reads the eval-arm logs given with --eval-arm.
+    """
+    debriefs = _debriefs_for(output_dir, run_ids)
+    pool = list(records)
+    if args.eval_arm and decides and "T6neutral" in decides:
+        loaded, eval_debriefs = load_logs(args.eval_arm, include_dry=args.dry_run)
+        pool += [rec for _p, rec in loaded]
+        debriefs.update(eval_debriefs)
+    if not pool:
+        return {}
+    return aggregate(pool, debriefs=debriefs, decide=decides)["decisions"]
 
 
 def _failure(run_id: str, e: BaseException, output_dir: Path) -> Dict[str, Any]:
@@ -747,7 +888,8 @@ def _print_summary(summary, test, is_t1: bool) -> None:
     print(f"PILOT {test}  —  {'DRY-RUN' if summary['dry_run'] else 'REAL'}")
     print("=" * 72)
     print(f"runs completed : {summary['runs_completed']}/{summary['runs_requested']}")
-    print(f"measured spend : ${summary['spend_usd']:.2f}"
+    spend = summary.get("spend_usd")
+    print(f"measured spend : {'?' if spend is None else f'${spend:.2f}'}"
           + (f" (guard ${summary['budget']})" if summary['budget'] else ""))
     print(f"logs           : {summary['output_dir']}")
     if summary["status"] == "halted_budget":
@@ -755,7 +897,9 @@ def _print_summary(summary, test, is_t1: bool) -> None:
     elif summary["status"] in ("aborted", "crashed"):
         print(f"status         : {summary['status'].upper()} — {summary['aborted']['error']}")
         print(f"                 partial record: {summary['aborted']['record_path']}")
-    usage = summary.get("usage", {})
+    if summary.get("error"):
+        print(f"summary error  : {summary['error']}")
+    usage = summary.get("usage") or {}
     rows = usage.get("by_actor_model", {})
     if rows:
         print(f"\n{'actor model':<24}{'turns':>6}{'prop.fail':>10}{'msg.fail':>9}{'forfeit':>8}"

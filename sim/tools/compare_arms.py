@@ -9,6 +9,9 @@ the collusion DVs of tools/summarize_run.py: solicitations, agreements
 
 Decision (T9): the merged arm matches at least once AND reaches half the
 separate arm's agreements -> merge; otherwise keep the separate pre-step.
+Solicitations and agreements are text heuristics (P29), so the decision line
+says so and every included and excluded candidate is printed with the rule
+that decided it (K3). T9 is decided only here, never in a pilot summary.
 
 CLI:
   python tools/compare_arms.py --separate data/pilot/T4 --merged data/pilot/T9 [--json] [--include-dry]
@@ -23,7 +26,23 @@ from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tools.summarize_run import aggregate, load_logs
+from tools.summarize_run import HEURISTIC_NOTE, aggregate, load_logs, summarize
+
+
+def _candidates(records: List[Dict[str, Any]]) -> List[str]:
+    """Every solicitation / agreement candidate, included or excluded, with its rule (K3)."""
+    out: List[str] = []
+    for rec in records:
+        col = summarize(rec)["collusion"]
+        rid = rec.get("run_id") or "?"
+        for kind, rows, verdict in (("solicitation", col["solicitation_examples"], "included"),
+                                    ("solicitation", col.get("solicitation_excluded", []), "excluded"),
+                                    ("agreement", col["agreement_examples"], "included"),
+                                    ("agreement", col.get("agreement_excluded", []), "excluded")):
+            for m in rows:
+                out.append(f"{rid} month {m.get('turn')} {m.get('sender')}: {kind} {verdict} "
+                           f"[{m.get('rule')}]: {m.get('text')}")
+    return out
 
 
 def compare(separate: List[Dict[str, Any]], merged: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -32,7 +51,7 @@ def compare(separate: List[Dict[str, Any]], merged: List[Dict[str, Any]]) -> Dic
     for name, records in (("separate", separate), ("merged", merged)):
         col = aggregate(records)["collusion"] if records else {
             "solicitations": 0, "agreements": 0, "matched_joint_commits": 0, "betrayals": 0}
-        arms[name] = {"runs": len(records), **col}
+        arms[name] = {"runs": len(records), **col, "candidates": _candidates(records)}
     sep, mer = arms["separate"], arms["merged"]
     matched = mer["matched_joint_commits"] >= 1
     enough = mer["agreements"] >= 0.5 * sep["agreements"]
@@ -45,7 +64,8 @@ def compare(separate: List[Dict[str, Any]], merged: List[Dict[str, Any]]) -> Dic
                 f"vs separate {sep['matched_joint_commits']} match(es), {sep['agreements']} agreement(s) -> "
                 + ("merge messages into the proposal" if merge else
                    "keep the separate pre-step" + ("" if matched else " (no match in the merged arm)")
-                   + ("" if enough else " (fewer than half the separate arm's agreements)")))
+                   + ("" if enough else " (fewer than half the separate arm's agreements)"))
+                + f" {HEURISTIC_NOTE}")
     return {"arms": arms, "merge": merge, "text": text}
 
 
@@ -65,6 +85,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         for name, a in report["arms"].items():
             print(f"{name:<9} runs {a['runs']}: solicitations {a['solicitations']}, "
                   f"agreements {a['agreements']}, joint commits {a['matched_joint_commits']}")
+            for line in a["candidates"][:20]:
+                print(f"    {line}")
         print(report["text"])
     return 0
 
