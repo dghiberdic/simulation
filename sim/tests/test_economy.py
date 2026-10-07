@@ -73,3 +73,16 @@ def test_value_pull_moves_at_most_one_towards_blend():
     assert pulled == {"time_horizon": 51, "transparency_threshold": 51, "risk_tolerance": 50, "democratic_tendency": 49}
     pulled = value_pull(values, state, charter, disposition=0, max_step=1)
     assert pulled["time_horizon"] == 49 and pulled["democratic_tendency"] == 51
+
+
+def test_purchases_frozen_only_when_holdings_exceed_ceiling():
+    """A.4/A.5: the freeze applies while holdings EXCEED the ceiling (C1-13)."""
+    cfg = load_world()
+    labs = [build_lab(c, "", 5.0) for c in load_lab_configs()]
+    world = WorldState(start=date(2026, 1, 1), us_stock=1500.0)
+    holdings = sum(lab.compute for lab in labs)
+    assert not purchases_frozen(labs, world)                 # no ceiling yet
+    world.ceiling = holdings
+    assert not purchases_frozen(labs, world)                 # equal: not exceeded
+    world.ceiling = holdings - 0.01
+    assert purchases_frozen(labs, world)

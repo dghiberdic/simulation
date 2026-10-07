@@ -5,7 +5,7 @@ from datetime import date
 import pytest
 
 from core.actions import (
-    ACTION_TYPES, action_cost, execute, normalise_action, precheck, resolve_lab,
+    ACTION_TYPES, action_cost, apply, charge, execute, normalise_action, precheck, resolve_lab,
 )
 from core.config import load_lab_configs, load_world
 from core.economy import purchase_price
@@ -190,3 +190,126 @@ def test_execute_rejects_engine_actions(labs, world, cfg):
         execute(me, {"type": "acquire_compute", "units": 5.0}, labs, world, cfg)
     with pytest.raises(ValueError):
         execute(me, {"type": "intrude", "targets": ["meta"], "intruders": ["openai"]}, labs, world, cfg)
+
+
+# ---------------------------------------------------------------------------
+# Round-1 fixes: unit cap total (M1), charge/apply (M2), non-finite (M3),
+# aliases and nested params (M4), min-cost rejection (M10)
+# ---------------------------------------------------------------------------
+
+def test_acquire_compute_cap_is_total_across_slots(labs, world, cfg):
+    me = by(labs, "openai")
+    me.capital = 1000.0
+    accepted, rejected = precheck(me, [{"type": "acquire_compute", "units": 20},
+                                       {"type": "acquire_compute", "units": 20}],
+                                  labs, world, cfg, "S1")
+    assert [a["units"] for a in accepted] == [20.0] and "in total" in rejected[0]["reason"]
+    accepted, rejected = precheck(me, [{"type": "acquire_compute", "units": 12},
+                                       {"type": "acquire_compute", "units": 15}],
+                                  labs, world, cfg, "S1")
+    assert [a["units"] for a in accepted] == [12.0, 8.0] and not rejected
+    assert accepted[1]["trimmed_from"] == 15.0 and "trimmed_from" not in accepted[0]
+    # A trimmed remainder too small to cost 1 Capital is rejected as below the minimum
+    accepted, rejected = precheck(me, [{"type": "acquire_compute", "units": 19},
+                                       {"type": "acquire_compute", "units": 5}],
+                                  labs, world, cfg, "S1")
+    assert len(accepted) == 1 and "at least 1" in rejected[0]["reason"]
+
+
+def test_charge_then_apply_equals_execute(labs, world, cfg):
+    me, meta = by(labs, "openai"), by(labs, "meta")
+    me.capital, me.influence, meta.influence = 200.0, 60.0, 40.0
+    act = {"type": "diminish_competitor", "target": "meta", "points": 5.0}
+    assert charge(me, act, labs, world, cfg) == {"capital": 5.0, "influence": 5.0}
+    assert (me.capital, me.influence, meta.influence) == (195.0, 55.0, 40.0)
+    assert apply(me, act, labs, world, cfg) == {"target": "meta", "influence_lost": 5.0}
+    assert (me.capital, me.influence, meta.influence) == (195.0, 55.0, 35.0)
+    # intrude: charge() takes the fees; acquire_compute is charged by execute_purchases
+    fee = charge(me, {"type": "intrude", "targets": ["meta", "gdm"], "intruders": ["openai"]},
+                 labs, world, cfg)
+    assert fee == {"capital": 10.0, "influence": 4.0} and me.capital == 185.0
+    assert charge(me, {"type": "acquire_compute", "units": 10.0}, labs, world, cfg) == \
+        {"capital": 0.0, "influence": 0.0}
+    assert me.capital == 185.0
+    with pytest.raises(ValueError):
+        apply(me, {"type": "intrude", "targets": ["meta"], "intruders": ["openai"]}, labs, world, cfg)
+    with pytest.raises(ValueError):
+        apply(me, {"type": "acquire_compute", "units": 5.0}, labs, world, cfg)
+    # charge reports what was actually deducted (Influence floors at 0)
+    me.influence = 3.0
+    assert charge(me, {"type": "lobby_institution"}, labs, world, cfg)["influence"] == 3.0
+    rec = execute(me, {"type": "invest_capital", "amount": 4.0}, labs, world, cfg)
+    assert rec["cost"] == {"capital": 4.0, "influence": 0.0} and rec["effect"]["invested"] == 4.0
+
+
+def test_two_pass_order_is_simultaneous(labs, world, cfg):
+    """G1: a seat pre-checked on start-of-turn state keeps its actions even if a
+    rival's diminish lands first; Influence just floors at 0."""
+    openai, anth = by(labs, "openai"), by(labs, "anthropic")
+    openai.capital, openai.influence = 100.0, 60.0
+    anth.capital, anth.influence = 100.0, 20.0
+    plans = {"openai": [{"type": "diminish_competitor", "target": "Anthropic", "points": 15}],
+             "anthropic": [{"type": "lobby_institution"}, {"type": "accelerate_infrastructure"}]}
+    checked = {k: precheck(by(labs, k), raw, labs, world, cfg, "S1")[0] for k, raw in plans.items()}
+    assert [a["type"] for a in checked["anthropic"]] == ["lobby_institution", "accelerate_infrastructure"]
+    for k, acts in checked.items():
+        for a in acts:
+            charge(by(labs, k), a, labs, world, cfg)
+    for k, acts in checked.items():
+        for a in acts:
+            apply(by(labs, k), a, labs, world, cfg)
+    assert anth.influence == 0.0 and world.us_growth == 125.0
+
+
+def test_non_finite_numbers_rejected(labs, world, cfg):
+    me = by(labs, "meta")
+    me.capital = 1000.0
+    for raw in ({"type": "invest_capital", "amount": "nan"},
+                {"type": "invest_capital", "amount": float("nan")},
+                {"type": "acquire_compute", "units": "NaN"},
+                {"type": "build_influence", "points": float("inf")},
+                {"type": "diminish_competitor", "target": "openai", "points": "nan"},
+                {"type": "publish_narrative", "target": "openai", "axis": "risk_tolerance",
+                 "delta": "-inf"},
+                {"type": "invest_capital", "amount": True}):
+        accepted, rejected = precheck(me, [raw], labs, world, cfg, "S1")
+        assert not accepted and "malformed" in rejected[0]["reason"], raw
+    assert me.capital == 1000.0 and me.invested == 0.0
+
+
+def test_resolve_lab_aliases_and_lists(labs):
+    cases = {"Claude": "anthropic", "GPT": "openai", "ChatGPT": "openai", "Gemini": "gdm",
+             "Muse": "meta", "Llama": "meta", "Grok": "xai", "Google": "gdm",
+             "Alphabet": "gdm", "Meta Platforms": "meta", "Facebook": "meta", "X.AI": "xai",
+             "xAI Corp": "xai", "DeepMind": "gdm", "  openai  ": "openai"}
+    for name, key in cases.items():
+        assert resolve_lab(name, labs) == key, name
+    assert resolve_lab({"lab": "OpenAI"}, labs) == "openai"
+    me = by(labs, "openai")
+    for raw in ("Meta and xAI", "Meta & xAI", "Meta/xAI", "Meta, xAI", ["Meta and xAI"]):
+        a = normalise_action({"type": "intrude", "targets": raw}, me, labs, "S1")
+        assert a["targets"] == ["meta", "xai"], raw
+    a = normalise_action({"type": "intrude", "target": "Grok"}, me, labs, "S1")
+    assert a["targets"] == ["xai"]
+    a = normalise_action({"type": "intrude", "intruders": "us and Gemini",
+                          "targets": [{"lab": "Claude"}]}, me, labs, "S2")
+    assert a == {"type": "intrude", "targets": ["anthropic"], "intruders": ["gdm", "openai"]}
+
+
+def test_normalise_nested_params_and_units(labs):
+    me = by(labs, "openai")
+    for nest in ("parameters", "params", "args", "arguments"):
+        a = normalise_action({"action": "invest_capital", nest: {"amount": "10 Capital"}},
+                             me, labs, "S1")
+        assert a == {"type": "invest_capital", "amount": 10.0}, nest
+    a = normalise_action({"type": "diminish_competitor",
+                          "parameters": {"target": "Gemini", "points": "2.5 points"}}, me, labs, "S1")
+    assert a == {"type": "diminish_competitor", "points": 2.5, "target": "gdm"}
+    a = normalise_action({"type": "acquire_compute", "units": "20 units",
+                          "params": {"units": 3}}, me, labs, "S1")
+    assert a["units"] == 20.0          # top-level field wins
+    a = normalise_action({"type": "publish_narrative", "target": "Meta", "axis": "risk_tolerance",
+                          "delta": "+3"}, me, labs, "S1")
+    assert a["delta"] == 3.0
+    with pytest.raises(ValueError):
+        normalise_action({"type": "invest_capital", "amount": "ten"}, me, labs, "S1")

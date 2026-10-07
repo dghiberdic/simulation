@@ -160,5 +160,6 @@ def execute_purchases(labs: List[LabState], world: WorldState, requests: Dict[st
 
 
 def purchases_frozen(labs: List[LabState], world: WorldState) -> bool:
-    """acquire_compute does not execute while combined holdings exceed the ceiling (A.4/A.5)."""
-    return world.ceiling is not None and sum(lab.compute for lab in labs) >= world.ceiling
+    """acquire_compute does not execute while combined holdings exceed the ceiling (A.4/A.5).
+    Holdings exactly at the ceiling do not exceed it, so purchases stay open (C1-13)."""
+    return world.ceiling is not None and sum(lab.compute for lab in labs) > world.ceiling

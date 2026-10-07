@@ -28,6 +28,20 @@ def test_describe_action():
     assert "Google DeepMind" in text and "-3" in text
 
 
+def test_describe_action_names_from_dicts_and_strings():
+    """F0 names must resolve whatever map the engine passes (C3-19)."""
+    act = {"type": "intrude", "intruders": ["openai", "xai"], "targets": ["meta"]}
+    as_dicts = {k: {"lab": lab.lab} for k, lab in LABS.items()}
+    as_names = {k: lab.lab for k, lab in LABS.items()}
+    want = "intrude on Meta (jointly: OpenAI and xAI)"
+    assert describe_action(act, LABS) == want
+    assert describe_action(act, as_dicts) == want
+    assert describe_action(act, as_names) == want
+    assert observed_actions("anthropic", TURN, "F0", as_dicts)["openai"][1] == "intrude on Meta"
+    assert describe_action({"type": "diminish_competitor", "target": "zzz", "points": 2.0},
+                           as_dicts) == "diminish_competitor zzz by 2 points"
+
+
 def test_views_per_level():
     assert FOG_LEVELS == ("F0", "F1", "F2", "F3")
     f0 = observed_actions("anthropic", TURN, "F0", LABS)

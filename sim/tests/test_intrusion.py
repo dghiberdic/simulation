@@ -97,6 +97,19 @@ def test_failure_charges_fee_penalises_and_notifies():
     assert world.notices == [notice] and out["leads"] == []
 
 
+def test_fees_charged_by_engine_are_only_recorded():
+    """G1: with fees_charged=True resolve() records the fee but does not deduct it again."""
+    labs, world, snap = setup()
+    me = by(labs, "openai")
+    cap, inf = me.capital, me.influence
+    out = resolve({"openai": intrude(["openai"], ["anthropic", "gdm"])}, labs, snap, world, CFG,
+                  ScriptedRng([0.99]), fees_charged=True)
+    (entry,) = out["entries"]
+    assert entry.draws["fee"] == {"capital": 10.0, "influence": 4.0}
+    assert me.capital == cap
+    assert me.influence == inf - ICFG["failure_influence_penalty"]   # penalty still applies
+
+
 def test_gain_formula_and_min_gain():
     labs, world, snap = setup()
     snap = {**snap, "meta": 50.0, "anthropic": 80.0, "gdm": 60.0}

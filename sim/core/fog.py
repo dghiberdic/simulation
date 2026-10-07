@@ -23,12 +23,20 @@ DEFAULT_FOG = "F3"
 # ---------------------------------------------------------------------------
 
 def _name(key: str, labs_by_key: Optional[Dict[str, Any]]) -> str:
+    """Display name from a LabState, a {"lab": name} dict or a bare name string."""
     lab = (labs_by_key or {}).get(key)
+    if isinstance(lab, dict):
+        return lab.get("lab") or key
+    if isinstance(lab, str):
+        return lab or key
     return getattr(lab, "lab", None) or key
 
 
 def describe_action(action: Dict[str, Any], labs_by_key: Optional[Dict[str, Any]] = None) -> str:
-    """Short human text, e.g. "acquire_compute 20 units" or "intrude on Meta"."""
+    """
+    Short human text, e.g. "acquire_compute 20 units" or "intrude on Meta".
+    labs_by_key maps key -> LabState, {"lab": display name} or display name.
+    """
     kind = action.get("type", "?")
     if kind == "acquire_compute":
         return f"{kind} {action['units']:g} units"

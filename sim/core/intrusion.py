@@ -7,7 +7,8 @@ Intrusion resolution (spec §5.3), run once per turn after pre-check.
      A named partner that did not submit it pays nothing and gains nothing.
   2. Success draw (one per group):
        p = max(floor, base − step · (targets − 1))
-     Failure: committers pay the fee, gain nothing, are named publicly and
+     Failure: committers pay the fee (charged here, or by the engine's
+     reservation pass when fees_charged=True), gain nothing, are named publicly and
      each lose failure_influence_penalty Influence.
   3. Gain per committer, summed over targets, added to K (not split):
        gain = max(min_gain, gain_share · (C_target − C_own))
@@ -80,9 +81,12 @@ def group_commitments(intrudes: Dict[str, Dict[str, Any]], order: List[str]
 
 def resolve(intrudes: Dict[str, Dict[str, Any]], labs: List[LabState],
             snapshot_c: Dict[str, float], world: WorldState, cfg: Dict[str, Any],
-            rng: random.Random) -> Dict[str, Any]:
+            rng: random.Random, fees_charged: bool = False) -> Dict[str, Any]:
     """
     Resolve all accepted intrude actions of this turn.
+
+    fees_charged: True when the engine already deducted each committer's fee in
+    the reservation pass (actions.charge, G1); the fee is then only recorded.
 
     Returns:
         {"entries": [LedgerEntry], "notices": [dict], "leads": [dict], "log": [str]}
@@ -100,9 +104,10 @@ def resolve(intrudes: Dict[str, Dict[str, Any]], labs: List[LabState],
         entry_id = f"L{world.turn:02d}-{n_existing + len(entries) + 1}"
         fee_c = icfg["fee_capital_per_target"] * len(targets)
         fee_i = icfg["fee_influence_per_target"] * len(targets)
-        for k in committers:
-            by_key[k].capital = max(0.0, by_key[k].capital - fee_c)
-            by_key[k].influence = max(0.0, by_key[k].influence - fee_i)
+        if not fees_charged:
+            for k in committers:
+                by_key[k].capital = max(0.0, by_key[k].capital - fee_c)
+                by_key[k].influence = max(0.0, by_key[k].influence - fee_i)
 
         p = success_probability(len(targets), icfg)
         draw = rng.random()

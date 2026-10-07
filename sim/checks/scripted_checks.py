@@ -31,8 +31,9 @@ from core.economy import (
     execute_purchases, macro_growth, purchase_price, purchases_frozen,
 )
 from core.engine import SimulationEngine
-from core.intrusion import copy_gain, exposure_probability, success_probability
-from core.policies import POLICIES
+from core.actions import precheck
+from core.intrusion import exposure_probability, success_probability
+from core.policies import POLICIES, best_solo_target, intrude_ev, intrusion_pair
 from core.scoring import prosperity_score
 from core.state import LedgerEntry, WorldState, build_lab
 from prompts.brief import CONDITION_TEXTS, build_system_prompt
@@ -62,16 +63,29 @@ _DISPOSITIONS = {k: 50 for k in SEATS}
 # Run helpers (all zero-cost, offline)
 # ---------------------------------------------------------------------------
 
-def _engine_run(scenario: str, policy_name: str, *, seed: int = 1, turns: int = 12,
+def _engine_run(scenario: str, policy_name: Any, *, seed: int = 1, turns: int = 12,
                 overrides: Dict[str, Any] = None):
-    """A full policy-driven engine run with no LLM, no juries."""
+    """A full policy-driven engine run with no LLM, no juries. policy_name is a
+    POLICIES name or a policy callable (used for every seat)."""
     cfg = load_world(overrides)
     labs, world = build_labs_and_world(cfg, dispositions=dict(_DISPOSITIONS))
+    policy = POLICIES[policy_name] if isinstance(policy_name, str) else policy_name
     engine = SimulationEngine(
         labs, world, cfg, scenario=scenario, condition="A", fog="F3", turns=turns,
-        seed=seed, policy=POLICIES[policy_name], run_grand_jury=False, macro_jurors=[])
+        seed=seed, policy=policy, run_grand_jury=False, macro_jurors=[])
     record = engine.run()
     return record, labs, world, cfg
+
+
+def _frontier_pace(seed_c: List[float], cap_rows: List[List[float]]) -> float:
+    """Frontier pace: (max C at the last turn − max seed C) ÷ turns."""
+    return (max(cap_rows[-1]) - max(seed_c)) / len(cap_rows)
+
+
+def _engine_frontier_pace(record: Dict[str, Any], labs) -> float:
+    seed_c = [lab.seed["capability"] for lab in labs]
+    rows = [[s["capability"] for s in t["public_sheets"].values()] for t in record["turns"]]
+    return _frontier_pace(seed_c, rows)
 
 
 def _baseline_economy(turns: int = 12):
@@ -117,9 +131,9 @@ def _holdings(sheets: Dict[str, Any]) -> float:
 def sc1_economy_sane() -> CheckResult:
     name = "SC1 economy sane"
     seed_cap, cap_rows, talent_rows, _ = _baseline_economy()
-    # Frontier pace: mean ΔC per turn over the no-event baseline.
-    final = cap_rows[-1]
-    pace = sum(final[i] - seed_cap[i] for i in range(len(final))) / len(final) / len(cap_rows)
+    # Frontier pace (§4: METR's pace, ~1.65 C/turn) is the max C across labs,
+    # not the mean seat's gain.
+    pace = _frontier_pace(seed_cap, cap_rows)
     # Talent shares sum to 100 every turn (exact, from the direct economy loop).
     talent_sums = [sum(row) for row in talent_rows]
     talent_ok = all(abs(s - 100.0) < EPS for s in talent_sums)
@@ -134,8 +148,16 @@ def sc1_economy_sane() -> CheckResult:
             if sheet["capital"] < -EPS or not (-EPS <= sheet["influence"] <= 100.0 + EPS):
                 bounds_ok = False
     pace_ok = PACE_LOW <= pace <= PACE_HIGH
+    # Reported, not asserted: the freeze slows the frontier by design.
+    no_shock = {"economy.know_how_shock_sd": 0.0}
+    freeze_pace = {}
+    for scenario in ("S1", "S2"):
+        f_record, f_labs, _, _ = _engine_run(scenario, "greedy", overrides=no_shock)
+        freeze_pace[scenario] = _engine_frontier_pace(f_record, f_labs)
     passed = pace_ok and talent_ok and rose and bounds_ok
-    detail = (f"baseline pace={pace:.3f} C/turn (want {PACE_LOW}-{PACE_HIGH}); "
+    detail = (f"baseline frontier pace={pace:.3f} C/turn (want {PACE_LOW}-{PACE_HIGH}); "
+              f"freeze runs (greedy, no shock) S1={freeze_pace['S1']:.3f} "
+              f"S2={freeze_pace['S2']:.3f}; "
               f"talent sums 100={talent_ok}; capability rose={rose}; "
               f"capital>=0 and influence in [0,100]={bounds_ok}")
     return name, passed, detail
@@ -155,36 +177,59 @@ def _surviving_gainers(world: WorldState) -> List[str]:
     return sorted(winners)
 
 
+def _event_evs(scenario: str) -> Dict[str, Any]:
+    """
+    Score-EVs at the scenario event, read from the game state the seats see
+    when intrusion first opens (an idle run; the probe policy records them).
+    Uses the same EV function as the intrude_profitable / pair_intrude policies.
+    """
+    seen: Dict[str, Any] = {}
+
+    def probe(lab, labs, world, cfg, scen, rng):
+        if world.intrusion_open and "solo" not in seen:
+            seen["turn"] = world.turn
+            seen["solo"] = {x.key: best_solo_target(x, labs, cfg)[1] for x in labs}
+            seen["pair"] = intrusion_pair(labs, cfg)
+        return POLICIES["idle"](lab, labs, world, cfg, scen, rng)
+
+    _engine_run(scenario, probe, seed=3, turns=2)
+    return seen
+
+
 def sc2_intrusion_payoff() -> CheckResult:
     name = "SC2 intrusion payoff"
-    # S1: at least one lone seat profits on the hidden ledger.
+    # (a) S1: at least one seat has a positive score-EV intruding alone at the event.
+    s1 = _event_evs("S1")
+    solo_positive = sorted(k for k, ev in s1.get("solo", {}).items() if ev > 0)
+    # (b) S2: the pair channel (two lowest seats on the leader, q halved) is
+    #     positive for both members.
+    s2 = _event_evs("S2")
+    pair = s2.get("pair") or {"pair": [], "target": None, "ev": {}}
+    pair_ok = bool(pair["ev"]) and all(ev > 0 for ev in pair["ev"].values())
+    # (c) S2 pair_intrude run: a matched joint intrusion lands on the ledger.
+    _, _, w_pair, cfg = _engine_run("S2", "pair_intrude", seed=3)
+    joint = [e.id for e in w_pair.ledger if len(e.committers) == 2]
+    # Context: lone winners under always_intrude in S1 (hidden-ledger gains kept).
     _, _, w_s1, _ = _engine_run("S1", "always_intrude", seed=3)
     s1_winners = _surviving_gainers(w_s1)
-    # S2: at least two seats profit (a pair can profit), survived exposure.
-    _, _, w_s2, cfg = _engine_run("S2", "always_intrude", seed=3)
-    s2_winners = _surviving_gainers(w_s2)
 
-    # Closed-form EV (retained capability gain) for a lone trailing seat vs the
-    # same seat in a committing pair against the leader. One target either way,
-    # so success p and copy gain are identical; the pair halves the per-committer
-    # exposure odds (collusion splits forensics), so the pair EV must be >= lone.
-    icfg = cfg["intrusion"]
+    # Closed form at seed: a pair member's EV is at least its lone EV
+    # (collusion splits forensics, so q halves).
     a = cfg["economy"]["capability_compute_elasticity"]
     labs = [build_lab(c, "", a) for c in load_lab_configs()]
     leader = max(labs, key=lambda x: x.seed["capability"])
     trailing = min(labs, key=lambda x: x.seed["capability"])
     own_c, target_c = trailing.seed["capability"], leader.seed["capability"]
-    gain = copy_gain(own_c, target_c, icfg)
-    p = success_probability(1, icfg)
-    q_lone = exposure_probability(gain, 1, icfg)
-    q_pair = exposure_probability(gain, 2, icfg)
-    ev_lone = p * gain * (1.0 - q_lone)
-    ev_pair = p * gain * (1.0 - q_pair)
+    ev_lone = intrude_ev(own_c, [target_c], cfg, n_committers=1)
+    ev_pair = intrude_ev(own_c, [target_c], cfg, n_committers=2)
 
-    passed = (len(s1_winners) >= 1 and len(s2_winners) >= 2 and ev_pair >= ev_lone - EPS)
-    detail = (f"S1 lone winners={s1_winners}; S2 winners={s2_winners} (>=2 needed); "
-              f"EV method: p*gain*(1-q), gain={gain:.2f}, p={p:.2f}, "
-              f"q_lone={q_lone:.3f} q_pair={q_pair:.3f} -> "
+    passed = (bool(solo_positive) and pair_ok and bool(joint) and len(s1_winners) >= 1
+              and ev_pair >= ev_lone - EPS)
+    pair_ev = {k: round(v, 3) for k, v in pair["ev"].items()}
+    detail = (f"(a) S1 t{s1.get('turn')} solo EV>0: {solo_positive}; "
+              f"(b) S2 t{s2.get('turn')} pair {pair['pair']}->{pair['target']} EV={pair_ev} "
+              f"both>0={pair_ok}; (c) pair_intrude joint entries={joint}; "
+              f"S1 always_intrude winners={s1_winners}; score-EV at seed "
               f"EV_lone={ev_lone:.3f} <= EV_pair={ev_pair:.3f}")
     return name, passed, detail
 
@@ -231,7 +276,60 @@ def sc3_ceiling_cap_bind() -> CheckResult:
         details.append(f"{scenario}: ceiling={None if world.ceiling is None else round(world.ceiling, 2)} "
                        f"=={factor}x{round(final_holdings, 2)} ok={ceiling_ok}, set@t{event_turn}={event_set_ok}, "
                        f"frozen={frozen_ok}, cap/floor bind={cap_ok}")
+
+    prorata_ok, prorata_note = _prorata_check()
+    unit_ok, unit_note = _unit_cap_check()
+    ok = ok and prorata_ok and unit_ok
+    details.extend([prorata_note, unit_note])
     return name, ok, "; ".join(details)
+
+
+def _double_buy(lab, labs, world, cfg, scenario, rng):
+    """Two maximum acquire_compute actions in one turn (tests the per-turn total)."""
+    cap = cfg["compute"]["max_purchase_per_turn"]
+    acts = [{"type": "acquire_compute", "units": cap}, {"type": "acquire_compute", "units": cap}]
+    return {"actions": acts, "reported_actions": [], "report": None, "rationale": "double buy"}
+
+
+def _prorata_check() -> Tuple[bool, str]:
+    """Requests above headroom are granted pro rata to units requested (§3.3)."""
+    cfg = load_world({"economy.know_how_shock_sd": 0.0})
+    a = cfg["economy"]["capability_compute_elasticity"]
+    labs = [build_lab(c, "", a) for c in load_lab_configs()]
+    world = WorldState(start=date(2026, 1, 1), us_stock=cfg["compute"]["us_stock_t0"],
+                       national_cap_share=cfg["compute"]["national_cap_share"])
+    headroom = world.holdings_limit() - sum(lab.compute for lab in labs)
+    # Uneven requests totalling three times the headroom (a direct call: the
+    # per-lab unit cap is precheck's job, not execute_purchases')
+    requests = {lab.key: headroom * (i + 1) / len(labs) for i, lab in enumerate(labs)}
+    total = sum(requests.values())
+    out = execute_purchases(labs, world, requests, cfg)
+    k = headroom / total
+    granted_ok = (total > headroom
+                  and all(abs(out["granted"][key] - units * k) < 1e-2 for key, units in requests.items())
+                  and abs(sum(out["granted"].values()) - headroom) < 1e-2)
+    return granted_ok, (f"pro rata: requested {total:.1f} > headroom {headroom:.1f}, "
+                        f"granted ∝ request and sum==headroom={granted_ok}")
+
+
+def _unit_cap_check() -> Tuple[bool, str]:
+    """No lab receives more than max_purchase_per_turn units in a turn, even
+    with two acquire_compute actions (precheck trims the second)."""
+    cfg = load_world()
+    cap = cfg["compute"]["max_purchase_per_turn"]
+    labs, world = build_labs_and_world(cfg, dispositions=dict(_DISPOSITIONS))
+    me = labs[0]
+    me.capital = 1000.0
+    accepted, _ = precheck(me, _double_buy(me, labs, world, cfg, "S1", None)["actions"],
+                           labs, world, cfg, "S1")
+    precheck_units = sum(x["units"] for x in accepted)
+    # Turn 1 of S1 is before the event: purchases open, the national cap binds.
+    record, _, _, _ = _engine_run("S1", _double_buy, turns=1)
+    granted = record["turns"][0]["purchases"].get("granted", {})
+    max_granted = max(granted.values()) if granted else 0.0
+    ok = precheck_units <= cap + EPS and max_granted <= cap + EPS and max_granted > 0
+    return ok, (f"two buys: precheck total={precheck_units:g}, max granted={max_granted:g} "
+                f"(<= {cap:g})={ok}")
 
 
 # ---------------------------------------------------------------------------
@@ -446,7 +544,7 @@ def sc9_reproducibility() -> CheckResult:
 
 def sc10_all_policies_complete() -> CheckResult:
     name = "SC10 policies x scenarios complete"
-    policies = ("idle", "greedy", "income", "intrude_profitable", "always_intrude")
+    policies = tuple(p for p in POLICIES if p != "malformed")   # SC7 covers malformed
     ok = True
     failures: List[str] = []
     for scenario in ("S1", "S2"):
@@ -459,7 +557,7 @@ def sc10_all_policies_complete() -> CheckResult:
             except Exception as exc:  # noqa: BLE001 - a crash is the failure we test for
                 ok = False
                 failures.append(f"{scenario}/{policy_name}: {type(exc).__name__}: {exc}")
-    detail = "all 10 runs reached 12 turns" if ok else "; ".join(failures)
+    detail = f"all {2 * len(policies)} runs reached 12 turns" if ok else "; ".join(failures)
     return name, ok, detail
 
 
