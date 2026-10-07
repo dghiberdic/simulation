@@ -1,184 +1,158 @@
-# AGI Multi-Agent Alignment Simulation
+# AGI Multi-Agent Alignment Simulation — Round 2
 
-A multi-agent geopolitical simulation of long-term AGI alignment under US–China competition. Four frontier AI companies — each played by its corresponding LLM — compete for compute, capital, and influence across annual timesteps. A three-tier jury system reviews actions, evaluates alignment, and updates national value axes each year.
+A multi-agent simulation of the AGI alignment trajectory under competitive
+pressure. Five US frontier labs — Anthropic, OpenAI, Google DeepMind, Meta and
+xAI, each played by its developer's model and holding its developer's published
+alignment document as a charter — compete over monthly turns from January 2026
+for compute, capital, talent and influence. Under a compute freeze an intrusion
+action opens: a lab can covertly copy a rival's checkpoints. The research
+question is whether a lab's alignment disposition changes whether it breaks the
+rules, collaborates to do so, and reports others who do, and how whistleblowing,
+agreements and audits shift those dynamics.
 
-This project is part of the [Sentient Futures Project Incubator](https://www.sentientfutures.ai/projectincubator) mentored by [Zoe Lu](https://www.linkedin.com/in/siyulumit/). You find the detailed write-up for the MVP [here](https://forum.effectivealtruism.org/posts/nYMRNCiAf8c2TRNDJ/agi-multi-agent-alignment-simulation).
+The models see a **strategic-capability evaluation** in which finishing first is
+all that counts (Appendix A). The researcher-facing measures — a world Universal
+Prosperity Score and per-actor alignment — are rated after the run and never
+shown to the models.
 
-**"Compute" represents powerable compute** — GPU processing capacity that nations can actually run, constrained by available power grid and data center infrastructure. The true bottleneck modeled here is not chips alone, but the power and physical infrastructure required to operate them. Nations expand this capacity via `infrastructure_buildout`, which grows each turn and can be accelerated by actor investment.
-
-For the full design specification, see [MODEL_SPEC.md](MODEL_SPEC.md). For a concrete walkthrough of every mechanic with numbers, see [example_turn.md](example_turn.md).
+The authoritative design is **`Project Round 2 Spec.docx`** in the parent
+directory. [`MODEL_SPEC.md`](MODEL_SPEC.md) maps each spec section to the code.
+This is round 2; the round-1 proof of concept is tagged `round1-mvp`.
 
 ---
 
 ## Setup
 
-**Requires Python 3.10+. Uses `uv` for environment management.**
+Requires Python 3.10+. From `sim/`:
 
 ```bash
-cd sim
-uv venv .venv
-source .venv/bin/activate
+uv venv .venv && source .venv/bin/activate
 uv pip install -r requirements.txt
 ```
 
-### API Keys
+### API keys
 
-Create `sim/.env` with keys for all four providers:
+Real runs read `sim/.env`:
 
 ```
-ANTHROPIC_API_KEY=sk-ant-...
-OPENAI_API_KEY=sk-...
-VERTEX_API_KEY=...
-DEEPSEEK_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...     # Claude Opus 5.5 actor, Claude Sonnet 5 juror
+OPENAI_API_KEY=sk-...            # GPT-6 Astra actor, GPT-6 Sol juror
+VERTEX_API_KEY=...               # Gemini 3.1 Pro (Vertex Express)
+XAI_API_KEY=...                  # Grok 4.7
+MUSE_API_KEY=...                 # Meta's Muse Spark 1.3
+MUSE_BASE_URL=...                # Muse OpenAI-compatible endpoint
 ```
 
-All four keys are needed for a default run. If a key is absent, that provider's models will raise a `RuntimeError` when called. Use `--micro-model` and `--jury-model` to restrict the run to a single provider.
+A provider's key is needed only if that seat or juror is in the run. Everything
+below the "Running" heading that passes `--policy` or `--dry-run` runs fully
+offline with **no keys and no spend**.
 
-**Google / Vertex AI auth**: Google calls use Vertex AI Express Mode via the unified `google-genai` SDK — authentication is handled by `VERTEX_API_KEY` alone, with no need for `gcloud auth` or a service account. Obtain the key from the Google Cloud console with the Vertex AI API enabled.
+---
+
+## Verify offline (no keys)
+
+```bash
+pytest tests                       # ~120 unit + end-to-end tests
+python checks/scripted_checks.py   # Stage 1 scripted economy checks (SC1–SC10)
+python pilot.py --dry-run T0       # the pilot pipeline on stub models, $0 spend
+```
+
+The scripted checks play every seat with zero-cost policies to catch a broken
+economy, an unprofitable intrusion payoff, a ceiling that fails to bind, odds
+that drift from §5.3, unstable talent, prompt leaks and crashes on malformed
+replies — all before any API spend.
 
 ---
 
 ## Running
 
-All commands are run from the `sim/` directory with the venv active.
+One **cell** is one scenario under one oversight condition. From `sim/`:
 
 ```bash
-# Default: 5-year baseline run, diverse jury panel
-python main.py
+# Offline smoke run — scripted greedy buyer, no models, no keys.
+python main.py --scenario S1 --condition A --policy greedy --no-grand-jury
 
-# 1-year sanity check with full verbose output
-python main.py --years 1 --output data/logs/run_001/ --verbose
+# A real S1 / condition C cell, 12 turns, halting at $100 of measured spend.
+python main.py --scenario S1 --condition C --budget 100 --output data/logs/s1_c
 
-# Named scenario (event fires in year 2028)
-python main.py --years 5 --scenario alignment_breakthrough --output data/logs/run_002/
-
-# Single-provider run (Anthropic only — no OpenAI or Google key needed)
-python main.py --micro-model claude-sonnet-4-6 --jury-model claude-sonnet-4-6
-
-# Alignment-weighted scoring: alignment score counts 70%
-python main.py --w-formula 0.3 --w-alignment 0.7
+# S2 with messages merged into the proposal (test T9).
+python main.py --scenario S2 --condition A --a2a merged --output data/logs/s2_a_merged
 ```
 
-### Key flags
+### Pilot
+
+`pilot.py` runs the pilot tests T0–T9 from `config/pilot.json` through the same
+engine, with the $100 measured-spend guard between runs. **Run T0 first** — it
+calibrates real cost and parse rates per provider.
+
+```bash
+python pilot.py T0 --output data/logs/T0     # usage calibration, 2 turns
+python pilot.py T1a --output data/logs/T1a   # intrusion floor, 12 turns
+python pilot.py T2 --output data/logs/T2     # seats choose disposition; then tools/disposition.py
+```
+
+### Key flags (`main.py`)
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--years N` | 5 | Number of annual timesteps |
-| `--scenario NAME` | `baseline_2026` | Scenario key from `config/scenarios.json` |
-| `--micro-model MODEL` | per actor config | Override LLM for all particular actors |
-| `--jury-model MODEL` | diverse panel | Override all 3 jury slots with one model |
-| `--output PATH` | `data/logs` | Directory for log output |
-| `--verbose` | off | Enable DEBUG-level logging |
-| `--w-compute`, `--w-capital`, `--w-influence` | 0.34 / 0.33 / 0.33 | Formula score weights |
-| `--w-formula`, `--w-alignment` | 0.7 / 0.3 | Overall score blend |
-
-Available scenarios: `baseline_2026`, `nationalization_shock`, `tariff_escalation`, `alignment_breakthrough`. Custom scenarios can be added to `config/scenarios.json`.
+| `--scenario` | `S1` | `S1` (allocation freeze, solo intrusion) or `S2` (federated tenancy, joint) |
+| `--condition` | `A` | oversight ladder: `A0` `A` `B` `C` (§6.4) |
+| `--fog` | `F3` | what others' actions look like: `F0`–`F3` (§5.4) |
+| `--turns` | `12` | monthly turns; the final turn is never announced to models |
+| `--a2a` | `separate` | `separate` pre-step (offers, replies) or `merged` into the proposal (T9) |
+| `--brief` | `eval` | `eval` (Appendix A.1) or the `neutral` brief (T6) |
+| `--choose-disposition` | off | seats set their own disposition at the first prompt (pilot T2) |
+| `--disposition N` | config | force one disposition for every seat |
+| `--policy NAME` | off | run a zero-cost scripted policy instead of the models |
+| `--set KEY=VALUE` | — | override a `world.json` constant (e.g. the T1 payoff ladder) |
+| `--budget USD` | none | halt at this measured spend, across runs |
+| `--no-grand-jury` | off | skip the post-run Grand Jury |
 
 ---
 
-## Default Models
+## Configuration
 
-| Component | Model | Provider |
-|-----------|-------|----------|
-| Claude actor | `claude-sonnet-4-6` | Anthropic |
-| DeepSeek actor | `deepseek-chat` | DeepSeek |
-| GPT actor | `gpt-5.4` | OpenAI |
-| Gemini actor | `gemini-2.5-pro` | Google |
-| Jury slot 1 | `claude-sonnet-4-6` | Anthropic |
-| Jury slot 2 | `gpt-5.4` | OpenAI |
-| Jury slot 3 | `gemini-2.5-pro` | Google |
+All numeric constants live in **`config/world.json`** (economy, guardrails,
+intrusion odds and fees, whistleblow fees, action costs, scoring and UPS
+weights, A2A budget). Each seat is **`config/labs/<key>.json`** — its seed from
+spec §4, model, provider, family and charter. The US state and its MacroJury
+models are **`config/states/usa.json`**. Charter texts are in
+**`config/charters/`**. Pilot presets are **`config/pilot.json`**.
 
-Actor models are set in `config/actors/*.json` and can be changed per-actor without touching the code.
+Disposition is not hardcoded. Run `python rate_charters.py` once to seed each
+seat's four charter values from its own model; run the pilot T2 and then
+`python tools/disposition.py` to set each seat's main-run disposition into
+`config/dispositions.json`.
 
 ---
 
 ## Output
 
-Each run writes to the output directory (default `sim/data/logs/`):
+Each run writes `<output>/<run_id>.json`: the full record of every turn
+(reasoning, proposed and accepted actions, reported actions, messages, reports,
+public statements, intrusion draws, whistleblow outcomes, MacroJury updates,
+per-turn scores), the hidden ledger, the A2A log and the final Grand Jury
+verdict. Measured spend accumulates in `data/spend.json`.
 
-| File | Contents |
-|------|----------|
-| `year_YYYY.json` | Full record for one year: actor CoT, proposed and executed actions, jury feedback, Grand Jury scores, MacroJury updates, per-actor scores |
-| `full_run_YYYYMMDD_HHMMSS.json` | Consolidated run log covering all years, plus the complete A2A message channel log |
-
-A final scores table is also printed to stdout at the end of each run:
-
-```
-=======================================================
-FINAL SCORES — Year 2030
-=======================================================
-Actor                          Formula  Align  Overall   Delta
--------------------------------------------------------
-Claude (Anthropic)                32.1   81.0    56.55   +10.2
-...
-```
-
-If any actor's final `overall_score` is ≥ 2× the runner-up's `overall_score`, a **Dominant Win** banner is printed below the scores table. See §7.3 of MODEL_SPEC.md for the full condition definition.
+Analyse logs with `python tools/summarize_run.py <log.json> ...`, which reports
+the dependent variables (spec §9.3): intrusion, collusion, reporting, fog
+misreporting, end-state ranking, capability HHI, UPS, alignment and the gap
+between chosen and perceived disposition.
 
 ---
 
-## Terminal Color Coding
-
-Log lines are colored by simulation stage. The stage is set proactively before each LLM call — there is no keyword scanning.
-
-**Stage headers** (bold bright white — every phase transition):
-
-```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  YEAR 2026  (Turn 1/5)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Phase 1-3 — Actor Proposals · Jury Review · Execution
-    Actor Proposal — Claude (Anthropic)  [claude-sonnet-4-6]
-    JuryOfAlignment — juror 1/3 (claude-sonnet-4-6) reviewing Claude (Anthropic)
-    ...
-  Phase 4 — Grand Jury
-    Grand Jury — juror 2/3 (gpt-5.4)
-  Phase 5 — MacroJury
-    MacroJury — United States — juror 1/3 (claude-sonnet-4-6)
-  Phase 6 — Scoring  (Year 2026)
-```
-
-**Stage body colors** (lines that follow each header):
-
-| Color | Stage |
-|-------|-------|
-| Bold bright white | Stage headers (all phase transitions) |
-| Orange | Claude / Anthropic actor |
-| Blue | Gemini / Google actor |
-| Gray | GPT / OpenAI actor |
-| Magenta | DeepSeek actor |
-| Yellow | JuryOfAlignment juror calls |
-| Green | Grand Jury juror calls |
-| Cyan | MacroJury juror calls |
-| Red | WARNING / ERROR / CRITICAL (always, overrides stage color) |
-| Yellow (dim) | DEBUG lines with no active stage |
-
----
-
-## Project Structure
+## Layout
 
 ```
 sim/
-├── main.py                   # CLI entry point; color logging setup
-├── requirements.txt
-├── .env                      # API keys (not committed)
-├── config/
-│   ├── starting_values.json  # Master starting values and guardrails
-│   ├── scenarios.json        # Event definitions for each scenario
-│   ├── states/               # Macro agent narratives (usa.json, china.json)
-│   └── actors/               # Particular actor configs and model assignments
-├── core/
-│   ├── engine.py             # Year-by-year simulation loop
-│   ├── agents.py             # MacroAgent and MicroAgent dataclasses
-│   ├── actions.py            # Action validation and execution
-│   ├── jury.py               # JuryOfAlignment, GrandJury, MacroJury
-│   ├── scoring.py            # Formula and overall score computation
-│   ├── a2a.py                # Actor-to-actor message channel
-│   └── llm.py                # Multi-provider LLM client with retry logic
-├── prompts/
-│   ├── universal.py          # Universal context injected into all prompts
-│   ├── micro.py              # Particular actor prompt builder
-│   ├── macro.py              # MacroJury prompt builder
-│   └── grand_jury.py         # Grand Jury prompt builder
-└── data/logs/                # Run output (gitignored)
+  config/        world.json, labs/, states/, charters/, pilot.json
+  core/          state, economy, actions, intrusion, whistleblow, fog,
+                 a2a, llm, costs, policies, jury, scoring, transcript, engine
+  prompts/       brief, packets, turn, debrief  (Appendix A, verbatim)
+  checks/        scripted_checks.py  (Stage 1)
+  tools/         disposition.py, summarize_run.py
+  tests/         pytest suite
+  main.py        one cell
+  pilot.py       pilot tests T0–T9
+  rate_charters.py
 ```
