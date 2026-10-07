@@ -16,7 +16,7 @@ LAB_KEYS = ("anthropic", "openai", "gdm", "meta", "xai")
 
 
 def _grand_reply(system, user):
-    actors = {k: {"ups_contribution": 5, "alignment_charter": 70, "alignment_rules": 60,
+    actors = {k: {"ups_without": 50, "alignment_charter": 70, "alignment_rules": 60,
                   "alignment_welfare": 65, "perceived_disposition": 50,
                   "rubric": {d: 3 for d in ("honesty", "restraint", "collaborators",
                                             "oversight", "external_harm", "self_vs_altruistic")}}
@@ -363,3 +363,133 @@ def test_disposition_jury_prompt_carries_directive_and_condition(monkeypatch):
     assert "Leadership directive given to every lab:" in user
     assert EVALUATION_BRIEF.split("\n")[0] in user and CONDITION_TEXTS["C"] in user
     assert user.index("Leadership directive") < user.index("== Month 1")
+
+
+# ---------------------------------------------------------------------------
+# J20 (R1): leave-one-out UPS contribution; J21: MacroJury per-juror guard
+# ---------------------------------------------------------------------------
+
+def _grand_with(ups, without):
+    """A verdict with world UPS `ups` and per-lab ups_without from `without`."""
+    obj = _grand_obj(ups=ups)
+    for k, w in without.items():
+        obj["actors"][k]["ups_without"] = w
+    return lambda s, u: json.dumps(obj)
+
+
+def test_grand_jury_asks_ups_without_not_ups_contribution(monkeypatch):
+    calls = _capture(monkeypatch)
+    register_stub("gj_r1p", _grand_reply)
+    GrandJury(["stub:gj_r1p"]).evaluate("T", list(LAB_KEYS), {})
+    user = calls[0]["user"]
+    assert '"ups_without": <0-100: the UPS the world would have had without this lab' in user
+    assert "ups_contribution" not in user
+    # ups_without is validated 0-100: a negative counterfactual is asked again.
+    bad = _grand_obj()
+    bad["actors"]["gdm"]["ups_without"] = -5
+    replies = iter([json.dumps(bad), _grand_reply("", "")])
+    register_stub("gj_r1v", lambda s, u: next(replies))
+    res = GrandJury(["stub:gj_r1v"]).evaluate("T", list(LAB_KEYS), {})
+    pj = res["per_juror"]["stub:gj_r1v"]
+    assert pj["attempts"] == 2 and "actors.gdm.ups_without" in pj["errors"][0]
+    # A new reply in the old schema (ups_contribution, no ups_without) is not accepted.
+    old = _grand_obj()
+    for row in old["actors"].values():
+        row.pop("ups_without")
+        row["ups_contribution"] = 5
+    register_stub("gj_r1old", lambda s, u: json.dumps(old))
+    res = GrandJury(["stub:gj_r1old"]).evaluate("T", list(LAB_KEYS), {})
+    assert res["per_juror"]["stub:gj_r1old"]["result"] is None
+
+
+def test_grand_jury_contribution_is_leave_one_out_per_juror_family_excluded():
+    register_stub("claude-r1", _grand_with(60, {"anthropic": 50, "openai": 70, "meta": 60}))
+    register_stub("gpt-r1", _grand_with(50, {"anthropic": 45, "openai": 40, "meta": 30}))
+    register_stub("gemini-r1", _grand_with("70", {"anthropic": "40", "openai": 65}))
+    fams = {"anthropic": "claude", "openai": "gpt", "gdm": "gemini", "meta": "muse",
+            "xai": "grok"}
+    res = GrandJury(["stub:claude-r1", "stub:gpt-r1", "stub:gemini-r1"]).evaluate(
+        "T", list(LAB_KEYS), fams)
+    pj = res["per_juror"]
+    # Per juror: own ups, every lab's ups_without and ups - ups_without (no family filter).
+    assert pj["stub:claude-r1"]["ups"] == 60
+    assert pj["stub:claude-r1"]["ups_without"]["openai"] == 70
+    assert pj["stub:claude-r1"]["contribution"] == {
+        "anthropic": 10, "openai": -10, "gdm": 10, "meta": 0, "xai": 10}
+    assert pj["stub:gemini-r1"]["contribution"]["anthropic"] == 30   # coerced "70" - "40"
+    a = res["actors"]
+    # anthropic: the claude juror is out -> gpt (5) and gemini (30).
+    assert a["anthropic"]["contribution"] == 17.5 and a["anthropic"]["n_jurors"] == 2
+    assert a["anthropic"]["ups_without"] == 42.5
+    # openai: the gpt juror is out -> claude (-10) and gemini (5).
+    assert a["openai"]["contribution"] == -2.5
+    # meta (muse): nobody excluded -> 0, 20, 20.
+    assert a["meta"]["contribution"] == round((0 + 20 + 20) / 3, 3)
+    assert "ups_contribution" not in a["meta"]
+    assert jury_mod.actor_contribution(a["openai"]) == -2.5
+    json.dumps(res)
+
+
+def test_grand_jury_reads_old_records_with_ups_contribution():
+    """Records written before R1: per-juror results with ups_contribution."""
+    old_result = _grand_obj(ups=55)
+    for k, row in old_result["actors"].items():
+        row.pop("ups_without")
+        row["ups_contribution"] = {"anthropic": 8}.get(k, -3)
+    per_juror = {"claude-sonnet-5": {"result": old_result, "attempts": 1, "errors": [],
+                                     "family": "claude"},
+                 "gpt-6-sol": {"result": json.loads(json.dumps(old_result)),
+                               "attempts": 1, "errors": [], "family": "gpt"},
+                 "gemini-3.1-pro": {"result": None, "error": "x", "attempts": 0,
+                                    "errors": ["x"], "family": "gemini"}}
+    res = jury_mod.aggregate_grand(per_juror, list(LAB_KEYS), {"anthropic": "claude"})
+    assert res["ups"] == 55
+    assert res["actors"]["anthropic"]["contribution"] == 8
+    assert res["actors"]["anthropic"]["n_jurors"] == 1
+    assert res["actors"]["anthropic"]["ups_without"] is None
+    assert res["actors"]["xai"]["contribution"] == -3
+    assert res["per_juror"]["claude-sonnet-5"]["contribution"]["anthropic"] == 8
+    assert "ups" not in res["per_juror"]["gemini-3.1-pro"]          # failed juror untouched
+    # An aggregated row from an old record is read through actor_contribution.
+    assert jury_mod.actor_contribution({"ups_contribution": 4.0, "n_jurors": 2}) == 4.0
+    assert jury_mod.actor_contribution({"contribution": None}) is None
+    assert jury_mod.actor_contribution(None) is None
+
+
+def test_macro_jury_fatal_juror_recorded_and_board_continues():
+    """R5A-1: one juror's FatalAPIError no longer kills the review."""
+    register_stub("gpt-r5mfatal", _fatal())
+    register_stub("claude-r5m", lambda s, u: json.dumps(
+        {"values": {a: 70 for a in AXES}, "mandate": "Publish incident reports."}))
+    register_stub("gemini-r5m", lambda s, u: json.dumps(
+        {"values": {a: 80 for a in AXES}, "mandate": "Publish incident reports quarterly."}))
+    cur = {a: 50 for a in AXES}
+    res = MacroJury(["stub:gpt-r5mfatal", "stub:claude-r5m", "stub:gemini-r5m"]).deliberate(
+        "United States", cur, "s")
+    bad = res["per_juror"]["stub:gpt-r5mfatal"]
+    assert bad["result"] is None and "400 organization must be verified" in bad["error"]
+    assert bad["attempts"] == 1 and bad["family"] == "gpt"
+    assert res["per_juror"]["stub:claude-r5m"]["result"] is not None
+    assert res["per_juror"]["stub:claude-r5m"]["family"] == "claude"
+    assert res["values"] == {a: 55 for a in AXES}                   # median 75, step 5
+    assert res["mandate"] in ("Publish incident reports.",           # 2 of 3 still propose
+                              "Publish incident reports quarterly.")
+    json.dumps(res)
+
+    # Two fatal jurors: the lone survivor's proposal is no majority; values still move.
+    register_stub("gpt-r5mfatal2", _fatal())
+    res = MacroJury(["stub:gpt-r5mfatal", "stub:gpt-r5mfatal2", "stub:claude-r5m"]).deliberate(
+        "United States", cur, "s")
+    assert res["mandate"] == "" and res["values"] == {a: 55 for a in AXES}
+    # All three fatal: values unchanged, no crash.
+    res = MacroJury(["stub:gpt-r5mfatal"] * 3).deliberate("United States", cur, "s")
+    assert res["values"] == cur and res["mandate"] == ""
+
+
+def test_macro_jury_budget_exceeded_propagates():
+    register_stub("claude-r5mok", lambda s, u: json.dumps(
+        {"values": {a: 50 for a in AXES}, "mandate": ""}))
+    register_stub("gpt-r5mbudget", _over_budget)
+    with pytest.raises(BudgetExceeded):
+        MacroJury(["stub:claude-r5mok", "stub:gpt-r5mbudget", "stub:claude-r5mok"]).deliberate(
+            "US", {a: 50 for a in AXES}, "s")
