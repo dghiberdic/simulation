@@ -54,3 +54,40 @@ def load_charter(lab_cfg: Dict[str, Any]) -> str:
     if not path.exists():
         raise FileNotFoundError(f"Charter missing for {lab_cfg['lab']}: {path}")
     return path.read_text()
+
+
+def load_dispositions() -> Dict[str, int]:
+    """Main-run disposition per seat (written by tools/disposition.py). Empty if absent."""
+    path = CONFIG_DIR / "dispositions.json"
+    return load_json(path) if path.exists() else {}
+
+
+def build_labs_and_world(cfg: Dict[str, Any], *, dispositions: Optional[Dict[str, int]] = None,
+                         charters: bool = True):
+    """
+    Construct the five seats and the world from config. `dispositions` maps lab
+    key -> 0..100; a seat left out keeps None (chosen in the pilot, T2).
+
+    Returns:
+        (labs: List[LabState], world: WorldState)
+    """
+    from datetime import date
+    from core.state import build_lab, WorldState  # local: avoid a cycle at import
+
+    a = cfg["economy"]["capability_compute_elasticity"]
+    dispositions = dispositions or {}
+    labs = []
+    for lab_cfg in load_lab_configs():
+        text = load_charter(lab_cfg) if charters else ""
+        lab = build_lab(lab_cfg, text, a)
+        lab.disposition = dispositions.get(lab.key)
+        labs.append(lab)
+
+    state = load_state()
+    start = date.fromisoformat(cfg["start_date"])
+    comp = cfg["compute"]
+    world = WorldState(
+        start=start, us_stock=comp["us_stock_t0"], us_growth=comp["us_stock_growth"],
+        china_stock=comp["china_stock_t0"], china_growth=comp["china_stock_growth"],
+        national_cap_share=comp["national_cap_share"], state_values=dict(state["values"]))
+    return labs, world
