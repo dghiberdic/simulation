@@ -284,18 +284,58 @@ _SPLIT_RE = re.compile(r"(?<![\w.])(\d{1,3})(\s*(?:/|-|–|:|\bto\b)\s*)(\d{1,3}
                        re.IGNORECASE)
 
 # Strong cue: the sentence is about the setting, so every number near it goes.
-# Weak cue: it may be, so only the chosen values (any form, and complements) go.
+# Weak cue: it may be, so only the chosen values (any form, and complements) and
+# any percentage or fraction go — and only in rationale and messages (J11): a
+# public statement, account or report says "charter" and "directive" about
+# everything, and its figures are what jurors judge.
 _STRONG_CUE_RE = re.compile(
     r"precedence|disposition|\bsettings?\b|\bweigh\w*|out\s+of\s+(?:100|10|ten|a\s+hundred|"
     r"one\s+hundred)\b|on\s+a\s+scale|/\s*100\b|\b0\s*(?:-|–|to)\s*100\b", re.IGNORECASE)
 _DIRECTIVE_RE = re.compile(r"\bdirectives?\b", re.IGNORECASE)
 _CHARTER_RE = re.compile(r"\bcharters?\b", re.IGNORECASE)
+# The H3 cue words (charter, directive, scale) and the round-2 choice words
+# (R1's "I pick seventy-five" must stay masked), plus board, choice, dial and
+# "my number" (R3D-7); nothing broader.
 _WEAK_CUE_RE = re.compile(r"\bcharters?\b|\bdirectives?\b|\blean\w*|\bmine\b|\byours\b|"
-                          r"\bchoos\w*|\bchose\w*|\bpick\w*|\bscale\b", re.IGNORECASE)
+                          r"\bchoos\w*|\bchose\w*|\bchoices?\b|\bpick\w*|\bscale\b|\bboards?\b|"
+                          r"\bdials?\b|\bmy\s+number\b", re.IGNORECASE)
+# On the choosing turn these sentences go too, number or not (R3D-7).
+_CHOICE_TALK_RE = re.compile(r"\bboards?\b|\b(?:higher|lower)\s+(?:end|side)\b", re.IGNORECASE)
+
+# Game figures are never masked (J11): a number directly followed by a game unit
+# noun, or directly after capability/fee/month/turn ("capability is 70").
+_NUM_TOKEN = r"(?:\d+(?:\.\d+)?|\b(?:" + _NUM_WORD_ALT + r")\b)"
+_UNIT_NOUNS = r"(?:units?|capital|influence|compute|capability|months?|labs?|points?|h100s?)\b"
+_FIGURE_AFTER_RE = re.compile(r"(?<![\w.])" + _NUM_TOKEN + r"(?=\s*-?\s*" + _UNIT_NOUNS + ")",
+                              re.IGNORECASE)
+_FIGURE_BEFORE_RE = re.compile(
+    r"(\b(?:capability|fees?|months?|turns?)\s*(?:(?:is|was|of|at|to|now|reached|stands\s+at)"
+    r"\s+|[=:]\s*)?)(" + _NUM_TOKEN + r")(?![\w]|\.\d)", re.IGNORECASE)
+_SHIELD_BASE = 0xE000                    # private-use characters: no mask pattern matches them
+_SHIELD_RE = re.compile("[-]")
 
 _ORDINALS = {2: ("half", "halves"), 3: ("third", "thirds"), 4: ("quarter|fourth", "quarters|fourths"),
              5: ("fifth", "fifths"), 10: ("tenth", "tenths"), 20: ("twentieth", "twentieths")}
 _SENTENCE_SPLIT = re.compile(r"((?<=[.!?])\s+|\n+)")
+
+
+def _shield_figures(text: str) -> Tuple[str, List[str]]:
+    """Replace game figures by placeholders no mask pattern can match."""
+    saved: List[str] = []
+
+    def keep(token: str) -> str:
+        saved.append(token)
+        return chr(_SHIELD_BASE + len(saved) - 1)
+    text = _FIGURE_BEFORE_RE.sub(lambda m: m.group(1) + keep(m.group(2)), text)
+    text = _FIGURE_AFTER_RE.sub(lambda m: keep(m.group(0)), text)
+    return text, saved
+
+
+def _unshield(text: str, saved: List[str]) -> str:
+    def back(m: re.Match) -> str:
+        i = ord(m.group(0)) - _SHIELD_BASE
+        return saved[i] if i < len(saved) else m.group(0)
+    return _SHIELD_RE.sub(back, text)
 
 
 def _num_alt(n: int) -> str:
@@ -306,20 +346,19 @@ def _num_alt(n: int) -> str:
     return "(?:" + "|".join(forms) + ")"
 
 
+_PERCENT_TAIL = r"\s*(?:%|pc\b|percent\b|per\s*cent\b)"
+
+
 def _whole(body: str) -> str:
-    """Not inside a longer number, decimal or compound ("seventy" in "seventy-five")."""
-    return r"(?<![\w.])(?:" + body + r")(?![\w]|\.\d|[\s-]+" + _ONES_RE + r"\b)"
+    """Not inside a longer number, decimal or compound ("seventy" in "seventy-five");
+    "70pc" counts as 70 (J12)."""
+    return (r"(?<![\w.])(?:" + body + r")(?:(?=pc\b)|(?![\w]|\.\d|[\s-]+" + _ONES_RE
+            + r"\b))")
 
 
-_PATTERN_CACHE: Dict[int, List[re.Pattern]] = {}
-
-
-def _value_patterns(v: int) -> List[re.Pattern]:
-    """Every way a model writes setting v: over 100, fractions, fraction words,
-    decimals, digits/words (with % or "percent" left in place), and the
-    complement 100-v. Most specific first."""
-    if v in _PATTERN_CACHE:
-        return _PATTERN_CACHE[v]
+def _fraction_patterns(v: int) -> List[str]:
+    """Setting v as a fraction: over 100, p/q, "p out of q", "p in q", fraction
+    words ("seven tenths", "three quarters")."""
     pats = [_num_alt(v) + r"\s*(?:/|out\s+of|in)\s*(?:100|a\s+hundred|one\s+hundred)\b"]
     fracs: List[Tuple[int, int]] = []
     if 0 < v < 100:
@@ -339,15 +378,49 @@ def _value_patterns(v: int) -> List[re.Pattern]:
                 words = "|".join(r"[\s-]+".join(map(re.escape, re.split(r"[ -]", w)))
                                  for w in _number_words(p))
                 pats.append(r"\b(?:" + words + r")[\s-]+(?:" + many + r")\b")
-    if 0 <= v <= 100:
-        dec = f"{v / 100:.2f}"[2:]                     # 70 -> "70", 5 -> "05"
-        short = dec.rstrip("0") or "0"
-        pats.append(r"(?<![\w.])0?\.(?:" + re.escape(dec) + "|" + re.escape(short) + r")(?!\d)")
-    pats.append(_whole(_num_alt(v)))
-    if 0 <= v <= 100 and 100 - v != v:
+    return pats
+
+
+def _plain_patterns(v: int) -> List[str]:
+    """Setting v as a decimal (0.7, .70), digits or words (with "%", "pc" or
+    "percent" left in place), and the complement 100-v."""
+    dec = f"{v / 100:.2f}"[2:]                         # 70 -> "70", 5 -> "05"
+    short = dec.rstrip("0") or "0"
+    pats = [r"(?<![\w.])0?\.(?:" + re.escape(dec) + "|" + re.escape(short) + r")(?!\d)",
+            _whole(_num_alt(v))]
+    if 100 - v != v:
         pats.append(_whole(_num_alt(100 - v)))
-    _PATTERN_CACHE[v] = [re.compile(p, re.IGNORECASE) for p in pats]
-    return _PATTERN_CACHE[v]
+    return pats
+
+
+# Any percentage or fraction near a cue (J11): "70pc", "two-thirds", "0.70", "7/10".
+_GENERIC_PATTERNS = (
+    r"(?<![\w.])\d{1,3}(?:\.\d+)?(?=" + _PERCENT_TAIL + ")",
+    r"\b(?:" + _NUM_WORD_ALT + r")(?=[\s-]*(?:percent|per\s*cent)\b)",
+    r"\b(?:" + _NUM_WORD_ALT + r")[\s-]+(?:" + _FRACTION_WORD_ALT + r")\b",
+    r"(?<![\w.])(?P<fa>\d{1,3})\s*/\s*(?P<fb>\d{1,3})(?![\w]|\.\d|/)",
+    r"(?<![\w.])\d{1,3}\s+(?:out\s+of|in)\s+(?:10|100|ten|a\s+hundred|one\s+hundred)\b",
+    r"(?<![\w.])0?\.\d{1,2}(?!\d)",
+)
+
+_PATTERN_CACHE: Dict[Tuple[int, ...], re.Pattern] = {}
+
+
+def _values_regex(values: Tuple[int, ...]) -> re.Pattern:
+    """One alternation (J12): every value's fraction forms first, then any
+    percentage or fraction, then decimals and whole numbers — so "7/10" is never
+    cut to "7/[N]" by the whole-number form of another seat's 10."""
+    if values not in _PATTERN_CACHE:
+        alts = [p for v in values for p in _fraction_patterns(v)]
+        alts += list(_GENERIC_PATTERNS)
+        alts += sorted((p for v in values for p in _plain_patterns(v)), key=len, reverse=True)
+        _PATTERN_CACHE[values] = re.compile("|".join(f"(?:{a})" for a in alts), re.IGNORECASE)
+    return _PATTERN_CACHE[values]
+
+
+def _value_patterns(v: int) -> List[re.Pattern]:
+    """Every way a model writes setting v (most specific first)."""
+    return [re.compile(p, re.IGNORECASE) for p in _fraction_patterns(v) + _plain_patterns(v)]
 
 
 def _as_value(v: Any) -> Optional[int]:
@@ -368,68 +441,87 @@ def _mask_splits(text: str) -> str:
     return _SPLIT_RE.sub(sub, text)
 
 
+def _mask_values(text: str, rx: re.Pattern) -> str:
+    def sub(m: re.Match) -> str:
+        a, b = m.group("fa"), m.group("fb")
+        if a is not None and int(a) >= int(b):         # "3/2", "12/4": not a share
+            return m.group(0)
+        return MASK
+    return rx.sub(sub, text)
+
+
 def _strong(sentence: str) -> bool:
     return bool(_STRONG_CUE_RE.search(sentence)) or bool(
         _DIRECTIVE_RE.search(sentence) and _CHARTER_RE.search(sentence))
 
 
-def _mentions_setting(sentence: str, own_pats: List[re.Pattern]) -> bool:
-    """On the choosing turn: a strong cue, the seat's own value in any form, or a
-    weak cue with any number."""
-    return (_strong(sentence) or any(p.search(sentence) for p in own_pats)
-            or bool(_WEAK_CUE_RE.search(sentence) and _ANY_NUMBER_RE.search(sentence)))
+def _mentions_setting(sentence: str, shielded: str, own_pats: List[re.Pattern]) -> bool:
+    """On the choosing turn: a strong cue, the board or "the higher/lower end",
+    the seat's own value in any form, or a weak cue with any number (game
+    figures do not count as numbers)."""
+    return (_strong(sentence) or bool(_CHOICE_TALK_RE.search(sentence))
+            or any(p.search(shielded) for p in own_pats)
+            or bool(_WEAK_CUE_RE.search(sentence) and _ANY_NUMBER_RE.search(shielded)))
 
 
 def mask_setting_mentions(text: Any, values: Any = (), own: Any = None,
-                          choosing: bool = False) -> Any:
+                          choosing: bool = False, weak: bool = True) -> Any:
     """
     H3 blinding of one piece of model-written text (never of an assembled
     transcript). `values`: every seat's setting; `own`: the writer's setting;
     `choosing`: this is the writer's rationale on the turn it chose, so every
-    sentence that mentions the setting is dropped whole (a run of dropped
-    sentences reads [N]). Then, per sentence with a one-sentence window either
-    side: a strong cue (precedence, disposition, setting, weigh/weight, "out of
-    100"/"out of 10", "on a scale", "/100", "0-100", or directive(s) together
-    with charter) masks every number; a weak cue (charter, directive, lean,
-    mine/yours, choose/pick, scale) masks the chosen values in any form (digits,
-    words, %, decimals, fractions, fraction words, complement). A split adding to
-    100 ("70/30") is always masked. Bare numbers far from any cue stay.
+    sentence that mentions the setting (or the board, or "the higher end") is
+    dropped whole (a run of dropped sentences reads [N]); `weak`: apply the weak
+    cues — rationale, messages and debrief answers only, not statements,
+    accounts, reports or error strings (J11).
+
+    Game figures are never masked (J11): a number followed by a unit noun (units,
+    Capital, Influence, compute, capability, months, labs, points, H100) or after
+    capability/fee/month/turn. Then, per sentence with a one-sentence window
+    either side: a strong cue (precedence, disposition, setting, weigh/weight,
+    "out of 100"/"out of 10", "on a scale", "/100", "0-100", or directive(s)
+    together with charter) masks every number; a weak cue (charter, directive,
+    lean, mine/yours, choose/choice/pick, scale, board, dial, "my number") masks
+    the chosen values in any form (digits, words, %/pc/percent, decimals,
+    fractions, fraction words, complement) and any percentage or fraction. A
+    split adding to 100 ("70/30") is always masked. Bare numbers far from any cue
+    stay.
     """
     if not isinstance(text, str):
         return text
-    vals = sorted({n for n in (_as_value(v) for v in list(values or ()) + [own]) if n is not None})
+    vals = tuple(sorted({n for n in (_as_value(v) for v in list(values or ()) + [own])
+                         if n is not None}))
     own_n = _as_value(own)
     own_pats = _value_patterns(own_n) if own_n is not None else []
-    val_pats = sorted((p for v in vals for p in _value_patterns(v)),
-                      key=lambda p: len(p.pattern), reverse=True)
+    rx = _values_regex(vals)
 
     parts = _SENTENCE_SPLIT.split(text)
     sents, seps = parts[0::2], parts[1::2] + [""]
+    shields = [_shield_figures(s) for s in sents]
     if choosing:
-        kept_s: List[str] = []
-        kept_sep: List[str] = []
-        for s, sep in zip(sents, seps):
-            if _mentions_setting(s, own_pats):
-                if kept_s and kept_s[-1] == MASK:      # one [N] per dropped run
-                    kept_sep[-1] = sep
+        kept: List[Tuple[str, str, Tuple[str, List[str]]]] = []
+        for s, sep, sh in zip(sents, seps, shields):
+            if _mentions_setting(s, sh[0], own_pats):
+                if kept and kept[-1][0] == MASK:       # one [N] per dropped run
+                    kept[-1] = (MASK, sep, kept[-1][2])
                     continue
-                s = MASK
-            kept_s.append(s)
-            kept_sep.append(sep)
-        sents, seps = kept_s, kept_sep
+                s, sh = MASK, (MASK, [])
+            kept.append((s, sep, sh))
+        sents = [k[0] for k in kept]
+        seps = [k[1] for k in kept]
+        shields = [k[2] for k in kept]
 
     strong = [_strong(s) for s in sents]
-    weak = [bool(_WEAK_CUE_RE.search(s)) for s in sents]
+    cued = [bool(weak and _WEAK_CUE_RE.search(s)) for s in sents]
     out = []
-    for i, s in enumerate(sents):
+    for i, (body, saved) in enumerate(shields):
         window = range(max(0, i - 1), min(len(sents), i + 2))
-        s = _mask_splits(s)
+        body = _mask_splits(body)
         if any(strong[j] for j in window):
-            s = _ANY_NUMBER_RE.sub(MASK, s)
-        if any(strong[j] or weak[j] for j in window):
-            for p in val_pats:
-                s = p.sub(MASK, s)
-        out.append(s + seps[i])
+            body = _ANY_NUMBER_RE.sub(MASK, body)
+        if any(strong[j] or cued[j] for j in window):
+            body = _mask_values(body, rx)
+        out.append(_unshield(body, saved) + seps[i])
     return "".join(out)
 
 
@@ -461,8 +553,23 @@ def blind_record(record: Dict[str, Any]) -> Dict[str, Any]:
     all_vals = [v for v in values.values() if v is not None]
     chose = _choice_turns(rec)
 
-    def m(text: Any, writer: Optional[str], choosing: bool = False) -> Any:
-        return mask_setting_mentions(text, all_vals, values.get(writer), choosing)
+    def m(text: Any, writer: Optional[str], choosing: bool = False, weak: bool = True) -> Any:
+        return mask_setting_mentions(text, all_vals, values.get(writer), choosing, weak)
+
+    def deep(obj: Any, writer: Optional[str], weak: bool = False) -> Any:
+        """J15: every string in a nested model-written structure; in a dict that
+        mentions the setting (a cue in a key or string, e.g. {"type":
+        "set_directive_precedence", "value": 70}) the numbers go too."""
+        if isinstance(obj, str):
+            return m(obj, writer, weak=weak)
+        if isinstance(obj, list):
+            return [deep(x, writer, weak) for x in obj]
+        if isinstance(obj, dict):
+            cue = any(_strong(str(k)) or (isinstance(v, str) and _strong(v))
+                      for k, v in obj.items())
+            return {k: (MASK if cue and isinstance(v, (int, float)) and not isinstance(v, bool)
+                        else deep(v, writer, weak)) for k, v in obj.items()}
+        return obj
 
     for turn in rec.get("turns", []):
         for key, entry in (turn.get("actors") or {}).items():
@@ -472,26 +579,28 @@ def blind_record(record: Dict[str, Any]) -> Dict[str, Any]:
             for field in ("rationale", "reasoning"):
                 if entry.get(field):
                     entry[field] = m(entry[field], key, choosing)
-            entry.pop("disposition_reason", None)
+            for field in ("disposition_reason", "directive_precedence",
+                          "directive_precedence_reason"):     # K4 reply key, either name
+                entry.pop(field, None)
             entry["disposition"] = None
             entry["thinking"] = None
             entry["attempts"] = []                     # raw replies restate everything
             entry["message_attempts"] = []
-            if entry.get("public_statement"):
-                entry["public_statement"] = m(entry["public_statement"], key)
-            rep = entry.get("reported")
-            if isinstance(rep, list):
-                entry["reported"] = [m(x, key) for x in rep]
-            elif isinstance(rep, str):
-                entry["reported"] = m(rep, key)
-            if isinstance(entry.get("report"), dict):
-                entry["report"] = {f: m(v, key) for f, v in entry["report"].items()}
-            for msg in entry.get("messages_sent") or []:
-                if isinstance(msg, dict):
-                    msg["text"] = m(msg.get("text"), key)
+            # Statements, accounts, reports, raw and rejected actions, and error
+            # strings (which echo replies): strong cues only (J11, J15).
+            for field in ("public_statement", "reported", "report", "raw_actions", "rejected"):
+                if entry.get(field) is not None:
+                    entry[field] = deep(entry[field], key)
+            for field in [f for f in entry if f == "error" or f.endswith("_error")]:
+                entry[field] = deep(entry[field], key)
+            msgs = entry.get("messages_sent")
+            if isinstance(msgs, list):
+                entry["messages_sent"] = [
+                    {**msg, "text": deep(msg.get("text"), key, weak=True)}
+                    if isinstance(msg, dict) else deep(msg, key, weak=True) for msg in msgs]
     for msg in rec.get("a2a") or []:
         if isinstance(msg, dict):
-            msg["text"] = m(msg.get("text"), msg.get("sender"))
+            msg["text"] = deep(msg.get("text"), msg.get("sender"), weak=True)
     debriefs = rec.get("debriefs")
     if isinstance(debriefs, dict):
         for key, d in debriefs.items():

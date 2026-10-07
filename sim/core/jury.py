@@ -6,8 +6,8 @@ MacroJury       — 3 models per state, every 4 turns (§5.1). Updates the state
                   values (median of the jurors, at most ±max_change per review)
                   and may issue a mandate, which counts as a state directive and
                   stands until superseded (G9). A mandate needs a majority of
-                  proposals; its text is that of the proposer closest to the
-                  median vote (D7).
+                  the three-member board (at least two proposers, R3D-8); its
+                  text is that of the proposer closest to the median vote (D7).
 GrandJury       — 3 models, after the run, one batch (§7). Free-text UPS and
                   each actor's UPS contribution; per-actor alignment against
                   three references (§8); perceived disposition from behaviour.
@@ -305,8 +305,8 @@ def _validate_macro(obj: dict) -> Optional[str]:
 
 class MacroJury:
     """3 models per state, every 4 turns. Values are the per-axis median of valid
-    votes, stepped at most ±max_change; a mandate needs a majority of non-empty
-    proposals among the jurors that gave a usable reply."""
+    votes, stepped at most ±max_change; a mandate needs non-empty proposals from
+    a majority of the whole board (2 of 3), however many jurors failed."""
 
     def __init__(self, jurors: List[str], max_change: int = 5,
                  max_tokens: int = MACRO_MAX_TOKENS, effort: Optional[str] = JUROR_EFFORT):
@@ -329,7 +329,9 @@ class MacroJury:
                 _macro_user(state, current, summary, self.max_change, mandates),
                 validate=_validate_macro, max_tokens=self.max_tokens, effort=self.effort,
                 purpose="macro_jury", run_id=run_id)
-            per_juror[model] = obj
+            # Failed jurors are recorded too (R3D-8): their errors and attempt count.
+            per_juror[model] = {"result": obj, "attempts": len(attempts),
+                                "errors": [a.get("error") for a in attempts if a.get("error")]}
             if isinstance(obj, dict):
                 proposals.append(obj)
                 usable_jurors.append(model)
@@ -345,16 +347,18 @@ class MacroJury:
                 target = statistics.median(votes)
                 step = max(-self.max_change, min(self.max_change, round(target - current[axis])))
                 new_values[axis] = max(0, min(100, int(current[axis] + step)))
-        mandate, source, all_proposals = self._choose_mandate(proposals, usable_jurors)
+        mandate, source, all_proposals = self._choose_mandate(proposals, usable_jurors,
+                                                              len(self.jurors))
         return {"values": new_values, "mandate": mandate, "mandate_source": source,
                 "proposals": all_proposals, "per_juror": per_juror, "before": dict(current)}
 
     @staticmethod
-    def _choose_mandate(usable: List[dict], jurors: List[str]
+    def _choose_mandate(usable: List[dict], jurors: List[str], board: int = 3
                         ) -> Tuple[str, Optional[str], List[Dict[str, str]]]:
         """
-        D7: a mandate is issued only when a majority of the usable replies propose
-        one; its text is the proposal of the proposing juror whose value vector is
+        D7, R3D-8: a mandate is issued only when a majority of the whole board
+        (`board` seats; 2 of 3) propose one — a lone proposer whose colleagues
+        failed to reply does not speak for the board; its text is the proposal of the proposing juror whose value vector is
         closest (Euclidean) to the per-axis median of all usable votes, so the
         directive comes from the juror most representative of the board (ties: the
         first in juror order). `usable` and `jurors` are parallel lists (a model may
@@ -365,7 +369,7 @@ class MacroJury:
                                               if isinstance(o.get("mandate"), str) else "")}
                      for m, o in zip(jurors, usable)]
         proposers = [i for i, p in enumerate(proposals) if p["mandate"]]
-        if not usable or len(proposers) <= len(usable) / 2:
+        if not usable or len(proposers) < board // 2 + 1:
             return "", None, proposals
 
         vectors = [{a: as_number((o.get("values") or {}).get(a)) for a in VALUE_AXES}

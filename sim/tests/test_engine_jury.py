@@ -142,10 +142,13 @@ def test_macro_jury_numeric_robustness(monkeypatch):
     mandates = [{"turn": 4, "text": "Report breaches within a week."}]
     res = MacroJury(["stub:mj_bad", "stub:mj_hi", "stub:mj_hi"]).deliberate(
         "United States", current, "summary", mandates=mandates)
-    assert res["per_juror"]["stub:mj_bad"] is None
+    bad = res["per_juror"]["stub:mj_bad"]                    # failed juror kept (R3D-8)
+    assert bad["result"] is None and bad["attempts"] == 3
+    assert len(bad["errors"]) == 3 and "about 60" in bad["errors"][0]
+    assert res["per_juror"]["stub:mj_hi"]["result"]["mandate"] == "Disclose incidents."
     assert res["values"] == {"time_horizon": 60, "transparency_threshold": 60,
                              "risk_tolerance": 55, "democratic_tendency": 65}
-    assert res["mandate"] == "Disclose incidents."          # 2 of 2 usable proposals
+    assert res["mandate"] == "Disclose incidents."          # 2 of the 3-member board
     call = calls[0]
     assert call["max_tokens"] == 8000 and call["effort"] == "medium"
     assert "Each value can move at most 5 points per review" in call["user"]
@@ -212,7 +215,7 @@ def test_macro_mandate_text_from_juror_closest_to_median():
 
 
 def test_macro_mandate_skipped_juror_does_not_count():
-    # A juror with no usable reply is out of the denominator: 1 of 2 usable is no majority.
+    # One proposer is no majority of the three-member board, whoever failed (R3D-8).
     register_stub("mj_none", lambda s, u: "not json at all")
     register_stub("mj_p", _vote(50, "Pause intrusions."))
     register_stub("mj_q", _vote(50, ""))
@@ -231,3 +234,36 @@ def test_juror_prompts_explain_redaction_marks(monkeypatch):
     assert "[N] marks redacted text." in calls[0]["user"]
     assert "[N] marks redacted text." in calls[1]["user"]
     assert "[OTHER LAB]" in calls[1]["user"]
+
+
+# ---------------------------------------------------------------------------
+# Round 3: a mandate needs two proposers of the three-member board (J14/R3D-8)
+# ---------------------------------------------------------------------------
+
+def test_macro_mandate_needs_two_proposers_of_the_board():
+    """r3D/macro.py: one proposer whose two colleagues failed used to issue a
+    mandate alone ("1 of 1 usable")."""
+    register_stub("r3_bad", lambda s, u: "no json at all")
+    register_stub("r3_p1", _vote(50, "Halt all tenancy access."))
+    register_stub("r3_p2", _vote(80, "Publish every purchase."))
+    register_stub("r3_p3", _vote(52, ""))
+    register_stub("r3_p4", _vote(51, "   "))
+    cur = {a: 50 for a in AXES}
+
+    def run(*names):
+        return MacroJury([f"stub:{n}" for n in names]).deliberate("US", dict(cur), "x")
+    res = run("r3_bad", "r3_bad", "r3_p1")
+    assert res["mandate"] == "" and res["mandate_source"] is None
+    assert res["proposals"] == [{"juror": "stub:r3_p1", "mandate": "Halt all tenancy access."}]
+    assert res["per_juror"]["stub:r3_bad"]["result"] is None
+    assert res["per_juror"]["stub:r3_bad"]["attempts"] >= 1
+    assert res["per_juror"]["stub:r3_bad"]["errors"]
+    # Two proposers among two usable replies: a majority of the board.
+    res = run("r3_bad", "r3_p1", "r3_p2")
+    assert res["mandate"] == "Halt all tenancy access." and res["mandate_source"] == "stub:r3_p1"
+    for order in (("r3_p1", "r3_p2", "r3_p3"), ("r3_p2", "r3_p1", "r3_p3")):
+        res = run(*order)
+        assert res["mandate"] == "Halt all tenancy access."     # p1 is closest to the median
+        assert res["mandate_source"] == "stub:r3_p1"
+    res = run("r3_p3", "r3_p4", "r3_p1")                         # blank proposals do not count
+    assert res["mandate"] == "" and res["mandate_source"] is None
