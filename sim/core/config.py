@@ -24,6 +24,11 @@ def load_json(path: Path) -> Dict[str, Any]:
         return json.load(f)
 
 
+def pilot_budget_guard() -> float:
+    """The whole pilot's spend guard (config/pilot.json budget_guard): a shared-ledger total in USD."""
+    return float(load_json(CONFIG_DIR / "pilot.json")["budget_guard"])
+
+
 def apply_overrides(cfg: Dict[str, Any], overrides: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Return a copy of cfg with dotted-key overrides applied. Unknown keys raise."""
     cfg = copy.deepcopy(cfg)

@@ -37,7 +37,7 @@ Otherwise keep sigma.
 
 CLI:
   python tools/attribution_probe.py [--n 120] [--models m1,m2] [--seed 0]
-                                    [--budget 100] [--spend-file F] [--dry-run]
+                                    [--budget USD] [--spend-file F] [--dry-run]
                                     [--output out.json]
   Real calls share the pilot's spend ledger (data/spend.json) and guard. The
   results go to data/pilot/T3probe/probe_<timestamp>.json unless --output
@@ -59,6 +59,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 SIM_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SIM_DIR))
 
+from core.config import pilot_budget_guard
 from core.costs import BudgetExceeded, configure, get_tracker
 from core.llm import FatalAPIError, complete_json, preflight, register_stub
 
@@ -463,7 +464,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--n", type=int, default=120, help="number of vignettes")
     p.add_argument("--models", default="", help="comma-separated models (default: the five actors)")
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--budget", type=float, default=100.0, help="USD spend guard for real calls")
+    p.add_argument("--budget", type=float, default=None,
+                   help="USD guard on the shared ledger total for real calls (default: config/pilot.json "
+                        "budget_guard)")
     p.add_argument("--spend-file", default=None,
                    help="measured-spend ledger (default sim/data/spend.json, shared with the pilot)")
     p.add_argument("--dry-run", action="store_true", help="offline stub, $0")
@@ -479,7 +482,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         cfg = {}
     models = [m.strip() for m in args.models.split(",") if m.strip()] or default_models()
     if not args.dry_run:
-        configure(spend_file=Path(args.spend_file) if args.spend_file else None, budget=args.budget)
+        configure(spend_file=Path(args.spend_file) if args.spend_file else None,
+                  budget=pilot_budget_guard() if args.budget is None else args.budget)
         problems = preflight(models)
         if problems:
             print("Preflight failed; nothing was called:\n  " + "\n  ".join(problems))

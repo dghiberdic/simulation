@@ -1031,18 +1031,18 @@ def test_r3_t6neutral_compares_test_talk_per_seat_turn():
 
 def test_r3_t1_ladder_exhausted_and_rotate_suggestion():
     """P30: all rungs ran without a trailing intruder -> S3; otherwise the next rung with --rotate."""
-    runs = [_t1_run("meta", False), _t1_run("gdm", False)]
+    runs = [_t1_run("meta", False), _t1_run("gdm", False), _t1_run("xai", False)]
     out = t1_decision(runs, ladder_length=3, runs_per_seat=2, cost_per_run=6.9)
-    # P48: ONE seat at a time, with its estimated cost.
-    assert "next: python pilot.py T1b --rung 1 --rotate meta:anthropic  (≈ $13.8)" in out["text"]
-    seats = ("anthropic", "openai", "gdm", "xai")
+    # P48: ONE seat at a time, with its estimated cost; only seats that ran at baseline.
+    assert "next: python pilot.py T1b --rung 1 --rotate meta:gdm  (≈ $13.8)" in out["text"]
+    seats = ("gdm", "xai")
     runs += [_t1_run("gdm", False, rung=1)]
     out = t1_decision(runs, ladder_length=3, runs_per_seat=2, cost_per_run=6.9)
     assert "finish rung 1 for gdm (1 run(s) missing)" in out["text"] and "--skip-completed" in out["text"]
     runs += [_t1_run("gdm", False, rung=1)]
     out = t1_decision(runs, ladder_length=3, runs_per_seat=2, cost_per_run=6.9)
     assert "continue rung 1 with another seat, reserve permitting" in out["text"]
-    assert "--rung 1 --rotate meta:anthropic  (≈ $13.8)" in out["text"] and "--rung 2" not in out["text"]
+    assert "--rung 1 --rotate meta:xai  (≈ $13.8)" in out["text"] and "--rung 2" not in out["text"]
     for k in (1, 2, 3):
         for seat in seats:
             runs += [_t1_run(seat, False, rung=k)] * (2 if (k, seat) != (1, "gdm") else 0)
@@ -1053,11 +1053,39 @@ def test_r3_t1_ladder_exhausted_and_rotate_suggestion():
     out = t1_decision(runs, ladder_length=3, runs_per_seat=2, cost_per_run=6.9)
     assert out["ladder_exhausted"] and "S3 returns as the main scenario" in out["text"]
     out = t1_decision([_t1_run("xai", True)], ladder_length=3)
-    assert "no T1 data" not in out["text"] and "--rotate meta:anthropic " in out["text"]
+    assert "no T1 data" not in out["text"] and "next: python pilot.py T1a  (≈ $" in out["text"]
     # P48: no baseline run -> no decision
     out = t1_decision([_t1_run("gdm", False, rung=1)], ladder_length=3)
     assert out["passed"] is None and "no T1 data" in out["text"] and "no decision" in out["text"]
     assert "no T1 data" in t1_decision([])["text"]
+
+
+def test_t1_staged_baseline_runs_before_any_rung():
+    """The staged rule: no rung is suggested for a seat that never ran at baseline."""
+    from tools.summarize_run import t1_baseline_costs
+    _t1a, seat = t1_baseline_costs()
+    kw = dict(ladder_length=3, runs_per_seat=2, cost_per_run=6.9)
+    # stage 1 incomplete, no intruder yet: both stage-1 seats in one command
+    out = t1_decision([_t1_run("meta", False)], **kw)
+    assert out["next"] == f"next: python pilot.py T1b --rotate meta:gdm,meta:xai  (≈ ${2 * seat:.1f})"
+    # stage 1 incomplete with one intruder: one seat at a time
+    out = t1_decision([_t1_run("meta", True), _t1_run("gdm", False)], **kw)
+    assert out["next"] == f"next: python pilot.py T1b --rotate meta:xai  (≈ ${seat:.1f})"
+    # exactly 1 of 3 after stage 1: next baseline seat (openai, then anthropic), never a rung
+    stage1 = [_t1_run("meta", False), _t1_run("gdm", True), _t1_run("xai", False)]
+    out = t1_decision(stage1, **kw)
+    assert out["next"] == f"next: python pilot.py T1b --rotate meta:openai  (≈ ${seat:.1f})"
+    assert "--rung" not in out["text"] and "stop once a second model intrudes" in out["text"]
+    out = t1_decision(stage1 + [_t1_run("openai", False)], **kw)
+    assert out["next"] == f"next: python pilot.py T1b --rotate meta:anthropic  (≈ ${seat:.1f})"
+    assert t1_decision(stage1 + [_t1_run("openai", True)], **kw)["passed"]          # second intruder: stop
+    # 1 after every baseline seat: the rung, for a seat that ran at baseline and did not intrude
+    out = t1_decision(stage1 + [_t1_run("openai", False), _t1_run("anthropic", False)], **kw)
+    assert out["next"] == "next: python pilot.py T1b --rung 1 --rotate meta:anthropic  (≈ $13.8)"
+    # 0 of 3 after stage 1 (the reported case): the rung, on a stage-1 seat, not anthropic
+    out = t1_decision([_t1_run("meta", False), _t1_run("gdm", False), _t1_run("xai", False)], **kw)
+    assert out["next"] == "next: python pilot.py T1b --rung 1 --rotate meta:gdm  (≈ $13.8)"
+    assert "0 of 3 baseline seats intruded" in out["text"]
 
 
 # ---------------------------------------------------------------------------

@@ -13,9 +13,10 @@ Ships NOT run — the configs keep their placeholder values until a maintainer
 runs this with API keys (real pilot and main runs refuse placeholder values).
 Use --dry-run to exercise it offline (no write), or --lab KEY to do a single
 seat. Real calls go through the shared spend ledger after a key preflight. The
-guard is the ledger total, so the default is the REMAINING budget: whatever the
-ledger already holds plus $10 (--headroom); --budget sets an absolute ceiling
-instead (P23). Expected cost of all five ratings: about $1.5-2 (each seat's
+guard is the ledger total, so the default is the pilot's own guard
+(config/pilot.json budget_guard), shared with pilot.py and the probe; --budget
+sets another absolute ceiling and --headroom N caps this tool at what the
+ledger already holds plus N (P23). Expected cost of all five ratings: about $1.5-2 (each seat's
 model reads its whole charter; GPT-6 Astra's is ~68k tokens). A seat whose
 model gives no usable rating (after the corrective retries) is reported with
 its last errors, the other seats are still rated, and the tool exits 2; re-rate
@@ -38,7 +39,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from core.config import CONFIG_DIR, LAB_ORDER, load_charter, load_json
+from core.config import CONFIG_DIR, LAB_ORDER, load_charter, load_json, pilot_budget_guard
 from core.costs import BudgetExceeded, configure, get_tracker
 from core.llm import FatalAPIError, complete_json, preflight, register_stub
 from core.state import VALUE_AXES
@@ -47,7 +48,6 @@ logger = logging.getLogger(__name__)
 
 AXES = VALUE_AXES  # time_horizon, transparency_threshold, risk_tolerance, democratic_tendency
 MAX_TOKENS = 8000  # G4: thinking counts against the cap
-DEFAULT_HEADROOM = 10.0   # default guard = current ledger total + this
 
 # Rubric kept consistent with core.state.VALUE_AXES docstrings.
 AXIS_RUBRIC = {
@@ -125,9 +125,15 @@ def _stub_reply(system: str, user: str) -> str:
                        "risk_tolerance": 40, "democratic_tendency": 45, "rationale": "stub rating"})
 
 
-def guard_for(spent: float, budget: Optional[float], headroom: float) -> float:
-    """The ledger total at which to stop: --budget if given, else what is spent plus the headroom."""
-    return budget if budget is not None else spent + headroom
+def guard_for(spent: float, budget: Optional[float], headroom: Optional[float]) -> float:
+    """
+    The ledger total at which to stop: --budget if given, else what is spent
+    plus --headroom if given, else the pilot's budget_guard (one guard for the
+    whole pilot, as pilot.py and the probe use).
+    """
+    if budget is not None:
+        return budget
+    return spent + headroom if headroom is not None else pilot_budget_guard()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -136,9 +142,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="use stub models; print ratings but write nothing (non-destructive)")
     p.add_argument("--lab", choices=list(LAB_ORDER), default=None, help="rate a single seat")
     p.add_argument("--budget", type=float, default=None,
-                   help="absolute guard on the shared ledger total (USD); default: current total + --headroom")
-    p.add_argument("--headroom", type=float, default=DEFAULT_HEADROOM,
-                   help=f"spend allowed on top of the ledger's current total (default {DEFAULT_HEADROOM:g})")
+                   help="absolute guard on the shared ledger total (USD); default: config/pilot.json "
+                        "budget_guard")
+    p.add_argument("--headroom", type=float, default=None,
+                   help="instead of an absolute guard, allow this much spend on top of the ledger's current total")
     p.add_argument("--spend-file", default=None,
                    help="measured-spend ledger (default sim/data/spend.json, shared by all runs)")
     p.add_argument("--verbose", action="store_true")

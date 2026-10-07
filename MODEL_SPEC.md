@@ -128,22 +128,29 @@ and 200 seeded Dirichlet weightings) — rank stability of runs and cells — is
   `<id>-vN`, and the cleared run's pooled rating rows go with it —
   `pilot.remove_ratings`). Run ids carry the seat swap (`pilot.plan_runs`:
   `T1b-meta-gdm-run01[-rungK]`) and follow the preset's conditions
-  (`T5-C-run01` even with `--conditions C`). Run counts with a rotation are per
-  seat (`pilot.resolve_runs`: `runs_per_seat`, `rung_runs_per_seat`); the
-  planned runs and their estimate (`pilot.estimate_cost`) print before any
-  call; `--skip-completed` keeps finished runs (`pilot.completed_record`);
-  ladder rungs skip debriefs and the Grand Jury unless `--debrief` /
-  `--grand-jury`.
+  (`T5-C-run01` for the deferred C cell, `--conditions C`). Run counts with a
+  rotation are per seat (`pilot.resolve_runs`: `runs_per_seat`,
+  `rung_runs_per_seat`); the planned runs and their estimate
+  (`pilot.estimate_cost`) print before any call; `--skip-completed` keeps
+  finished runs (`pilot.completed_record`); ladder rungs skip debriefs and the
+  Grand Jury, and under the $50 plan only T0 and T1a run the Grand Jury, unless
+  `--debrief` / `--grand-jury`.
   Each preset's `decides` list picks the decision lines its summary prints;
-  pooled lines (T1, T3, T6, T7) and T9 never appear per preset (K3). The $100 measured-spend guard is
-  `core.costs.CostTracker.check` on the shared ledger `data/spend.json`
-  (`rate_charters.guard_for`: remaining budget = ledger + 10). T2 has no runs:
+  pooled lines (T1, T3, T6, T7) and T9 never appear per preset (K3). The
+  measured-spend guard (`budget_guard` in `config/pilot.json`, $48 for the $50
+  plan; the spec's §9.2 figure is $100) is `core.costs.CostTracker.check` on the
+  shared ledger `data/spend.json`; `rate_charters.py` and the probe default to
+  the same guard (`core.config.pilot_budget_guard`; `rate_charters.guard_for`,
+  `--headroom N` for ledger + N instead). T2 has no runs:
   blind ratings after every pilot run, resolved by `tools/disposition.py`
   (juror fixed effect, ICC(1,1), §2 rule with the span over per-run means).
   T3 pools the misreports of every F3 run plus the probe and T6 reads the T1/T4
   debriefs (aux §4), so neither has a preset; T1 pools T1a + T1b
-  (`summarize_run.t1_decision`, `--t1`, one seat at a time with its cost; no
-  baseline → no decision; ladder exhausted → S3); T7 is read
+  (`summarize_run.t1_decision`, `--t1`: a staged baseline — meta in T1a, then
+  gdm and xai, then openai and anthropic one at a time only after exactly one
+  trailing intruder — before any rung, and rungs one seat at a time for seats
+  that ran at baseline, each with its cost; no baseline → no decision; ladder
+  exhausted → S3); T7 is read
   from the T1a log; T8 runs on main-run logs (`tools/jury_check.py`; no pairs →
   no decision). T6neutral: `summarize_run.decisions` compares test talk per
   seat-turn between the neutral and eval arms (`pilot.py T6neutral --eval-arm`).
@@ -154,8 +161,9 @@ and 200 seeded Dirichlet weightings) — rank stability of runs and cells — is
   model ids per actor from the attempts and per juror through
   `pilot.install_served_probe`, mismatches flagged; the MacroJury measured once
   on the final state — `pilot.measure_macro_jury`); the core order re-projected
-  from the measured costs with the trims: `pilot.reproject` (`core_order`,
-  `fixed_costs`, `trims` in `config/pilot.json`).
+  from the measured costs with the trims: `pilot.reproject` (`core_order`, whose
+  entries can carry the plan's `rotate` / `disposition_jury`, `fixed_costs`,
+  `trims` in `config/pilot.json`).
 - Dependent variables (§9.3) and the decision lines for T3–T7:
   `tools/summarize_run.py` (`aggregate(..., decide=...)["decisions"]`;
   `account_verdict` for F3 misreports, `solicitation_verdict` /

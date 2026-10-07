@@ -53,7 +53,7 @@ def _merged(name):
 
 def test_pilot_config_loads_and_presets_well_formed():
     data = load_json(PILOT_FILE)
-    assert data["budget_guard"] == 100
+    assert data["budget_guard"] == 48                       # the $50 plan, with a margin
     for name, preset in data["presets"].items():
         merged = {**data["defaults"], **preset}
         for key in ("scenario", "fog", "turns", "runs", "a2a", "brief",
@@ -74,9 +74,14 @@ def test_budget_safe_preset_set():
     assert not {"T2", "T3", "T6", "T7", "T8"} & set(presets), \
         "T2 pooled, T3 from all F3 runs, T6 from T1/T4 debriefs, T7 from T1a, T8 on main runs"
     t5 = _merged("T5")
-    assert t5["runs"] == 1 and t5["grand_jury"] is False and t5["conditions"] == ["A", "C"]
+    assert t5["runs"] == 1 and t5["grand_jury"] is False and t5["conditions"] == ["A"]    # C deferred
     assert t5["scripted_seats"] == {"xai": "t5_scripted"}
     assert _merged("T5false")["conditions"] == ["A"]
+    # The $50 plan: one run per S2 arm, merged A2A off T4, the Grand Jury only on T0 and T1a.
+    assert _merged("T4")["runs"] == 1 and _merged("T9")["runs"] == 1
+    assert [n for n in ("T0", "T1a", "T1b", "T4", "T5", "T5false", "T6neutral", "T9")
+            if _merged(n)["a2a"] == "separate"] == ["T0", "T4"]
+    assert [n for n in load_json(PILOT_FILE)["presets"] if _merged(n)["grand_jury"]] == ["T0", "T1a"]
     for name in ("T1a", "T1b", "T4", "T6neutral"):
         assert _merged(name).get("debrief") is True, name
     assert _merged("T6neutral")["brief"] == "neutral"
@@ -238,8 +243,8 @@ def test_dry_run_t6neutral_builds_debriefs(tmp_path):
 
 def test_dry_run_t5_scripted_seat_skips_debrief_and_jury(tmp_path):
     assert pilot.main(["--dry-run", "T5", "--output", str(tmp_path)]) == 0
-    assert {p.name for p in tmp_path.glob("T5-*-run01.json")} == {"T5-A-run01.json", "T5-C-run01.json"}
-    record = json.loads((tmp_path / "T5-A-run01.json").read_text())
+    assert {p.name for p in tmp_path.glob("T5-*run01.json")} == {"T5-run01.json"}        # condition A only
+    record = json.loads((tmp_path / "T5-run01.json").read_text())
     assert record["turns"][0]["actors"]["xai"]["scripted"]
     assert record["final"].get("grand_jury") in (None, {})
     pooled = json.loads((tmp_path / "disposition_ratings.dry.json").read_text())
@@ -337,7 +342,7 @@ def test_pilot_stops_and_writes_summary_on_halt(tmp_path, monkeypatch, exc, code
     assert pilot.main(["--dry-run", "T4", "--output", str(tmp_path)]) == code
     summary = json.loads((tmp_path / "pilot_summary_T4.json").read_text())
     assert summary["status"] == status and summary["runs_completed"] == 0
-    assert summary["runs_requested"] == 2
+    assert summary["runs_requested"] == 1
     kw = _FakeEngine.kwargs
     assert kw["dry_run"] is True and kw["run_meta"]["test"] == "T4" and kw["parallel"] is True
 
@@ -482,11 +487,12 @@ def test_rate_charters_real_mode_preflight_and_budget(monkeypatch):
     monkeypatch.setattr(rate_charters, "rate_lab", lambda *a, **k: pytest.fail("called a model"))
     assert rate_charters.main(["--lab", "meta"]) == 2
     args = rate_charters.build_parser().parse_args([])
-    assert args.budget is None and args.headroom == 10.0
+    assert args.budget is None and args.headroom is None
 
 
-def test_rate_charters_guard_is_remaining_budget(tmp_path, monkeypatch):
-    """P23: the default guard is the ledger's current total + 10, not an absolute $10."""
+def test_rate_charters_guard_is_the_pilot_guard(tmp_path, monkeypatch):
+    """P23: the default guard is the pilot's budget_guard on the ledger total, not an absolute $10."""
+    assert rate_charters.guard_for(57.5, None, None) == load_json(PILOT_FILE)["budget_guard"]
     assert rate_charters.guard_for(57.5, None, 10.0) == 67.5
     assert rate_charters.guard_for(57.5, 80.0, 10.0) == 80.0
     spend = tmp_path / "s.json"
@@ -499,6 +505,8 @@ def test_rate_charters_guard_is_remaining_budget(tmp_path, monkeypatch):
         raise BudgetExceeded("stop here")
     monkeypatch.setattr(rate_charters, "rate_lab", fake_rate)
     assert rate_charters.main(["--lab", "meta", "--spend-file", str(spend)]) == 1          # P65: budget stop exits 1
+    assert seen["budget"] == pytest.approx(48.0)
+    assert rate_charters.main(["--lab", "meta", "--spend-file", str(spend), "--headroom", "10"]) == 1
     assert seen["budget"] == pytest.approx(52.0)
 
 
@@ -621,11 +629,12 @@ def test_debrief_uses_debrief_transcript(monkeypatch):
 
 
 def test_conditions_override_trims_t5(tmp_path):
-    assert pilot.main(["--dry-run", "T5", "--conditions", "A", "--turns", "2",
+    """P51: --conditions C runs the deferred T5 cell under its own id and summary name."""
+    assert pilot.main(["--dry-run", "T5", "--conditions", "C", "--turns", "2",
                        "--output", str(tmp_path)]) == 0
-    summary = json.loads((tmp_path / "pilot_summary_T5-A.json").read_text())       # P51
-    assert summary["conditions"] == ["A"] and summary["runs_requested"] == 1
-    assert (tmp_path / "T5-A-run01.json").exists() and (tmp_path / "review_T5-A.md").exists()
+    summary = json.loads((tmp_path / "pilot_summary_T5-C.json").read_text())       # P51
+    assert summary["conditions"] == ["C"] and summary["runs_requested"] == 1
+    assert (tmp_path / "T5-C-run01.json").exists() and (tmp_path / "review_T5-C.md").exists()
     with pytest.raises(SystemExit):
         pilot.main(["--dry-run", "T5", "--conditions", "D", "--output", str(tmp_path)])
 
@@ -760,7 +769,7 @@ def test_r4_plan_and_estimate_printed_before_starting(tmp_path, capsys, monkeypa
     pilot.main(["--dry-run", "T1b", "--rotate", "meta:gdm,meta:xai", "--turns", "2",
                 "--output", str(tmp_path), "--no-disposition-jury"])
     out = seen["out"]
-    assert "PILOT T1b-meta-gdm_meta-xai: 2 run(s) planned; estimated cost ≈ $4.63" in out          # P66: 2 x 6.94 x 2/6
+    assert "PILOT T1b-meta-gdm_meta-xai: 2 run(s) planned; estimated cost ≈ $2.14" in out          # P66: 2 x 3.21 x 2/6
     assert "T1b-meta-gdm-run01" in out and "T1b-meta-xai-run01" in out and "run02" not in out
 
 
@@ -814,7 +823,9 @@ def test_r4_t0_served_models_macro_measure_and_reprojection(tmp_path, capsys):
     assert usage["jurors"]["stub:gpt-macro|macro_jury"]["failed_calls"] == 0
     steps = [s["step"] for s in summary["reprojection"]["steps"]]
     assert steps == ["rate_charters", "T0", "T1a", "T1b", "T4", "T9", "T5", "T5false", "attribution_probe"]
-    assert [t["label"].split()[0] for t in summary["reprojection"]["trims"]] == ["T9", "T5", "T4", "T1b"]
+    assert [t["label"] for t in summary["reprojection"]["trims"]] == [
+        "T5false dropped", "probe dropped", "T1a --turns 8", "T4 --turns 5", "T9 --turns 5"]
+    assert "T1b gdm,xai" in out and "probe --n 40" in out and "total x 1.1 = $" in out
     assert "MacroJury measured once on the final state: 3/3 usable votes" in out
     assert "re-projected core order" in out and "Update config/prices.json" in out
     assert (tmp_path / "review_T0.md").exists() and summary["review"].endswith("review_T0.md")
@@ -827,14 +838,28 @@ def test_r4_served_mismatch_and_reprojection_math():
     proj = {"cost_per_turn": 1.0, "first_turn_cost": 2.0, "later_turn_cost": 1.0, "first_turn_a2a_cost": 1.0,
             "later_turn_a2a_cost": 0.5, "a2a_cost_per_turn": 0.5, "macro_cost_per_review": 0.1,
             "grand_jury_cost_per_run": 0.3, "disposition_jury_cost_per_run": 0.2, "debrief_cost_per_run": 0.0}
-    rep = pilot.reproject(pilot.load_pilot(), proj)
+    data = pilot.load_pilot()
+    rep = pilot.reproject(data, proj)
     cost = {s["step"]: s["cost"] for s in rep["steps"]}
+    runs = {s["step"]: s["runs"] for s in rep["steps"]}
+    merged = lambda turns: (2.0 - 1.0) + (turns - 1) * 0.5                  # merged: no message rounds
     assert cost["T0"] == round(2.0 + 1.0 + 0.2 + 0.3, 2)                     # 2 turns, no review, DJ + GJ
-    assert cost["T1a"] == round(2.0 + 11 * 1.0 + 2 * 0.1 + 0.2 + 0.3 + 0.22, 2)
-    assert cost["T9"] == round(2 * ((2.0 - 1.0) + 5 * 0.5 + 0.1 + 0.2 + 0.3), 2)   # merged: no message rounds
-    assert cost["T5"] == round(2 * (2.0 + 3 * 1.0 + 0.2), 2)                 # no Grand Jury, 2 conditions
-    assert rep["reserve"] == round(100 - rep["total"], 2)
-    assert dict((t["label"].split()[0], t["saves"]) for t in rep["trims"])["T1b"] == round(cost["T1b"] / 2, 2)
+    assert cost["T1a"] == round(merged(12) + 2 * 0.1 + 0.2 + 0.3 + 0.22, 2)
+    assert runs["T1b"] == 2 and cost["T1b"] == round(2 * (merged(6) + 0.1 + 0.2 + 0.22), 2)   # stage 1, no GJ
+    assert cost["T4"] == round(2.0 + 5 * 1.0 + 0.1 + 0.2 + 0.22, 2)          # one run, separate, no GJ
+    assert cost["T9"] == round(merged(6) + 0.1 + 0.2, 2)
+    assert cost["T5"] == round(merged(4), 2) and cost["T5false"] == round(merged(4), 2)   # A only, no DJ
+    assert cost["rate_charters"] == 1.75 and cost["attribution_probe"] == 1.6
+    assert rep["total"] == round(sum(cost.values()), 2) and rep["reserve"] == round(48 - rep["total"], 2)
+    saves = {t["label"]: t["saves"] for t in rep["trims"]}
+    assert saves["T5false dropped"] == cost["T5false"] and saves["probe dropped"] == 1.6
+    assert saves["T1a --turns 8"] == round(4 * 0.5 + 0.1, 2)                 # 4 later turns, 1 review fewer
+    assert saves["T4 --turns 5"] == 1.0 and saves["T9 --turns 5"] == 0.5    # 5 turns still hold a review
+    # a plain core_order name runs the preset as configured: all four T1b seats, with the disposition jury
+    data["core_order"] = ["T1b", "T5"]
+    rep = pilot.reproject(data, proj)
+    assert [s["runs"] for s in rep["steps"]] == [4, 1]
+    assert rep["steps"][1]["cost"] == round(merged(4) + 0.2, 2)
 
 
 def test_r4_budget_stop_in_post_run_jury_keeps_the_run(tmp_path, monkeypatch):
@@ -941,7 +966,7 @@ def _ratings(tmp_path):
 def test_r5_dry_stub_grand_jury_gives_a_usable_verdict(tmp_path):
     """The stub Grand Juror answers the R1 schema (ups_without), so dry runs get a verdict."""
     assert pilot.main(["--dry-run", "T4", "--turns", "1", "--runs", "1", "--output", str(tmp_path),
-                       "--no-disposition-jury"]) == 0
+                       "--no-disposition-jury", "--grand-jury"]) == 0
     gj = json.loads((tmp_path / "T4-run01.json").read_text())["final"]["grand_jury"]
     assert len(gj["per_juror"]) == 3 and all(pj["result"] for pj in gj["per_juror"].values())
     assert gj["ups"] == 50 and gj["actors"]["meta"]["n_jurors"] == 3
@@ -1029,7 +1054,8 @@ def test_r5_post_run_only_reasks_only_the_failed_grand_juror_and_debrief(tmp_pat
             raise FatalAPIError("meta: 503", provider="muse", model="m", status=503)
         return pilot._stub_turn_reply(system, user)
     _patch_stubs(monkeypatch, **{"gpt-grand": _fatal(), "actor_meta": meta})
-    args = ["--dry-run", "T4", "--turns", "1", "--runs", "1", "--output", str(tmp_path), "--no-disposition-jury"]
+    args = ["--dry-run", "T4", "--turns", "1", "--runs", "1", "--output", str(tmp_path), "--no-disposition-jury",
+            "--grand-jury"]               # the T4 preset skips the Grand Jury
     assert pilot.main(args) == 0
     gj = json.loads((tmp_path / "T4-run01.json").read_text())["final"]["grand_jury"]
     assert gj["per_juror"]["stub:gpt-grand"]["result"] is None
@@ -1056,7 +1082,7 @@ def test_r5_post_run_only_lists_unrun_runs_and_runs_nothing_new(tmp_path, monkey
     monkeypatch.setattr(pilot, "SimulationEngine", _NoEngine)
     assert pilot.main(["--dry-run", "T4", "--turns", "1", "--output", str(tmp_path), "--post-run-only"]) == 0
     out = capsys.readouterr().out
-    assert "not run          T4-run01" in out and "not run          T4-run02" in out
+    assert "not run          T4-run01" in out and "T4-run02" not in out          # one run in the $50 plan
 
 
 def test_r5_completed_record_compares_turns_brief_scenario(tmp_path):
@@ -1127,11 +1153,12 @@ def test_r5_rate_charters_fatal_still_exits_2(tmp_path, monkeypatch):
 def test_r5_preset_estimates_match_the_readme_table():
     """P66: runs x est_cost_per_run rounds to the README's per-step figure."""
     data = pilot.load_pilot()
-    readme = {"T0": 3.2, "T1a": 14.1, "T1b": 27.8, "T4": 14.4, "T9": 7.1, "T5": 9.1, "T5false": 5.0}
+    # T1b: all four seats in one call; T5/T5false with the disposition jury (the plan skips it: 2.36 / 2.48)
+    readme = {"T0": 3.2, "T1a": 6.94, "T1b": 12.84, "T4": 7.37, "T9": 3.72, "T5": 2.55, "T5false": 2.75}
     for test, figure in readme.items():
         preset = pilot.resolve_preset(data, test)
         est = pilot.estimate_cost(preset, pilot._preset_runs(preset), preset["turns"], None)
-        assert round(est, 1) == figure, test
+        assert round(est, 2) == figure, test
 
 
 def test_r5_append_ratings_merge_keeps_existing_rows(tmp_path):
@@ -1177,7 +1204,8 @@ def test_r6_budget_stop_in_grand_jury_keeps_paid_verdicts_then_asks_only_the_mis
     """C1 (R6A-1): claude and gpt answered, gemini tripped the guard — their verdicts
     stay; only gemini is listed and asked again; the WARNING names the budget guard."""
     _patch_stubs(monkeypatch, **{"gemini-grand": _over})
-    args = ["--dry-run", "T4", "--turns", "1", "--runs", "1", "--output", str(tmp_path), "--no-disposition-jury"]
+    args = ["--dry-run", "T4", "--turns", "1", "--runs", "1", "--output", str(tmp_path), "--no-disposition-jury",
+            "--grand-jury"]               # the T4 preset skips the Grand Jury
     assert pilot.main(args) == 1
     out = capsys.readouterr().out
     gj = _gj(tmp_path)
@@ -1202,7 +1230,8 @@ def test_r6_budget_stop_in_grand_jury_keeps_paid_verdicts_then_asks_only_the_mis
 def test_r6_budget_stop_in_post_run_only_grand_jury_saves_what_was_collected(tmp_path, monkeypatch, capsys):
     """C1: --post-run-only merges the verdicts heard before the guard and saves them."""
     _patch_stubs(monkeypatch, **{"gpt-grand": _fatal(), "gemini-grand": _fatal("gemini-x")})
-    args = ["--dry-run", "T4", "--turns", "1", "--runs", "1", "--output", str(tmp_path), "--no-disposition-jury"]
+    args = ["--dry-run", "T4", "--turns", "1", "--runs", "1", "--output", str(tmp_path), "--no-disposition-jury",
+            "--grand-jury"]               # the T4 preset skips the Grand Jury
     assert pilot.main(args) == 0
     _patch_stubs(monkeypatch, **{"gemini-grand": _over})
     assert pilot.main(args + ["--post-run-only"]) == 1
@@ -1225,7 +1254,8 @@ def test_r6_budget_stop_in_post_run_only_grand_jury_saves_what_was_collected(tmp
 def test_r6_post_run_only_exits_2_when_failures_leave_outputs_missing(tmp_path, monkeypatch, capsys):
     """C4: a juror that still fails (not the budget) leaves the run incomplete: exit 2."""
     _patch_stubs(monkeypatch, **{"gpt-grand": _fatal()})
-    args = ["--dry-run", "T4", "--turns", "1", "--runs", "1", "--output", str(tmp_path), "--no-disposition-jury"]
+    args = ["--dry-run", "T4", "--turns", "1", "--runs", "1", "--output", str(tmp_path), "--no-disposition-jury",
+            "--grand-jury"]               # the T4 preset skips the Grand Jury
     assert pilot.main(args) == 0
     assert pilot.main(args + ["--post-run-only"]) == 2
     assert "INCOMPLETE: outputs still missing for T4-run01" in capsys.readouterr().out
@@ -1236,7 +1266,8 @@ def test_r6_skip_completed_summary_keeps_missing_and_previous_summary(tmp_path, 
     """C3 (R6A-2): the re-run's summary lists the skipped runs' missing outputs and
     the --post-run-only command; the previous summary is kept as .prev.json."""
     _patch_stubs(monkeypatch, **{"gpt-grand": _fatal()})
-    args = ["--dry-run", "T4", "--turns", "1", "--runs", "1", "--output", str(tmp_path), "--no-disposition-jury"]
+    args = ["--dry-run", "T4", "--turns", "1", "--runs", "1", "--output", str(tmp_path), "--no-disposition-jury",
+            "--grand-jury"]               # the T4 preset skips the Grand Jury
     assert pilot.main(args) == 0
     first = json.loads((tmp_path / "pilot_summary_T4.json").read_text())
     monkeypatch.setattr(pilot, "_install_stubs", _ORIG_INSTALL)

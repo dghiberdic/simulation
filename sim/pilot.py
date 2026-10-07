@@ -3,8 +3,9 @@
 Pilot driver for the Round 2 smoke tests (spec §9.2).
 
 Parallels main.py but runs a named preset from config/pilot.json across a few
-seeds, under the $100 pilot budget guard. Each preset is a smoke test (1-4
-runs), not a rate estimate: it checks the pipeline before the main campaign.
+seeds, under the pilot's budget guard ($48 of a $50 plan). Each preset is a
+smoke test (1-2 runs), not a rate estimate: it checks the pipeline before the
+main campaign.
 Before anything is called the pilot prints the planned run list and its
 estimated cost (README estimates; T0's projection replaces them).
 
@@ -898,13 +899,17 @@ def reproject(data: Dict[str, Any], proj: Dict[str, Any]) -> Dict[str, Any]:
     P54: the core run order re-projected from T0's measured costs — per run:
     turns × the measured per-turn cost + the MacroJury reviews of that run
     length × the measured cost per review + the Grand Jury (when the preset
-    runs it) + the disposition jury + debriefs (measured, else the
-    fixed_costs estimate) — plus the fixed steps (rate_charters, the probe),
+    runs it) + the disposition jury (unless the step skips it) + debriefs
+    (measured, else the fixed_costs estimate) — and the fixed steps
+    (rate_charters, the probe) at their fixed_costs estimate, in core_order,
     with a running total, the reserve left under the guard and what each trim
-    saves. Approximate: prompts grow over a run, and T0 measures 2 turns.
+    saves. A core_order entry is a name or {test, rotate, disposition_jury,
+    label}, the command the plan runs. Approximate: prompts grow over a run,
+    and T0 measures 2 turns.
     """
     fixed = {k: v for k, v in (data.get("fixed_costs") or {}).items() if not k.startswith("_")}
     debrief = proj.get("debrief_cost_per_run") or float(fixed.get("debrief_per_run", 0.0))
+    presets = data.get("presets") or {}
 
     def run_cost(preset: Dict[str, Any]) -> float:
         turns = int(preset.get("turns") or 0)
@@ -915,7 +920,8 @@ def reproject(data: Dict[str, Any], proj: Dict[str, Any]) -> Dict[str, Any]:
             later -= proj.get("later_turn_a2a_cost", proj.get("a2a_cost_per_turn", 0.0))
         cost = (first + max(turns - 1, 0) * later if turns else 0.0) \
             + macro_reviews(turns) * proj["macro_cost_per_review"]
-        cost += proj["disposition_jury_cost_per_run"]
+        if preset.get("disposition_jury", True):
+            cost += proj["disposition_jury_cost_per_run"]
         if preset.get("grand_jury", True):
             cost += proj["grand_jury_cost_per_run"]
         if preset.get("debrief"):
@@ -923,34 +929,35 @@ def reproject(data: Dict[str, Any], proj: Dict[str, Any]) -> Dict[str, Any]:
         return cost
 
     steps, total = [], 0.0
-    for name in ("rate_charters",):
-        if name in fixed:
-            total += float(fixed[name])
-            steps.append({"step": name, "runs": None, "cost": round(float(fixed[name]), 2),
-                          "running_total": round(total, 2)})
     costs: Dict[str, float] = {}
-    for test in data.get("core_order") or []:
-        if test not in (data.get("presets") or {}):
+    planned: Dict[str, Dict[str, Any]] = {}          # each core test's preset as the plan runs it
+    for entry in data.get("core_order") or []:
+        entry = entry if isinstance(entry, dict) else {"test": entry}
+        name = entry.get("test")
+        if name in presets:
+            preset = resolve_preset(data, name)
+            preset.update({k: entry[k] for k in ("rotate", "disposition_jury") if k in entry})
+            n = _preset_runs(preset)
+            planned[name], costs[name] = preset, n * run_cost(preset)
+            step = {"runs": n, "turns": preset.get("turns")}
+        elif name in fixed:
+            costs[name], step = float(fixed[name]), {"runs": None}
+        else:
             continue
-        preset = resolve_preset(data, test)
-        n = _preset_runs(preset)
-        costs[test] = n * run_cost(preset)
-        total += costs[test]
-        steps.append({"step": test, "runs": n, "turns": preset.get("turns"),
-                      "cost": round(costs[test], 2), "running_total": round(total, 2)})
-    if "attribution_probe" in fixed:
-        total += float(fixed["attribution_probe"])
-        steps.append({"step": "attribution_probe", "runs": None, "cost": round(float(fixed["attribution_probe"]), 2),
-                      "running_total": round(total, 2)})
+        total += costs[name]
+        steps.append({"step": name, "label": entry.get("label") or name, **step,
+                      "cost": round(costs[name], 2), "running_total": round(total, 2)})
     trims = []
     for trim in data.get("trims") or []:
         test = trim.get("test")
         if test not in costs:
             continue
-        preset = resolve_preset(data, test)
-        n = _preset_runs(preset, trim.get("runs"), trim.get("conditions"), trim.get("seats"))
-        trims.append({"label": trim.get("label") or test,
-                      "saves": round(costs[test] - n * run_cost(preset), 2)})
+        saves = costs[test]                        # a fixed step is dropped
+        if test in planned:
+            preset = {**planned[test], **({"turns": trim["turns"]} if "turns" in trim else {})}
+            saves -= _preset_runs(preset, trim.get("runs"), trim.get("conditions"), trim.get("seats")) \
+                * run_cost(preset)
+        trims.append({"label": trim.get("label") or test, "saves": round(saves, 2)})
     guard = data.get("budget_guard")
     return {"steps": steps, "total": round(total, 2), "guard": guard,
             "reserve": round(guard - total, 2) if guard is not None else None, "trims": trims}
@@ -1029,7 +1036,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--debrief", action="store_true",
                    help="collect debriefs even where the preset or a ladder rung skips them")
     p.add_argument("--grand-jury", action="store_true",
-                   help="run the Grand Jury even on a ladder rung (rungs skip it; T1 does not need it)")
+                   help="run the Grand Jury even where the preset or a ladder rung skips it (T1b, T4, T9, "
+                        "T5, T5false and T6neutral skip it in the $50 plan; T1 does not need it)")
     p.add_argument("--ratings-file", default=None,
                    help="pooled disposition ratings for real runs (default data/pilot/disposition_ratings.json); "
                         "dry runs always write <output>/disposition_ratings.dry.json")
@@ -1501,7 +1509,7 @@ def _run(args) -> int:
     choose_disposition = bool(preset["choose_disposition"])
     on_rung = args.rung is not None
     # P59: a ladder rung decides only T1, which needs neither debriefs nor the Grand Jury.
-    run_grand_jury = bool(preset.get("grand_jury", True)) and (not on_rung or args.grand_jury)
+    run_grand_jury = args.grand_jury or (bool(preset.get("grand_jury", True)) and not on_rung)
     run_macro_jury = bool(preset.get("macro_jury", True))
     preset_conditions = preset.get("conditions") or [preset["condition"]]
     conditions = list(preset_conditions)
@@ -1962,7 +1970,8 @@ def _print_summary(summary, test, is_t1: bool) -> None:
               "prompts grow over a run):")
         for st in rep["steps"]:
             runs = f"{st['runs']} run(s)" if st.get("runs") else "fixed estimate"
-            print(f"  {st['step']:<18} {runs:<16} ${st['cost']:>7.2f}   running total ${st['running_total']:>7.2f}")
+            print(f"  {st.get('label') or st['step']:<18} {runs:<16} ${st['cost']:>7.2f}   "
+                  f"running total ${st['running_total']:>7.2f}")
         if rep.get("guard") is not None:
             if rep["reserve"] >= 0:
                 print(f"  total ${rep['total']:.2f} under the ${rep['guard']} guard -> reserve ${rep['reserve']:.2f}")
@@ -1970,6 +1979,7 @@ def _print_summary(summary, test, is_t1: bool) -> None:
                 print(f"  total ${rep['total']:.2f} is OVER the ${rep['guard']} guard by ${-rep['reserve']:.2f} — "
                       "apply the trims below; if the never-cut tests (T0, T1, T4, T9, T5) still exceed "
                       "it, stop and agree the next step (spec §9.2 T0)")
+            print(f"  the two-turn basis runs about 10% low: total x 1.1 = ${rep['total'] * 1.1:.2f}")
         if rep.get("trims"):
             print("  trims, in this order, if the total does not fit: "
                   + "; ".join(f"{t['label']} (-${t['saves']:.2f})" for t in rep["trims"]))

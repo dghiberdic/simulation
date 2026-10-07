@@ -276,6 +276,15 @@ def test_r4_probe_stop_saves_and_gives_no_decision(tmp_path, capsys, monkeypatch
     assert data["analysis"]["decision"]["raise_noise"] is None
 
 
+@pytest.mark.parametrize("argv, guard", [([], 48.0), (["--budget", "30"], 30.0)])
+def test_probe_default_guard_is_the_pilot_guard(tmp_path, monkeypatch, argv, guard):
+    seen = {}
+    monkeypatch.setattr(ap, "configure", lambda spend_file=None, budget=None: seen.update(budget=budget))
+    monkeypatch.setattr(ap, "preflight", lambda models: ["no key"])
+    assert ap.main(["--n", "4", "--spend-file", str(tmp_path / "s.json")] + argv) == 2
+    assert seen["budget"] == guard
+
+
 def test_r4_probe_stop_before_any_answer_is_recorded(monkeypatch):
     monkeypatch.setattr(ap, "complete_json", lambda *a, **k: (_ for _ in ()).throw(costs.BudgetExceeded("x")))
     stop = {}
