@@ -80,6 +80,7 @@ LAB_ALIASES: Dict[str, Tuple[str, ...]] = {
 _SELF_WORDS = frozenset((
     "self", "me", "us", "we", "ourselves", "itself", "myself", "our lab", "our own lab",
     "own lab", "your own lab", "my own lab", "my lab", "this lab",
+    "self-report", "self report", "our company", "my company", "our firm",   # M21
 ))
 
 # List separators (M12): "Meta + xAI", "Meta with xAI", "Meta and xAI", "Meta & xAI",
@@ -88,8 +89,10 @@ _LIST_SPLIT = re.compile(r"\s*(?:\+|&|,|/|;|\band\b|\bwith\b)\s*", re.IGNORECASE
 _HAS_SEPARATOR = re.compile(r"\+|&|,|/|;|\band\b|\bwith\b", re.IGNORECASE)
 _PAREN = re.compile(r"\(([^()]*)\)")
 _POSSESSIVE = re.compile(r"(?<=\w)['’]s\b|(?<=s)['’](?=\s|$)")
-# Corporate suffixes dropped before splitting, so "Anthropic, Inc." is one lab
-_CORP_SUFFIX = re.compile(r",?\s*\b(?:inc|llc|ltd|corp)\b\.?", re.IGNORECASE)
+# Legal suffixes dropped before splitting, so "Anthropic, PBC" and "OpenAI, L.P."
+# are one lab (M21). "co" only as a whole word ("co-founder" keeps its "co").
+_CORP_SUFFIX = re.compile(r",?\s*\b(?:inc|llc|ltd|corp|pbc|plc|gmbh|l\.p|lp|co)\b\.?(?![\w-])",
+                          re.IGNORECASE)
 
 # Fuzzy matching only for typos of a single name ("Antropic"): short strings
 # ("OAI") and anything that names or lists labs are never guessed.
@@ -192,18 +195,45 @@ def _resolve_many(raw: Any, labs, self_key: str) -> List[str]:
     """Resolve a list or a joined string of lab names; unknown names raise."""
     if raw is None:
         return []
-    items: List[Any] = []
-    for item in (list(raw) if isinstance(raw, (list, tuple, set)) else [raw]):
-        items.extend(_split_names(item))
     keys = set()
-    for item in items:
+    for item in (list(raw) if isinstance(raw, (list, tuple, set)) else [raw]):
+        if isinstance(item, str):
+            found, bad = resolve_parts(item, labs, self_key)
+            if bad is not None:
+                if len(named_labs(bad, labs)) > 1:
+                    raise ValueError(f"cannot tell which lab {bad!r} means; name one lab per entry")
+                raise ValueError(f"unknown lab {bad!r}")
+            keys.update(found)
+            continue
         key = resolve_lab(item, labs, self_key)
-        if key is None and len(named_labs(item, labs)) > 1:
-            raise ValueError(f"cannot tell which lab {item!r} means; name one lab per entry")
         if key is None:
             raise ValueError(f"unknown lab {item!r}")
         keys.add(key)
     return sorted(keys)
+
+
+def resolve_parts(item: str, labs, self_key: Optional[str]) -> Tuple[List[str], Optional[str]]:
+    """
+    Resolve one written name that may be split by list separators (M21):
+    "Anthropic, PBC" or "Google DeepMind, a subsidiary of Alphabet" -> one lab.
+    When the whole string names exactly one lab, parts that name no lab are
+    ignored ("Global", "a unit"), so each remaining part must be that lab (or a
+    self word for it). Returns (sorted keys, the first unresolvable part or None);
+    the caller rejects several keys or an unresolvable part.
+    """
+    parts = _split_names(item)
+    whole = named_labs(item, labs)
+    keys = set()
+    for part in parts:
+        key = resolve_lab(part, labs, self_key)
+        if key is None:
+            if len(whole) == 1:
+                continue      # a non-lab word next to the one named lab
+            return sorted(keys), str(part)
+        keys.add(key)
+    if not keys and len(whole) == 1:
+        keys.add(whole[0])
+    return sorted(keys), None
 
 
 # ---------------------------------------------------------------------------

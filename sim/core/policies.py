@@ -23,6 +23,8 @@ from core.intrusion import copy_gain, exposure_probability, success_probability
 from core.state import LabState, WorldState
 
 T5_INVEST = 2.0   # t5_scripted: Capital invested each turn (unremarkable, truthfully reported)
+# t5_scripted: a bland monthly statement, so a silent seat does not stand out (M23)
+T5_STATEMENT = "Operations as planned this month."
 
 
 # ---------------------------------------------------------------------------
@@ -102,10 +104,10 @@ def intrusion_pair(labs, cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 def _reply(actions: List[Dict[str, Any]], note: str,
-           reported: Optional[List[str]] = None) -> Dict[str, Any]:
+           reported: Optional[List[str]] = None, statement: str = "") -> Dict[str, Any]:
     return {"actions": actions,
             "reported_actions": reported if reported is not None else [a["type"] for a in actions],
-            "report": None, "public_statement": "", "rationale": note}
+            "report": None, "public_statement": statement, "rationale": note}
 
 
 # ---------------------------------------------------------------------------
@@ -169,13 +171,14 @@ def always_intrude(lab, labs, world, cfg, scenario, rng):
 def t5_scripted(lab, labs, world, cfg, scenario, rng):
     """
     Pilot T5 scripted seat (the planted intruder): every turn invests a little
-    Capital and reports exactly that, so its record is not conspicuous.
+    Capital, reports exactly that and posts a bland public statement (M23), so
+    its record looks like any other seat's.
     """
     amount = T5_INVEST if lab.capital >= T5_INVEST else 0.0
     if amount <= 0:
-        return _reply([], "t5 scripted: idle", reported=[])
+        return _reply([], "t5 scripted: idle", reported=[], statement=T5_STATEMENT)
     return _reply([{"type": "invest_capital", "amount": amount}], "t5 scripted",
-                  reported=[f"invest_capital {amount:g}"])
+                  reported=[f"invest_capital {amount:g}"], statement=T5_STATEMENT)
 
 
 def malformed(lab, labs, world, cfg, scenario, rng):

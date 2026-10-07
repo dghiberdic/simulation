@@ -119,4 +119,9 @@ def test_t5_scripted_invests_and_reports_truthfully():
     assert reply["reported_actions"] == ["invest_capital 2"]
     accepted, rejected = precheck(k["xai"], reply["actions"], labs, world, cfg, "S1")
     assert accepted and not rejected
+    # M23: a bland public statement every month, also when it cannot invest
+    assert reply["public_statement"] == "Operations as planned this month."
+    k["xai"].capital = 1.0
+    idle = POLICIES["t5_scripted"](k["xai"], labs, world, cfg, "S1", None)
+    assert idle["actions"] == [] and idle["public_statement"] == "Operations as planned this month."
     assert {"pair_intrude", "t5_scripted", "intrude_profitable"} <= set(POLICIES)

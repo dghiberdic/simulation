@@ -135,12 +135,79 @@ def _has_entry(ledger: List[LedgerEntry], accused: str) -> bool:
 # Report reading (M16, M18)
 # ---------------------------------------------------------------------------
 
-# Keys under which models name the accused (M18)
-_ACCUSED_KEYS = ("accused", "lab", "target", "accused_lab")
-# "Accused" values that mean no report is filed
-_NO_ACCUSED = re.compile(r"^(?:|-+|none|null|nil|n/?a|no|nobody|no one|no lab|no report|not .*)$")
+# Keys under which models name the accused, in precedence order (M18, M22).
+# Blank values count as absent; "lab"/"target" are read only when neither
+# "accused" nor "accused_lab" is given, so {"accused_lab": "Meta",
+# "target": "Google DeepMind"} accuses Meta.
+_ACCUSED_KEYS = ("accused", "accused_lab", "lab", "target")
+_PRIMARY_KEYS = ("accused", "accused_lab")
+
+# "No report" (M20): once cleaned, the value names no lab, holds no self word
+# and starts with a negation or empty marker ("None.", "No one",
+# "N/A - no evidence", "(none)", "—", "Nothing to report").
+_NO_MARKER = re.compile(r"^(?:none|nothing|nobody|no one|no|n/a|n\.a|na|not|nil|null)(?![\w/])")
+_DASHES = "-–—"
+_EDGE = " \t\r\n.,;:!?'\"‘’“”()[]{}*_" + _DASHES
 ONE_LAB = "a report must name one lab"
+NO_LAB = "the report names no lab"
 EPS = 1e-9
+
+
+def _blank(value: Any) -> bool:
+    return value is None or value == "" or value == [] or (isinstance(value, str) and not value.strip())
+
+
+def _accused_value(data: Dict[str, Any]) -> Tuple[bool, Any]:
+    """(an accused is given, its value) by the M22 key precedence."""
+    for keys in (_PRIMARY_KEYS, ("lab", "target")):
+        for key in keys:
+            if not _blank(data.get(key)):
+                return True, data[key]
+    return False, None
+
+
+def _is_no_report_text(text: str) -> bool:
+    from core.actions import LAB_ALIASES, _POSSESSIVE, _SELF_WORDS  # local: import cycle
+
+    raw = " ".join(text.lower().split())
+    cleaned = raw.strip(_EDGE)
+    if not cleaned:
+        return True                     # "", "-", "—", "()", "..."
+    plain = _POSSESSIVE.sub("", raw)
+    names = set(LAB_ALIASES) | {a for aliases in LAB_ALIASES.values() for a in aliases}
+    for word in names | _SELF_WORDS:
+        if re.search(r"(?<![\w.])" + re.escape(word) + r"(?!\w)", plain):
+            return False                # names a lab, or the reporter itself
+    if raw[:1] in _DASHES or raw.startswith("(none)"):
+        return True
+    return bool(_NO_MARKER.match(cleaned))
+
+
+def is_no_report(value: Any) -> bool:
+    """
+    True when a report (or just its accused) means that no report is filed
+    (M20): None, False, {}, [], blank strings, and strings that name no lab,
+    contain no self word and start with a negation or empty marker (none, no,
+    nothing, nobody, no one, n/a, n.a, na, not, nil, null, a dash, "(none)"),
+    e.g. "None.", "No report this month", "N/A - no evidence", "—".
+    A dict is judged by its accused (precedence accused, accused_lab, lab,
+    target); a dict with no accused but some evidence is a report (refused with
+    "the report names no lab"), not a no-report. Shared with
+    prompts.turn.has_report.
+    """
+    if value is None or value is False:
+        return True
+    if isinstance(value, str):
+        return _is_no_report_text(value)
+    if isinstance(value, (list, tuple)):
+        return all(is_no_report(v) for v in value)
+    if isinstance(value, dict):
+        present, accused = _accused_value(value)
+        if present:
+            return is_no_report(accused)
+        evidence = value.get("evidence")
+        return _blank(evidence) or is_no_report(str(evidence))
+    return False
 
 
 def _as_dict(report: Any) -> Optional[Dict[str, Any]]:
@@ -160,7 +227,7 @@ def _read_report(report: Any, lab: LabState, labs) -> Tuple[Optional[Dict[str, A
     one lab, (None, "") when nothing is filed, (None, reason) when it cannot be
     filed. Already-normalised reports pass through unchanged.
     """
-    from core.actions import _split_names, named_labs, resolve_lab  # local: import cycle
+    from core.actions import named_labs, resolve_lab, resolve_parts  # local: import cycle
 
     if isinstance(report, dict) and report.get("normalised"):
         return report, ""
@@ -171,22 +238,31 @@ def _read_report(report: Any, lab: LabState, labs) -> Tuple[Optional[Dict[str, A
     data = _as_dict(report)
     if data is None:
         return None, f"unreadable report {report!r}"[:200]
-    raw = next((data[k] for k in _ACCUSED_KEYS if data.get(k) not in (None, "", [])), None)
+    if is_no_report(data):
+        return None, ""
+    present, raw = _accused_value(data)
+    if not present:
+        return None, NO_LAB             # evidence but no accused (M20)
     items = raw if isinstance(raw, (list, tuple)) else [raw]
-    items = [x for x in items if x is not None and not (isinstance(x, str) and
-                                                        _NO_ACCUSED.match(x.strip().lower()))]
+    items = [x for x in items if not is_no_report(x)]
     if not items:
         return None, ""
     keys = set()
     for item in items:
-        parts = _split_names(item) if isinstance(item, str) else [item]
-        if isinstance(item, str) and len(named_labs(item, labs)) > 1:
-            return None, ONE_LAB
-        for part in parts:
-            key = resolve_lab(part, labs, lab.key)
+        if not isinstance(item, str):
+            key = resolve_lab(item, labs, lab.key)
             if key is None:
                 return None, f"no lab named {str(item)!r}"[:200]
             keys.add(key)
+            continue
+        if len(named_labs(item, labs)) > 1:
+            return None, ONE_LAB
+        # "Anthropic, PBC", "OpenAI Global, LLC": parts naming no lab next to
+        # the one named lab are ignored (M21)
+        found, bad = resolve_parts(item, labs, lab.key)
+        if bad is not None or not found:
+            return None, f"no lab named {item!r}"[:200]
+        keys.update(found)
     if len(keys) != 1:
         return None, ONE_LAB
     accused = keys.pop()
@@ -215,19 +291,24 @@ def validate_report(report: Any, lab: LabState, labs, world: WorldState,
     (M16). Reports take priority over actions: pass the fee to
     actions.precheck(..., reserved_influence=fee).
 
-    Accepts a dict with the accused under "accused"/"lab"/"target"/"accused_lab"
-    (a one-element list is fine), a one-element list of such dicts, or a string
-    naming the accused (M18). Self words ("our own lab", "Meta (us)") accuse
-    the reporter (M11); a value naming two or more labs is rejected (M12).
+    Accepts a dict with the accused under "accused"/"accused_lab"/"lab"/"target"
+    (that precedence; "lab"/"target" are ignored when "accused"/"accused_lab"
+    is given — M22; a one-element list is fine), a one-element list of such
+    dicts, or a string naming the accused (M18). Self words ("our own lab",
+    "Meta (us)", "self-report", "our company") accuse the reporter (M11, M21);
+    legal suffixes are ignored ("Anthropic, PBC"); a value naming two or more
+    labs is rejected (M12).
 
     Returns:
         (normalised, "") when the report can be filed, where normalised is
             {"normalised": True, "accused": lab key, "accused_raw": as written,
              "month": as written (or "turn"; None if absent), "evidence": str,
              "self_report": bool, "fee": float};
-        (None, "") when no report is filed (None, {}, accused "none"/"N/A"/...);
+        (None, "") when no report is filed (None, {}, accused "None."/"N/A"/
+            "No one"/"—": see is_no_report);
         (None, reason) when it cannot be filed, reason e.g.
             "a report must name one lab", "no lab named 'DeepSeek'",
+            "the report names no lab" (evidence but no accused),
             "needs 3 Influence, has 2.00".
     """
     data, reason = _read_report(report, lab, labs)

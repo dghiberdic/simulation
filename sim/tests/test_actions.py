@@ -6,7 +6,7 @@ import pytest
 
 from core.actions import (
     ACTION_TYPES, action_cost, apply, charge, execute, named_labs, normalise_action, precheck,
-    resolve_lab,
+    resolve_lab, resolve_parts,
 )
 from core.config import load_lab_configs, load_world
 from core.economy import purchase_price
@@ -347,7 +347,7 @@ def test_resolve_lab_whole_names_before_fuzzy(labs):
         assert resolve_lab(name, labs, "openai") == key, name
     for name in ("OAI", "metaverse", "metadata", "Meta and xAI", "OpenAI, Meta", "Meta + xAI",
                  "Meta with xAI", "Meta; xAI", "n/a", "DeepSeek", "the Allocator", "Gemma",
-                 "all", "self-report"):
+                 "all"):   # "self-report" became a self word in round 3 (M21)
         assert resolve_lab(name, labs, "openai") is None, name
     assert named_labs("Meta and xAI (Grok)", labs) == ["meta", "xai"]
     assert named_labs("metadata from meta-analysis", labs) == ["meta"]
@@ -421,4 +421,36 @@ def test_reserved_influence_for_report(labs, world, cfg):
     accepted, _ = precheck(me, [{"type": "invest_capital", "amount": 3}], labs, world, cfg, "S1",
                            reserved_influence=7.0)
     assert len(accepted) == 1
+
+
+# ---------------------------------------------------------------------------
+# Round 3: legal suffixes and new self words (M21)
+# ---------------------------------------------------------------------------
+
+def test_legal_suffixes_and_non_lab_parts_resolve_to_the_one_lab(labs):
+    """M21: "Anthropic, PBC" and friends name one lab, as targets too."""
+    me = {lab.key: lab for lab in labs}["meta"]
+    cases = {"Anthropic, PBC": "anthropic", "OpenAI, L.P.": "openai", "OpenAI LP": "openai",
+             "OpenAI Global, LLC": "openai", "Meta Platforms, Inc.": "meta", "xAI Corp.": "xai",
+             "Google DeepMind, a subsidiary of Alphabet": "gdm", "Google LLC": "gdm",
+             "Anthropic plc": "anthropic", "OpenAI GmbH": "openai", "xAI Co.": "xai",
+             "OpenAI, Co": "openai"}
+    for text, key in cases.items():
+        assert resolve_parts(text, labs, "meta") == ([key], None), text
+        action = normalise_action({"type": "intrude", "targets": text}, me, labs, "S1")
+        assert action["targets"] == [key], text
+    # a part naming another lab still counts; with no lab named, unknown words are errors
+    assert resolve_parts("xAI, which accessed OpenAI", labs, "meta")[0] == ["openai", "xai"]
+    assert resolve_parts("DeepSeek, Inc.", labs, "meta") == ([], "DeepSeek")
+    with pytest.raises(ValueError):
+        normalise_action({"type": "intrude", "targets": "DeepSeek, Ltd"}, me, labs, "S1")
+    # "co" is dropped only as a whole word
+    assert resolve_parts("co-founder", labs, "meta")[1] == "co-founder"
+
+
+def test_round3_self_words(labs):
+    """M21: self-report / our company / my company / our firm map to the seat."""
+    for word in ("self-report", "Self-report", "self report", "our company", "my company",
+                 "our firm", "Meta (self-report)"):
+        assert resolve_lab(word, labs, "meta") == "meta", word
 

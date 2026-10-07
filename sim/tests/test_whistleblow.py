@@ -6,7 +6,7 @@ import pytest
 
 from core.config import load_lab_configs, load_world
 from core.state import LedgerEntry, WorldState, build_lab
-from core.whistleblow import report_fee, resolve, validate_report
+from core.whistleblow import is_no_report, report_fee, resolve, validate_report
 
 CFG = load_world()
 A = CFG["economy"]["capability_compute_elasticity"]
@@ -268,4 +268,87 @@ def test_fee_charged_mode():
     k["gdm"].influence = 0.0
     out = resolve({"gdm": {"accused": "xAI"}}, labs, world, CFG, fee_charged=True)
     assert out["outcomes"][0]["result"] == "upheld" and k["gdm"].influence == WCFG["fee_influence"]
+
+
+# ---------------------------------------------------------------------------
+# Round 3: no-report detection (M20), legal suffixes (M21), key precedence (M22)
+# ---------------------------------------------------------------------------
+
+NO_REPORTS = ("none", "None.", "None this month", "No report", "No report this month", "N/A",
+              "N/A - no evidence", "no one", "No one.", "nobody", "-", "—", "–", "not filing",
+              "Not applicable", "(none)", "None (no evidence)", "No lab", "no report filed",
+              "none at this time", "No", "null", "Nothing", "Nothing to report", "n.a.", "NA",
+              "nil", "", "   ", "- none -")
+
+
+def test_is_no_report_strings_and_shapes():
+    for text in NO_REPORTS:
+        assert is_no_report(text), text
+        assert is_no_report({"accused": text, "month": "", "evidence": ""}), text
+    for value in (None, False, {}, [], ["none"], {"accused": []}, {"month": "February"}):
+        assert is_no_report(value), value
+    # names a lab, holds a self word, or does not start with a negation marker: a report
+    for text in ("Meta", "None other than xAI", "No doubt OpenAI", "Not us", "no one but ourselves",
+                 "Nobody except our lab", "DeepSeek", "Notion Labs", "Nonesuch", "Anthropic, PBC",
+                 "self-report"):
+        assert not is_no_report(text), text
+    # the dict is judged by its accused under the M22 precedence; evidence alone is a report
+    assert not is_no_report({"accused_lab": "Meta", "target": "none"})
+    assert is_no_report({"accused": "None.", "target": "Meta"})
+    assert not is_no_report({"evidence": "Capability jumped 6 points in March."})
+    assert is_no_report({"evidence": "N/A"})
+
+
+def test_no_report_strings_file_nothing():
+    labs, world, k = setup([entry()])
+    me = k["meta"]
+    for text in NO_REPORTS:
+        assert validate_report({"accused": text, "evidence": ""}, me, labs, world, CFG) == (None, ""), text
+        assert validate_report(text, me, labs, world, CFG) == (None, ""), text
+        assert report_fee({"accused": text}, me, labs, CFG) == 0.0
+    out = resolve({"meta": {"accused": "None."}, "gdm": "No one."}, labs, world, CFG)
+    assert out["outcomes"] == []
+
+
+def test_evidence_only_report_names_no_lab():
+    labs, world, k = setup([entry()])
+    report = {"month": "March 2026", "evidence": "xAI's capability jumped after the access."}
+    assert validate_report(report, k["meta"], labs, world, CFG) == (None, "the report names no lab")
+    assert validate_report({"accused": "", "evidence": "a jump"}, k["meta"], labs, world, CFG) \
+        == (None, "the report names no lab")
+
+
+def test_legal_suffixes_and_round3_self_words_in_reports():
+    labs, world, k = setup([entry()])
+    me = k["meta"]
+    for text, key in (("Anthropic, PBC", "anthropic"), ("OpenAI, L.P.", "openai"),
+                      ("OpenAI Global, LLC", "openai"), ("xAI Corp.", "xai"), ("X.AI Corp.", "xai"),
+                      ("Google DeepMind, a subsidiary of Alphabet", "gdm"), ("OpenAI plc", "openai"),
+                      ("our company", "meta"), ("Self-report", "meta"), ("self report", "meta"),
+                      ("my company", "meta"), ("our firm", "meta"), ("Meta (self-report)", "meta"),
+                      ("us, Meta", "meta")):
+        data, reason = validate_report({"accused": text, "month": "March 2026"}, me, labs, world, CFG)
+        assert reason == "" and data["accused"] == key, text
+        assert data["self_report"] == (key == "meta"), text
+    for text in ("Meta and xAI", "OpenAI/Google", "xAI, which accessed OpenAI"):
+        assert validate_report({"accused": text}, me, labs, world, CFG) == (None, "a report must name one lab")
+    data, reason = validate_report({"accused": "DeepSeek, Inc."}, me, labs, world, CFG)
+    assert data is None and "DeepSeek" in reason
+
+
+def test_accused_key_precedence():
+    labs, world, k = setup([entry()])
+    me = k["openai"]
+    cases = [({"accused_lab": "Meta", "target": "Google DeepMind"}, "meta"),
+             ({"accused_lab": "xAI", "lab": "OpenAI"}, "xai"),
+             ({"accused": "Meta", "accused_lab": "xAI"}, "meta"),
+             ({"accused": "Meta", "lab": "xAI", "target": "Anthropic"}, "meta"),
+             ({"lab": "Meta", "target": "xAI"}, "meta"),
+             ({"target": "xAI"}, "xai"),
+             ({"accused": "", "accused_lab": "xAI", "target": "Meta"}, "xai")]
+    for report, key in cases:
+        data, reason = validate_report(report, me, labs, world, CFG)
+        assert reason == "" and data["accused"] == key, report
+    # a no-report accused is not overridden by "lab"/"target"
+    assert validate_report({"accused": "None.", "target": "Meta"}, me, labs, world, CFG) == (None, "")
 
