@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Multi-provider LLM client (round 2).
+Multi-provider LLM client (round 2; spec §10 models, §11 budget guard).
 
 Providers, chosen by an explicit `provider` argument or the model-name prefix:
   anthropic  claude-*        ANTHROPIC_API_KEY
@@ -11,26 +11,38 @@ Providers, chosen by an explicit `provider` argument or the model-name prefix:
   stub       stub:<name>     a registered python callable (offline tests, dry runs)
 
 Keys are read from sim/.env. Clients are created lazily on first use, so
-importing never fails without keys; a missing key raises MissingKeyError.
+importing never fails without keys; preflight() lists missing keys before a
+run starts and a missing key at call time raises MissingKeyError.
+
+Failure handling (G5): transient API errors (rate limits, overload, 5xx,
+network) are retried with exponential backoff; non-transient API errors (and
+transient ones that outlast every retry) raise FatalAPIError, which the
+engine turns into a saved partial record and RunAborted.
 
 Every response is recorded in the cost tracker (core.costs) before it is
-returned, and the budget guard is checked before every paid call.
+returned, and the budget guard is checked before every paid call. complete()
+and complete_json() are safe to call from several threads at once.
 
 Token convention (normalised per provider): input_tokens is the whole prompt
 including cached tokens, cached_tokens the cache-read subset, output_tokens
 everything billed as output including reasoning, reasoning_tokens the
 reasoning subset.
+
+Stop convention (normalised): "end", "max_tokens", "refusal", "safety",
+"other"; stop_detail carries the provider's own category/reason.
 """
 
+import inspect
 import json
 import logging
 import os
 import random
 import re
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from dotenv import load_dotenv
 
@@ -50,12 +62,25 @@ KEY_ENV = {
     "xai": "XAI_API_KEY",
     "muse": "MUSE_API_KEY",
 }
+# Extra settings a provider needs besides its key.
+EXTRA_ENV = {"muse": ["MUSE_BASE_URL"]}
+SDK_MODULE = {"anthropic": "anthropic", "openai": "openai", "xai": "openai", "muse": "openai",
+              "google": "google.genai"}
 XAI_BASE_URL = "https://api.x.ai/v1"
 
 # Anthropic: current Claude models reject disabled thinking and sampling
 # params; adaptive thinking with a summarised display gives us readable
 # reasoning for the logs. Depth is controlled with output_config.effort.
 ANTHROPIC_THINKING: Optional[Dict[str, Any]] = {"type": "adaptive", "display": "summarized"}
+
+# The Anthropic SDK refuses non-streaming requests above ~21.3k max_tokens (G4).
+ANTHROPIC_MAX_TOKENS = 21000
+# Cap for the one max_tokens-doubling retry on other providers.
+OTHER_MAX_TOKENS = 32000
+
+# OpenAI reasoning summaries need a verified organisation; a 400 about them
+# switches them off for the rest of the process (L5).
+OPENAI_REASONING_SUMMARY = True
 
 # OpenAI-compatible providers whose models are known to accept reasoning_effort.
 # Off until verified: an unsupported parameter is a 400, not a no-op.
@@ -65,10 +90,28 @@ COMPAT_EFFORT_SUPPORTED: Dict[str, bool] = {"xai": False, "muse": False}
 GEMINI_THINKING_LEVEL = {"minimal": "MINIMAL", "low": "LOW", "medium": "MEDIUM",
                          "high": "HIGH", "xhigh": "HIGH", "max": "HIGH"}
 
-MAX_ATTEMPTS = 5
+# Per-request timeout. Long thinking replies take minutes; a dead connection must not hang a run.
+REQUEST_TIMEOUT_S = 300.0
+
+# Retries (L3): 8 attempts, exponential backoff from 2s capped at 120s, with jitter.
+MAX_ATTEMPTS = 8
+RETRY_BASE_S = 2.0
+RETRY_CAP_S = 120.0
+RETRY_AFTER_CAP_S = 300.0
+TRANSIENT_STATUS = {408, 409, 425, 429}
 
 
-class MissingKeyError(RuntimeError):
+class FatalAPIError(RuntimeError):
+    """A provider error that retrying will not fix (bad request, auth, unknown model, quota, outage)."""
+
+    def __init__(self, message: str, provider: str = "", model: str = "", status: Optional[int] = None):
+        super().__init__(message)
+        self.provider = provider
+        self.model = model
+        self.status = status
+
+
+class MissingKeyError(FatalAPIError):
     """A provider's API key (or base URL) is not configured."""
 
 
@@ -85,10 +128,35 @@ class LLMResponse:
     thinking: Optional[str] = None
     latency_s: float = 0.0
     raw_stop_reason: Optional[str] = None
+    stop: str = "end"                   # end | max_tokens | refusal | safety | other
+    stop_detail: Optional[str] = None   # provider's own category / reason
+    served_model: Optional[str] = None  # model id/version the provider reports
+    max_tokens: int = 0
+
+
+def _get(obj: Any, name: str, default: Any = None) -> Any:
+    """Attribute or dict key: older SDKs leave fields they do not model as plain dicts."""
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        value = obj.get(name, default)
+    else:
+        value = getattr(obj, name, default)
+    return default if value is None else value
+
+
+def _enum_name(value: Any) -> Optional[str]:
+    """Gemini enums print as 'FinishReason.STOP'; keep just 'STOP'."""
+    if value is None:
+        return None
+    name = getattr(value, "name", None)
+    if isinstance(name, str):
+        return name
+    return str(value).split(".")[-1]
 
 
 # ---------------------------------------------------------------------------
-# Provider routing and lazy clients
+# Provider routing, preflight and lazy clients
 # ---------------------------------------------------------------------------
 
 def resolve_provider(model: str, provider: Optional[str] = None) -> str:
@@ -112,6 +180,36 @@ def resolve_provider(model: str, provider: Optional[str] = None) -> str:
     raise ValueError(f"Cannot infer provider for model {model!r}; pass provider=")
 
 
+def preflight(models: Iterable[str], providers: Optional[Dict[str, str]] = None) -> List[str]:
+    """
+    Problems that would stop the given models from being called: unknown
+    provider, missing SDK, missing key or base URL. No network. Stub models
+    are always fine. An empty list means go.
+    """
+    providers = providers or {}
+    problems: List[str] = []
+    seen: set = set()
+    for model in models:
+        if not model or model in seen:
+            continue
+        seen.add(model)
+        try:
+            provider = resolve_provider(model, providers.get(model))
+        except ValueError as e:
+            problems.append(f"{model}: {e}")
+            continue
+        if provider == "stub":
+            continue
+        for env in [KEY_ENV[provider]] + EXTRA_ENV.get(provider, []):
+            if not os.getenv(env):
+                problems.append(f"{model} ({provider}): {env} is not set (add it to sim/.env)")
+        try:
+            __import__(SDK_MODULE[provider])
+        except ImportError:
+            problems.append(f"{model} ({provider}): python package for {SDK_MODULE[provider]} is not installed")
+    return problems
+
+
 def _require(env: str) -> str:
     value = os.getenv(env)
     if not value:
@@ -120,57 +218,78 @@ def _require(env: str) -> str:
 
 
 _clients: Dict[str, Any] = {}
+_clients_lock = threading.Lock()
 
 
 def _get_client(provider: str) -> Any:
     """Create the SDK client on first use. SDK-internal retries are off: _with_retries owns backoff."""
-    if provider in _clients:
-        return _clients[provider]
-    if provider == "anthropic":
-        import anthropic
-        client = anthropic.Anthropic(api_key=_require(KEY_ENV["anthropic"]), max_retries=0)
-    elif provider == "openai":
-        import openai
-        client = openai.OpenAI(api_key=_require(KEY_ENV["openai"]), max_retries=0)
-    elif provider == "xai":
-        import openai
-        client = openai.OpenAI(api_key=_require(KEY_ENV["xai"]), base_url=XAI_BASE_URL, max_retries=0)
-    elif provider == "muse":
-        import openai
-        client = openai.OpenAI(api_key=_require(KEY_ENV["muse"]), base_url=_require("MUSE_BASE_URL"),
-                               max_retries=0)
-    elif provider == "google":
-        from google import genai
-        # Vertex AI Express Mode: api_key + vertexai=True (no project/location).
-        client = genai.Client(api_key=_require(KEY_ENV["google"]), vertexai=True)
-    else:
-        raise ValueError(f"No client for provider {provider!r}")
-    _clients[provider] = client
-    return client
+    with _clients_lock:
+        if provider in _clients:
+            return _clients[provider]
+        if provider == "anthropic":
+            import anthropic
+            client = anthropic.Anthropic(api_key=_require(KEY_ENV["anthropic"]), max_retries=0,
+                                         timeout=REQUEST_TIMEOUT_S)
+        elif provider == "openai":
+            import openai
+            client = openai.OpenAI(api_key=_require(KEY_ENV["openai"]), max_retries=0,
+                                   timeout=REQUEST_TIMEOUT_S)
+        elif provider == "xai":
+            import openai
+            client = openai.OpenAI(api_key=_require(KEY_ENV["xai"]), base_url=XAI_BASE_URL, max_retries=0,
+                                   timeout=REQUEST_TIMEOUT_S)
+        elif provider == "muse":
+            import openai
+            client = openai.OpenAI(api_key=_require(KEY_ENV["muse"]), base_url=_require("MUSE_BASE_URL"),
+                                   max_retries=0, timeout=REQUEST_TIMEOUT_S)
+        elif provider == "google":
+            from google import genai
+            from google.genai import types
+            # Vertex AI Express Mode: api_key + vertexai=True (no project/location). Timeout is in ms.
+            client = genai.Client(api_key=_require(KEY_ENV["google"]), vertexai=True,
+                                  http_options=types.HttpOptions(timeout=int(REQUEST_TIMEOUT_S * 1000)))
+        else:
+            raise ValueError(f"No client for provider {provider!r}")
+        _clients[provider] = client
+        return client
 
 
 # ---------------------------------------------------------------------------
 # Stubs
 # ---------------------------------------------------------------------------
 
-_stubs: Dict[str, Callable[[str, str], str]] = {}
+_stubs: Dict[str, Callable[[str, str], Any]] = {}
+_stubs_lock = threading.Lock()
 
 
-def register_stub(name: str, fn: Callable[[str, str], str]) -> None:
-    """Model "stub:<name>" returns fn(system, user); user is the latest user turn."""
-    _stubs[name] = fn
+def register_stub(name: str, fn: Callable[[str, str], Any]) -> None:
+    """
+    Model "stub:<name>" returns fn(system, user); user is the latest user turn.
+    fn may return a str, or a dict {"text", "stop", "stop_detail", "thinking"}
+    to simulate truncation or refusal offline.
+    """
+    with _stubs_lock:
+        _stubs[name] = fn
 
 
 # ---------------------------------------------------------------------------
 # Provider calls — each returns a dict of normalised fields
 # ---------------------------------------------------------------------------
 
+ANTHROPIC_STOP = {"end_turn": "end", "stop_sequence": "end", "tool_use": "end",
+                  "max_tokens": "max_tokens", "refusal": "refusal"}
+
+
 def _call_anthropic(client: Any, model: str, system: str, turns: List[Dict[str, str]],
                     max_tokens: int, temperature: Optional[float], effort: Optional[str],
-                    cache_system: bool) -> Dict[str, Any]:
+                    cache_system: bool, cache_key: Optional[str]) -> Dict[str, Any]:
     block: Dict[str, Any] = {"type": "text", "text": system}
     if cache_system:
+        # 5-minute ephemeral cache: the seats of a stage are called together.
         block["cache_control"] = {"type": "ephemeral"}
+    if max_tokens > ANTHROPIC_MAX_TOKENS:
+        logger.warning(f"{model}: max_tokens {max_tokens} clamped to {ANTHROPIC_MAX_TOKENS} (non-streaming limit)")
+        max_tokens = ANTHROPIC_MAX_TOKENS
     kwargs: Dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,
@@ -186,67 +305,124 @@ def _call_anthropic(client: Any, model: str, system: str, turns: List[Dict[str, 
     resp = client.messages.create(**kwargs)
 
     u = resp.usage
-    cache_read = getattr(u, "cache_read_input_tokens", 0) or 0
-    cache_write = getattr(u, "cache_creation_input_tokens", 0) or 0
-    details = getattr(u, "output_tokens_details", None)
-    thinking = [b.thinking for b in resp.content if b.type == "thinking" and getattr(b, "thinking", "")]
+    cache_read = _get(u, "cache_read_input_tokens", 0)
+    cache_write = _get(u, "cache_creation_input_tokens", 0)
+    details = _get(u, "output_tokens_details")
+    content = resp.content or []
+    thinking = [b.thinking for b in content if b.type == "thinking" and getattr(b, "thinking", "")]
+    raw = resp.stop_reason
     return {
-        "text": "".join(b.text for b in resp.content if b.type == "text"),
+        "text": "".join(b.text for b in content if b.type == "text"),
         "thinking": "\n\n".join(thinking) or None,
         # Anthropic reports uncached input separately from cache reads/writes.
         "input_tokens": u.input_tokens + cache_read + cache_write,
         "cached_tokens": cache_read,
         "cache_write_tokens": cache_write,
         "output_tokens": u.output_tokens,
-        "reasoning_tokens": (getattr(details, "thinking_tokens", 0) or 0) if details else 0,
-        "stop": resp.stop_reason,
+        "reasoning_tokens": _get(details, "thinking_tokens", 0),
+        "raw_stop": raw,
+        "stop": ANTHROPIC_STOP.get(raw, "other"),
+        # stop_details is set only on refusals (e.g. "reasoning_extraction").
+        "stop_detail": _get(_get(resp, "stop_details"), "category") or (raw if raw not in ANTHROPIC_STOP else None),
+        "served_model": _get(resp, "model"),
+        "max_tokens": max_tokens,
     }
+
+
+def _openai_summary_rejected(err: Exception) -> bool:
+    """A 400 saying reasoning summaries are unavailable (unverified organisation)."""
+    if getattr(err, "status_code", None) != 400:
+        return False
+    msg = f"{getattr(err, 'param', '') or ''} {err}".lower()
+    return "reasoning.summary" in msg or "verif" in msg
+
+
+def _accepts_kwarg(fn: Callable[..., Any], name: str) -> bool:
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
 def _call_openai(client: Any, model: str, system: str, turns: List[Dict[str, str]],
                  max_tokens: int, temperature: Optional[float], effort: Optional[str],
-                 cache_system: bool) -> Dict[str, Any]:
+                 cache_system: bool, cache_key: Optional[str]) -> Dict[str, Any]:
     # Responses API: returns reasoning summaries and reasoning-token counts.
     # OpenAI caches long prompt prefixes automatically; the developer message
-    # goes first so the stable system prompt is the cached prefix.
-    reasoning: Dict[str, Any] = {"summary": "auto"}
-    if effort:
-        reasoning["effort"] = effort
+    # goes first so the stable system prompt is the cached prefix, and a
+    # stable prompt_cache_key per seat keeps its calls on the same cache.
+    global OPENAI_REASONING_SUMMARY
     kwargs: Dict[str, Any] = {
         "model": model,
         "input": [{"role": "developer", "content": system}] + turns,
         "max_output_tokens": max_tokens,
-        "reasoning": reasoning,
         "store": False,
     }
     if temperature is not None:
         kwargs["temperature"] = temperature
-    resp = client.responses.create(**kwargs)
+    if cache_key and _accepts_kwarg(client.responses.create, "prompt_cache_key"):
+        kwargs["prompt_cache_key"] = cache_key
 
-    summaries = []
+    def reasoning() -> Dict[str, Any]:
+        r: Dict[str, Any] = {"summary": "auto"} if OPENAI_REASONING_SUMMARY else {}
+        if effort:
+            r["effort"] = effort
+        return r
+
+    try:
+        resp = client.responses.create(**kwargs, reasoning=reasoning())
+    except Exception as e:
+        if not (OPENAI_REASONING_SUMMARY and _openai_summary_rejected(e)):
+            raise
+        OPENAI_REASONING_SUMMARY = False
+        logger.warning(f"{model}: reasoning summaries rejected ({e}); continuing without them")
+        resp = client.responses.create(**kwargs, reasoning=reasoning())
+
+    summaries, refusals = [], []
     for item in resp.output or []:
-        if getattr(item, "type", None) == "reasoning":
-            summaries += [s.text for s in (item.summary or []) if getattr(s, "text", "")]
+        kind = _get(item, "type")
+        if kind == "reasoning":
+            summaries += [_get(s, "text") for s in (_get(item, "summary") or []) if _get(s, "text")]
+        elif kind == "message":
+            refusals += [_get(c, "refusal") for c in (_get(item, "content") or [])
+                         if _get(c, "type") == "refusal"]
     u = resp.usage
-    in_det = getattr(u, "input_tokens_details", None)
-    out_det = getattr(u, "output_tokens_details", None)
-    incomplete = getattr(resp, "incomplete_details", None)
+    status = _get(resp, "status")
+    reason = _get(_get(resp, "incomplete_details"), "reason")
+    if refusals:
+        stop, detail = "refusal", (refusals[0] or "refusal")[:200]
+    elif status == "completed":
+        stop, detail = "end", None
+    elif reason == "max_output_tokens":
+        stop, detail = "max_tokens", reason
+    elif reason == "content_filter":
+        stop, detail = "safety", reason
+    else:
+        stop, detail = "other", reason or status
     return {
         "text": resp.output_text or "",
         "thinking": "\n\n".join(summaries) or None,
         "input_tokens": u.input_tokens,
-        "cached_tokens": (getattr(in_det, "cached_tokens", 0) or 0) if in_det else 0,
+        "cached_tokens": _get(_get(u, "input_tokens_details"), "cached_tokens", 0),
         "output_tokens": u.output_tokens,
-        "reasoning_tokens": (getattr(out_det, "reasoning_tokens", 0) or 0) if out_det else 0,
-        "stop": getattr(incomplete, "reason", None) or getattr(resp, "status", None),
+        "reasoning_tokens": _get(_get(u, "output_tokens_details"), "reasoning_tokens", 0),
+        "raw_stop": reason or status,
+        "stop": stop,
+        "stop_detail": detail,
+        "served_model": _get(resp, "model"),
+        "max_tokens": max_tokens,
     }
+
+
+COMPAT_STOP = {"stop": "end", "tool_calls": "end", "length": "max_tokens", "content_filter": "safety"}
 
 
 def _call_compat(provider: str):
     """Chat Completions call for OpenAI-compatible providers (xAI, Muse)."""
     def call(client: Any, model: str, system: str, turns: List[Dict[str, str]],
              max_tokens: int, temperature: Optional[float], effort: Optional[str],
-             cache_system: bool) -> Dict[str, Any]:
+             cache_system: bool, cache_key: Optional[str]) -> Dict[str, Any]:
         kwargs: Dict[str, Any] = {
             "model": model,
             "messages": [{"role": "system", "content": system}] + turns,
@@ -260,30 +436,39 @@ def _call_compat(provider: str):
 
         choice = resp.choices[0]
         u = resp.usage
-        p_det = getattr(u, "prompt_tokens_details", None)
-        c_det = getattr(u, "completion_tokens_details", None)
-        reasoning = (getattr(c_det, "reasoning_tokens", 0) or 0) if c_det else 0
         # Some compatible APIs (xAI) leave reasoning out of completion_tokens but
         # in total_tokens; take whichever accounting is larger so cost is not undercounted.
         output = u.completion_tokens
-        total = getattr(u, "total_tokens", None) or 0
+        total = _get(u, "total_tokens", 0)
         if total > u.prompt_tokens + output:
             output = total - u.prompt_tokens
+        finish = choice.finish_reason
+        refusal = _get(choice.message, "refusal")
+        stop = "refusal" if refusal else COMPAT_STOP.get(finish, "other")
         return {
             "text": choice.message.content or "",
-            "thinking": getattr(choice.message, "reasoning_content", None) or None,
+            "thinking": _get(choice.message, "reasoning_content") or None,
             "input_tokens": u.prompt_tokens,
-            "cached_tokens": (getattr(p_det, "cached_tokens", 0) or 0) if p_det else 0,
+            "cached_tokens": _get(_get(u, "prompt_tokens_details"), "cached_tokens", 0),
             "output_tokens": output,
-            "reasoning_tokens": reasoning,
-            "stop": choice.finish_reason,
+            "reasoning_tokens": _get(_get(u, "completion_tokens_details"), "reasoning_tokens", 0),
+            "raw_stop": finish,
+            "stop": stop,
+            "stop_detail": str(refusal)[:200] if refusal else finish,
+            "served_model": _get(resp, "model"),
+            "max_tokens": max_tokens,
         }
     return call
 
 
+GEMINI_STOP = {"STOP": "end", "MAX_TOKENS": "max_tokens", "SAFETY": "safety", "RECITATION": "safety",
+               "BLOCKLIST": "safety", "PROHIBITED_CONTENT": "safety", "SPII": "safety",
+               "IMAGE_SAFETY": "safety", "IMAGE_PROHIBITED_CONTENT": "safety"}
+
+
 def _call_google(client: Any, model: str, system: str, turns: List[Dict[str, str]],
                  max_tokens: int, temperature: Optional[float], effort: Optional[str],
-                 cache_system: bool) -> Dict[str, Any]:
+                 cache_system: bool, cache_key: Optional[str]) -> Dict[str, Any]:
     # Gemini caches implicitly; cache_system has nothing to toggle here.
     from google.genai import types
     thinking_kwargs: Dict[str, Any] = {"include_thoughts": True}
@@ -308,16 +493,28 @@ def _call_google(client: Any, model: str, system: str, turns: List[Dict[str, str
             continue
         (thoughts if getattr(part, "thought", False) else text).append(part.text)
     u = resp.usage_metadata
-    thought_tokens = getattr(u, "thoughts_token_count", 0) or 0
+    thought_tokens = _get(u, "thoughts_token_count", 0)
+    finish = _enum_name(cand.finish_reason) if cand is not None else None
+    block = _enum_name(_get(_get(resp, "prompt_feedback"), "block_reason"))
+    if block:  # the prompt itself was blocked: no candidates at all
+        stop, detail = "safety", block
+    elif finish is None:
+        stop, detail = "other", "no candidates"
+    else:
+        stop, detail = GEMINI_STOP.get(finish, "other"), finish
     return {
         "text": "".join(text),
         "thinking": "\n\n".join(thoughts) or None,
-        "input_tokens": getattr(u, "prompt_token_count", 0) or 0,
-        "cached_tokens": getattr(u, "cached_content_token_count", 0) or 0,
+        "input_tokens": _get(u, "prompt_token_count", 0),
+        "cached_tokens": _get(u, "cached_content_token_count", 0),
         # Thinking tokens are billed as output but reported separately.
-        "output_tokens": (getattr(u, "candidates_token_count", 0) or 0) + thought_tokens,
+        "output_tokens": _get(u, "candidates_token_count", 0) + thought_tokens,
         "reasoning_tokens": thought_tokens,
-        "stop": str(cand.finish_reason) if cand and cand.finish_reason is not None else None,
+        "raw_stop": finish or block,
+        "stop": stop,
+        "stop_detail": detail,
+        "served_model": _get(resp, "model_version"),
+        "max_tokens": max_tokens,
     }
 
 
@@ -331,34 +528,98 @@ _CALLERS: Dict[str, Callable[..., Dict[str, Any]]] = {
 
 
 # ---------------------------------------------------------------------------
-# Retries
+# Retries and error classification
 # ---------------------------------------------------------------------------
 
 _sleep = time.sleep  # patched in tests
 
+SDK_ROOTS = ("anthropic", "openai", "google", "httpx", "httpx2", "httpcore")
+# Network-level failures (any SDK version; httpx and httpx2 share these names).
+TRANSIENT_CLASSES = ("TransportError", "TimeoutException", "APIConnectionError", "APITimeoutError",
+                     "ServerError", "RemoteProtocolError", "ConnectError", "ReadError")
+
+
+def _class_names(err: Exception) -> List[str]:
+    return [c.__name__ for c in type(err).__mro__]
+
+
+def _status(err: Exception) -> Optional[int]:
+    for value in (getattr(err, "status_code", None), getattr(err, "code", None),
+                  getattr(getattr(err, "response", None), "status_code", None)):
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return None
+
+
+def _is_api_error(err: Exception) -> bool:
+    """Raised by a provider SDK or its HTTP stack (as opposed to a bug in our own code)."""
+    if _status(err) is not None:
+        return True
+    return any(c.__module__.split(".")[0] in SDK_ROOTS for c in type(err).__mro__)
+
+
+def _is_quota(err: Exception) -> bool:
+    """Out of credit: a 429 that will not clear by waiting."""
+    code = getattr(err, "code", None)
+    body = getattr(err, "body", None)
+    return code == "insufficient_quota" or "insufficient_quota" in f"{err} {body}"
+
 
 def _is_transient(err: Exception) -> bool:
-    status = getattr(err, "status_code", None) or getattr(err, "code", None)
-    if isinstance(status, int) and (status == 429 or status == 408 or status >= 500):
-        return True
-    name = type(err).__name__.lower()
-    if any(s in name for s in ("timeout", "connection", "overloaded", "ratelimit")):
+    if _is_quota(err):
+        return False
+    status = _status(err)
+    if status is not None:
+        return status in TRANSIENT_STATUS or status >= 500
+    if any(name in TRANSIENT_CLASSES for name in _class_names(err)):
         return True
     msg = str(err).lower()
     return any(s in msg for s in ("overloaded", "rate limit", "unavailable", "timed out", "deadline exceeded"))
 
 
-def _with_retries(fn: Callable[[], Dict[str, Any]], label: str) -> Dict[str, Any]:
+def _retry_after(err: Exception) -> Optional[float]:
+    """Seconds from retry-after-ms / retry-after headers, if the error carries them."""
+    headers = getattr(getattr(err, "response", None), "headers", None)
+    if not headers:
+        return None
+    try:
+        ms = headers.get("retry-after-ms")
+        if ms is not None:
+            return float(ms) / 1000.0
+        s = headers.get("retry-after")
+        if s is not None:
+            return float(s)  # HTTP-date values are ignored (ValueError)
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return None
+
+
+def _backoff(attempt: int, err: Exception) -> float:
+    ra = _retry_after(err)
+    if ra is not None and ra >= 0:
+        return min(RETRY_AFTER_CAP_S, ra) + random.uniform(0, 1)
+    return min(RETRY_CAP_S, RETRY_BASE_S * 2 ** attempt) * random.uniform(0.75, 1.0) + random.uniform(0, 1)
+
+
+def _with_retries(fn: Callable[[], Dict[str, Any]], provider: str, model: str) -> Dict[str, Any]:
+    label = f"{provider}/{model}"
     for attempt in range(MAX_ATTEMPTS):
         try:
             return fn()
-        except (BudgetExceeded, MissingKeyError):
+        except (BudgetExceeded, FatalAPIError):
             raise
         except Exception as e:
-            if not _is_transient(e) or attempt == MAX_ATTEMPTS - 1:
-                raise
-            delay = min(60.0, 2.0 * 2 ** attempt + random.uniform(0, 1))
-            logger.warning(f"{label}: transient error ({e}); retry {attempt + 2}/{MAX_ATTEMPTS} in {delay:.1f}s")
+            if not _is_api_error(e):
+                raise  # a bug in our own code: let the caller see it as-is
+            status = _status(e)
+            if not _is_transient(e):
+                raise FatalAPIError(f"{label}: {type(e).__name__}: {e}", provider, model, status) from e
+            if attempt == MAX_ATTEMPTS - 1:
+                raise FatalAPIError(f"{label}: gave up after {MAX_ATTEMPTS} attempts: {type(e).__name__}: {e}",
+                                    provider, model, status) from e
+            delay = _backoff(attempt, e)
+            logger.warning(f"{label}: transient error ({type(e).__name__}: {e}); "
+                           f"retry {attempt + 2}/{MAX_ATTEMPTS} in {delay:.1f}s")
             _sleep(delay)
     raise AssertionError("unreachable")
 
@@ -367,14 +628,37 @@ def _with_retries(fn: Callable[[], Dict[str, Any]], label: str) -> Dict[str, Any
 # Public API
 # ---------------------------------------------------------------------------
 
+def _call_stub(model: str, system: str, user: str, turns: List[Dict[str, str]], purpose: str,
+               run_id: Optional[str], max_tokens: int, start: float) -> LLMResponse:
+    name = model.split(":", 1)[1] if ":" in model else model
+    with _stubs_lock:
+        fn = _stubs.get(name)
+    if fn is None:
+        raise KeyError(f"No stub registered as {name!r}")
+    out = fn(system, user)
+    if not isinstance(out, dict):
+        out = {"text": out}
+    text = out.get("text") or ""
+    prompt_chars = len(system) + sum(len(t["content"]) for t in turns)
+    r = LLMResponse(text=text, model=model, provider="stub", input_tokens=prompt_chars // 4,
+                    output_tokens=len(text) // 4, latency_s=time.monotonic() - start,
+                    raw_stop_reason="stub", stop=out.get("stop", "end"), stop_detail=out.get("stop_detail"),
+                    thinking=out.get("thinking"), served_model=model, max_tokens=max_tokens)
+    get_tracker().record(model, purpose, run_id, r.input_tokens, r.output_tokens, cost=0.0,
+                         provider="stub", stop=r.stop)
+    return r
+
+
 def complete(model: str, system: str, user: str, *, provider: Optional[str] = None,
              max_tokens: int = 4000, temperature: Optional[float] = None,
              effort: Optional[str] = None, cache_system: bool = True, purpose: str = "actor",
-             run_id: Optional[str] = None,
-             history: Optional[List[Dict[str, str]]] = None) -> LLMResponse:
+             run_id: Optional[str] = None, history: Optional[List[Dict[str, str]]] = None,
+             cache_key: Optional[str] = None) -> LLMResponse:
     """
     One completion. `history` is optional prior turns ({"role": "user"|"assistant",
-    "content": str}) placed between the system prompt and `user`.
+    "content": str}) placed between the system prompt and `user`. `cache_key` is a
+    stable per-seat key for providers with keyed prompt caches (OpenAI).
+    Raises FatalAPIError (incl. MissingKeyError) and BudgetExceeded.
     """
     provider = resolve_provider(model, provider)
     turns = list(history or []) + [{"role": "user", "content": user}]
@@ -382,23 +666,20 @@ def complete(model: str, system: str, user: str, *, provider: Optional[str] = No
     start = time.monotonic()
 
     if provider == "stub":
-        name = model.split(":", 1)[1] if ":" in model else model
-        if name not in _stubs:
-            raise KeyError(f"No stub registered as {name!r}")
-        text = _stubs[name](system, user)
-        prompt_chars = len(system) + sum(len(t["content"]) for t in turns)
-        r = LLMResponse(text=text, model=model, provider="stub", input_tokens=prompt_chars // 4,
-                        output_tokens=len(text) // 4, latency_s=time.monotonic() - start,
-                        raw_stop_reason="stub")
-        tracker.record(model, purpose, run_id, r.input_tokens, r.output_tokens, cost=0.0, provider="stub")
-        return r
+        return _call_stub(model, system, user, turns, purpose, run_id, max_tokens, start)
 
     tracker.check()
-    client = _get_client(provider)
+    try:
+        client = _get_client(provider)
+    except MissingKeyError as e:
+        raise MissingKeyError(f"{provider}/{model}: {e}", provider, model) from None
     call = _CALLERS[provider]
-    out = _with_retries(
-        lambda: call(client, model, system, turns, max_tokens, temperature, effort, cache_system),
-        f"{provider}/{model}")
+
+    def attempt() -> Dict[str, Any]:
+        tracker.check()  # every HTTP attempt is potentially paid
+        return call(client, model, system, turns, max_tokens, temperature, effort, cache_system, cache_key)
+
+    out = _with_retries(attempt, provider, model)
     latency = time.monotonic() - start
 
     cost = cost_of(model, out["input_tokens"], out["output_tokens"], out["cached_tokens"])
@@ -408,11 +689,13 @@ def complete(model: str, system: str, user: str, *, provider: Optional[str] = No
                     input_tokens=out["input_tokens"], output_tokens=out["output_tokens"],
                     cached_tokens=out["cached_tokens"], reasoning_tokens=out["reasoning_tokens"],
                     cost=cost, thinking=out["thinking"], latency_s=latency,
-                    raw_stop_reason=out["stop"])
+                    raw_stop_reason=out["raw_stop"], stop=out["stop"], stop_detail=out["stop_detail"],
+                    served_model=out["served_model"], max_tokens=out["max_tokens"])
     tracker.record(model, purpose, run_id, r.input_tokens, r.output_tokens, r.cached_tokens,
-                   r.reasoning_tokens, cost=cost, provider=provider)
+                   r.reasoning_tokens, cost=cost, provider=provider, stop=r.stop)
     logger.debug(f"{provider}/{model} [{purpose}] in={r.input_tokens} (cached {r.cached_tokens}) "
-                 f"out={r.output_tokens} (reasoning {r.reasoning_tokens}) ${cost:.4f} {latency:.1f}s")
+                 f"out={r.output_tokens} (reasoning {r.reasoning_tokens}) stop={r.stop} "
+                 f"${cost:.4f} {latency:.1f}s")
     return r
 
 
@@ -438,35 +721,65 @@ def parse_json(text: Optional[str]) -> Tuple[Optional[dict], Optional[str]]:
     return None, last_err
 
 
+def _max_tokens_cap(model: str, provider: Optional[str]) -> int:
+    try:
+        p = resolve_provider(model, provider)
+    except ValueError:
+        p = ""
+    return ANTHROPIC_MAX_TOKENS if p == "anthropic" else OTHER_MAX_TOKENS
+
+
 def complete_json(model: str, system: str, user: str, *,
                   validate: Optional[Callable[[dict], Optional[str]]] = None, retries: int = 2,
                   **kw: Any) -> Tuple[Optional[dict], List[Dict[str, Any]]]:
     """
-    complete() + parse_json() + validate(); on failure re-ask with a corrective
-    turn up to `retries` times. Returns (obj or None, attempts) with one record
-    per attempt. Parse/validation failures never raise; budget, key and
-    non-transient API errors do.
+    complete() + parse_json() + validate(). An unusable reply is re-asked with a
+    corrective turn up to `retries` times; a reply cut off at max_tokens is
+    instead re-asked once, unchanged, with max_tokens doubled (capped); a refusal
+    or safety stop ends the call at once. Returns (obj or None, attempts) with one
+    record per attempt. Parse/validation failures never raise; budget and
+    FatalAPIError do.
     """
     attempts: List[Dict[str, Any]] = []
     history: List[Dict[str, str]] = list(kw.pop("history", None) or [])
+    max_tokens = int(kw.pop("max_tokens", 4000))
+    cap = _max_tokens_cap(model, kw.get("provider"))
+    grown = False
+    corrections = 0
     prompt = user
-    for _ in range(retries + 1):
-        r = complete(model, system, prompt, history=history, **kw)
+    while True:
+        r = complete(model, system, prompt, history=history, max_tokens=max_tokens, **kw)
         obj, err = parse_json(r.text)
         if obj is not None and validate is not None:
             try:
                 err = validate(obj)
             except Exception as e:  # a buggy validator must not crash the turn
                 err = f"validation error: {e}"
+        if err is not None and r.stop in ("refusal", "safety"):
+            err = f"refusal:{r.stop_detail or r.stop}"
+        elif err is not None and r.stop == "max_tokens":
+            err = f"max_tokens: reply cut off at {r.max_tokens or max_tokens} tokens ({err})"
         attempts.append({
             "text": r.text, "thinking": r.thinking, "error": err,
+            "stop": r.stop, "stop_detail": r.stop_detail, "served_model": r.served_model,
+            "max_tokens": r.max_tokens or max_tokens,
             "input_tokens": r.input_tokens, "output_tokens": r.output_tokens,
             "cached_tokens": r.cached_tokens, "reasoning_tokens": r.reasoning_tokens,
             "cost": r.cost, "latency_s": r.latency_s,
         })
         if err is None:
             return obj, attempts
-        logger.info(f"{model}: unusable JSON reply ({err}); attempt {len(attempts)}/{retries + 1}")
+        logger.info(f"{model}: unusable reply ({err}); attempt {len(attempts)}")
+        if r.stop in ("refusal", "safety"):
+            return None, attempts  # re-asking a refusal only invites another
+        if r.stop == "max_tokens":
+            bigger = min(cap, max_tokens * 2)
+            if grown or bigger <= max_tokens:
+                return None, attempts  # a corrective turn cannot fix a truncation
+            grown, max_tokens = True, bigger
+            continue  # same prompt, more room
+        if corrections >= retries:
+            return None, attempts
+        corrections += 1
         history += [{"role": "user", "content": prompt}, {"role": "assistant", "content": r.text or "(empty)"}]
         prompt = f"Your previous reply could not be used: {err}. Reply again with only the JSON object."
-    return None, attempts

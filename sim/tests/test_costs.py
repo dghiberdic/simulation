@@ -46,6 +46,23 @@ def test_zero_cost_calls_do_not_touch_ledger(tmp_path):
     assert t.summary()["session_calls"] == 1
 
 
+def test_per_call_log_for_paid_calls_only(tmp_path):
+    import json
+    f = tmp_path / "T0_spend.json"
+    t = CostTracker(f)
+    t.record("stub:x", "actor", "r", 100, 100, cost=0.0, stop="end")
+    assert not t.calls_file.exists()
+    t.record("claude-opus-5-5", "grand_jury", "r1", 1000, 500, 200, 100, provider="anthropic", stop="max_tokens")
+    assert t.calls_file == tmp_path / "T0_spend_calls.jsonl"
+    rec = json.loads(t.calls_file.read_text().splitlines()[0])
+    assert (rec["model"], rec["purpose"], rec["run_id"], rec["stop"]) == ("claude-opus-5-5", "grand_jury", "r1",
+                                                                          "max_tokens")
+    assert (rec["input_tokens"], rec["output_tokens"], rec["cached_tokens"], rec["reasoning_tokens"]) == \
+        (1000, 500, 200, 100)
+    assert rec["cost"] == pytest.approx(cost_of("claude-opus-5-5", 1000, 500, 200))
+    assert CostTracker().calls_file.name == "spend_calls.jsonl"
+
+
 def test_budget_guard(tmp_path):
     f = tmp_path / "spend.json"
     t = CostTracker(f, budget=5.0)

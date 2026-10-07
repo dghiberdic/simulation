@@ -6,7 +6,11 @@ Prices come from config/prices.json (USD per 1M tokens). Every call made
 through core.llm is recorded here before the response is returned, and the
 cumulative measured spend is persisted to a JSON ledger (default
 data/spend.json) so the guard spans runs: "a guard halts the pilot at $100 of
-measured spend".
+measured spend". Each paid call is also appended as one JSON line to
+<ledger stem>_calls.jsonl next to the ledger (default data/spend_calls.jsonl),
+so a run's spend can be audited call by call.
+
+Thread-safe: core.llm calls record()/check() from one thread per seat.
 
 Token convention: input_tokens is the total prompt including cached tokens;
 cached_tokens is the subset billed at the cached rate. output_tokens includes
@@ -89,6 +93,10 @@ class CostTracker:
         self.calls: List[Dict[str, Any]] = []
         self._lock = threading.Lock()
 
+    @property
+    def calls_file(self) -> Path:
+        return self.spend_file.with_name(f"{self.spend_file.stem}_calls.jsonl")
+
     # -- ledger -------------------------------------------------------------
 
     def _read_ledger(self) -> Dict[str, Any]:
@@ -113,15 +121,15 @@ class CostTracker:
 
     def record(self, model: str, purpose: str, run_id: Optional[str], input_tokens: int,
                output_tokens: int, cached_tokens: int = 0, reasoning_tokens: int = 0,
-               cost: Optional[float] = None, provider: str = "") -> float:
-        """Record one call; returns its cost. Zero-cost calls (stubs) never touch the ledger."""
+               cost: Optional[float] = None, provider: str = "", stop: Optional[str] = None) -> float:
+        """Record one call; returns its cost. Zero-cost calls (stubs) never touch the ledger or call log."""
         if cost is None:
             cost = cost_of(model, input_tokens, output_tokens, cached_tokens)
         entry = {
             "time": round(time.time(), 3), "model": model, "provider": provider,
             "purpose": purpose, "run_id": run_id, "input_tokens": input_tokens,
             "output_tokens": output_tokens, "cached_tokens": cached_tokens,
-            "reasoning_tokens": reasoning_tokens, "cost": cost,
+            "reasoning_tokens": reasoning_tokens, "cost": cost, "stop": stop,
         }
         with self._lock:
             self.calls.append(entry)
@@ -133,6 +141,8 @@ class CostTracker:
                 by_model[model] = by_model.get(model, 0.0) + cost
                 ledger["updated"] = time.strftime("%Y-%m-%dT%H:%M:%S")
                 self._write_ledger(ledger)
+                with open(self.calls_file, "a") as f:
+                    f.write(json.dumps(entry) + "\n")
         return cost
 
     # -- guard --------------------------------------------------------------

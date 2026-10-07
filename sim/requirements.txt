@@ -1,7 +1,8 @@
 # Actors and jurors. xAI (grok) and Muse use the OpenAI-compatible client.
-anthropic>=0.40.0
-openai>=1.50.0
-google-genai>=0.8.0
-python-dotenv>=1.0.0
+# Floors are the oldest versions the offline request-shape checks were run against.
+anthropic>=0.97
+openai>=2.30
+google-genai>=1.70
+python-dotenv>=1.0
 # Tests (offline; no API keys needed).
-pytest>=8.0.0
+pytest>=8
