@@ -884,22 +884,86 @@ def test_parse_json_conflicting_candidates_are_ambiguous(text, keys):
     assert llm.parse_json(text, keys) == (None, llm.AMBIGUOUS_ERROR)
 
 
-def test_parse_json_exactly_one_fenced_candidate_wins():
+def test_parse_json_exactly_one_fenced_candidate_wins_when_last():
     final = {"rationale": "invest", "actions": [{"type": "invest_capital", "amount": 5}]}
-    text = ("```json\n" + json.dumps(final) + "\n```\n\nI considered and rejected the alternative "
-            + DRAFT + " because it is illegal.")
+    # the fenced one wins over earlier differing objects; a ``` JSON fence tag is case-insensitive
+    text = "Rejected: " + DRAFT + "\nChosen:\n```JSON\n" + json.dumps(final) + "\n```"
     assert llm.parse_json_detail(text, PROPOSAL_KEYS) == (final, None, True)
-    # the fenced one wins wherever it stands, and a ``` JSON fence tag is case-insensitive
-    text2 = "Rejected: " + DRAFT + "\nChosen:\n```JSON\n" + json.dumps(final) + "\n```"
-    assert llm.parse_json_detail(text2, PROPOSAL_KEYS).obj == final
+    # an untagged fence is not a ```json fence
+    text2 = "```\n" + DRAFT + "\n```\n```json\n" + json.dumps(final) + "\n```"
+    assert llm.parse_json_detail(text2, PROPOSAL_KEYS) == (final, None, True)
+    # copies of the fenced object (fenced or not) after it are not "differing"
+    text3 = text + "\nAgain: " + json.dumps(final) + "\n```json\n" + json.dumps(final) + "\n```"
+    assert llm.parse_json_detail(text3, PROPOSAL_KEYS) == (final, None, True)
+
+
+@pytest.mark.parametrize("after", [
+    "\n\nI considered and rejected the alternative " + DRAFT + " because it is illegal.",
+    "\nOn reflection, no. Final answer:\n" + DRAFT,
+])
+def test_parse_json_differing_candidate_after_fence_is_ambiguous(after):
+    """L19 (R4A-2): a fenced draft followed by a bare differing object may be revised: re-ask."""
+    final = {"rationale": "invest", "actions": [{"type": "invest_capital", "amount": 5}]}
+    text = "Initial plan:\n```json\n" + json.dumps(final) + "\n```" + after
+    assert llm.parse_json_detail(text, PROPOSAL_KEYS) == (None, llm.AMBIGUOUS_ERROR, True)
+    # the same object fenced again at the end: nothing differing follows its last fenced copy
+    text2 = text + "\n```json\n" + json.dumps(final) + "\n```"
+    assert llm.parse_json_detail(text2, PROPOSAL_KEYS) == (final, None, True)
+
+
+def test_parse_json_duplicates_compared_as_canonical_json():
+    """L20: 1 and true (and 1.0) are different answers; key order is not."""
+    a = '{"actions": [], "directive_precedence": 1}'
+    for b in ('{"actions": [], "directive_precedence": true}', '{"actions": [], "directive_precedence": 1.0}'):
+        assert llm.parse_json_detail(a + "\n" + b, PROPOSAL_KEYS) == (None, llm.AMBIGUOUS_ERROR, True)
+    same = '{"directive_precedence": 1, "actions": []}'
+    assert llm.parse_json_detail(a + "\n" + same, PROPOSAL_KEYS) == (json.loads(a), None, False)
+    # an exactly-one-fenced decision also tells 1 from true
+    text = "```json\n" + a + "\n```\nnot " + '{"actions": [], "directive_precedence": true}'
+    assert llm.parse_json_detail(text, PROPOSAL_KEYS).ambiguous is True
+    assert llm.parse_json_detail(text, PROPOSAL_KEYS).obj is None
 
 
 def test_parse_json_truncated_reply_never_yields_a_nested_fragment():
     obj, err = llm.parse_json('{"rationale": "x", "actions": [{"type": "invest"}, {"type": ', ("actions",))
-    assert obj is None and "unterminated" in err
-    # a complete object before a truncated one is still found
-    obj, err = llm.parse_json('{"actions": [1]} then {"actions": [{"t": 1}, ', ("actions",))
-    assert obj == {"actions": [1]}
+    assert obj is None and err == llm.CUTOFF_ERROR
+    assert llm.CUTOFF_ERROR == "reply cut off before the final JSON object closed"
+
+
+@pytest.mark.parametrize("text", [
+    # L18 (R4A-1/R4C-3): a complete draft, then the final object cut off
+    'Draft: {"actions": [1]} then {"actions": [{"t": 1}, ',
+    'Draft:\n' + DRAFT + '\nRevised final answer:\n{"rationale": "On reflection I will hold and not',
+    '```json\n{"actions": [1]}\n```\nFinal: {"actions": [{"type": "build"',
+    '{"actions": [1]}\nP.S. {"note": "unfinished',   # any object opened with {" counts
+])
+def test_parse_json_complete_draft_before_cutoff_is_not_used(text):
+    assert llm.parse_json_detail(text, PROPOSAL_KEYS) == (None, llm.CUTOFF_ERROR, False)
+
+
+def test_parse_json_stray_open_brace_in_prose_is_not_a_cutoff():
+    # "{" not followed by '"' is prose, not an object that was cut off
+    assert llm.parse_json('{"actions": [1]} and a stray { brace', ("actions",)) == ({"actions": [1]}, None)
+
+
+def test_complete_json_cutoff_after_draft():
+    draft_then_cut = 'Draft: ' + DRAFT + '\nFinal: {"actions": [{"type": "build"'
+    # cut at max_tokens: the one doubled-cap re-ask, never the draft
+    llm.register_stub("cut1", lambda s, u: {"text": draft_then_cut, "stop": "max_tokens"})
+    obj, attempts = llm.complete_json("stub:cut1", "S", "U", max_tokens=1000, expect_keys=PROPOSAL_KEYS)
+    assert obj is None and [a["max_tokens"] for a in attempts] == [1000, 2000]
+    assert all(llm.CUTOFF_ERROR in a["error"] and a["error"].startswith("max_tokens") for a in attempts)
+    # ended normally but the object never closed: a corrective re-ask
+    replies = [draft_then_cut, FINAL]
+    prompts = []
+
+    def fn(s, u):
+        prompts.append(u)
+        return replies.pop(0)
+    llm.register_stub("cut2", fn)
+    obj, attempts = llm.complete_json("stub:cut2", "S", "U", max_tokens=1000, expect_keys=PROPOSAL_KEYS)
+    assert obj == json.loads(FINAL) and attempts[0]["error"] == llm.CUTOFF_ERROR
+    assert llm.CUTOFF_ERROR in prompts[1] and [a["max_tokens"] for a in attempts] == [1000, 1000]
 
 
 def test_complete_json_passes_expect_keys():
@@ -926,7 +990,7 @@ def test_complete_json_ambiguous_reply_reasked_then_used():
     assert attempts[0]["error"] == llm.AMBIGUOUS_ERROR
     assert "reply with exactly one" in prompts[1]
     # a fence-resolved reply is used at once but still flagged
-    llm.register_stub("amb2", lambda s, u: "```json\n" + FINAL + "\n```\nNot this: " + DRAFT)
+    llm.register_stub("amb2", lambda s, u: "Not this: " + DRAFT + "\n```json\n" + FINAL + "\n```")
     obj, attempts = llm.complete_json("stub:amb2", "S", "U", expect_keys=PROPOSAL_KEYS)
     assert obj == json.loads(FINAL) and attempts[0]["ambiguous"] is True and attempts[0]["error"] is None
 

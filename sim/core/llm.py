@@ -32,7 +32,11 @@ at cost 0 with possibly_billed, recorded as an attempt with stop
 "stream_error", and re-run at most twice in all together with timeouts (L17).
 
 Reply parsing (K1): a reply holding two differing objects with schema keys is
-unusable ("reply with exactly one") unless exactly one sits in a ```json fence.
+unusable ("reply with exactly one") unless exactly one sits in a ```json fence
+and no differing object follows it (L19); objects are compared as canonical
+JSON text, so 1 and true differ (L20). An object left open at the end of the
+reply ("reply cut off before the final JSON object closed") makes the reply
+unusable whatever complete objects precede it (L18).
 
 Every response is recorded in the cost tracker (core.costs) before it is
 returned, and the budget guard is checked before every paid call. complete()
@@ -887,48 +891,58 @@ def _brace_end(text: str, start: int) -> int:
 # Objects inside a ```json fence: the one a model marks as its answer (K1).
 _JSON_FENCE_RE = re.compile(r"```[ \t]*json[^\n]*\n(.*?)```", re.S | re.I)
 AMBIGUOUS_ERROR = "reply contained more than one JSON object; reply with exactly one"
+CUTOFF_ERROR = "reply cut off before the final JSON object closed"
 
 
 class ParsedJSON(NamedTuple):
     obj: Optional[dict]
     error: Optional[str]
     # The reply held two or more differing candidate objects (K1); obj is set
-    # only when exactly one of them was inside a ```json fence.
+    # only when exactly one of them was inside a ```json fence and no
+    # differing candidate followed it (L19).
     ambiguous: bool = False
+
+
+def _canon(obj: Any) -> str:
+    """Canonical JSON text: key order ignored, but 1, 1.0 and true stay distinct (L20)."""
+    return json.dumps(obj, sort_keys=True)
 
 
 def parse_json_detail(text: Optional[str], expect_keys: Iterable[str] = ()) -> ParsedJSON:
     """
     Tolerant JSON-object extraction; never raises. Decodes every top-level
     object (inside ```json fences or prose alike; objects nested in one already
-    decoded belong to it). Candidates are the objects carrying any of
-    `expect_keys` (the reply schema's keys), or all objects when none does;
-    identical copies count once. One candidate: it is the reply, whatever prose,
-    fence or trailing text surrounds it. Two or more differing candidates (a
-    draft and a final, a rejected alternative quoted in prose): if exactly one
-    is inside a ```json fence it is the reply; otherwise the reply is unusable
-    with AMBIGUOUS_ERROR. Never picks between conflicting objects by position (K1).
+    decoded belong to it). A top-level object that opens with '{"' and never
+    closes means the reply was cut off mid-answer: CUTOFF_ERROR, even when
+    complete objects (a draft) precede it (L18). Candidates are the objects
+    carrying any of `expect_keys` (the reply schema's keys), or all objects
+    when none does; copies with the same canonical JSON text count once (L20).
+    One candidate: it is the reply, whatever prose, fence or trailing text
+    surrounds it. Two or more differing candidates (a draft and a final, a
+    rejected alternative quoted in prose): if exactly one is inside a ```json
+    fence and no differing candidate follows it, it is the reply (L19);
+    otherwise the reply is unusable with AMBIGUOUS_ERROR. Never picks between
+    conflicting objects by position alone (K1).
     """
     if not text or not text.strip():
         return ParsedJSON(None, "empty reply")
-    found, last_err = _top_level_objects(text)
+    found, last_err, cut = _top_level_objects(text)
+    if cut:
+        return ParsedJSON(None, CUTOFF_ERROR)
     if not found:
         return ParsedJSON(None, last_err)
     keys = set(expect_keys or ())
     candidates = ([(i, o) for i, o in found if keys & set(o)] if keys else []) or found
-    distinct: List[dict] = []
-    for _, o in candidates:
-        if o not in distinct:
-            distinct.append(o)
-    if len(distinct) == 1:
-        return ParsedJSON(distinct[0], None)
+    canon = [(i, _canon(o), o) for i, o in candidates]
+    if len({c for _, c, _ in canon}) == 1:
+        return ParsedJSON(candidates[0][1], None)
     spans = [(m.start(1), m.end(1)) for m in _JSON_FENCE_RE.finditer(text)]
-    fenced: List[dict] = []
-    for i, o in candidates:
-        if any(a <= i < b for a, b in spans) and o not in fenced:
-            fenced.append(o)
+    fenced = {c: i for i, c, _ in canon if any(a <= i < b for a, b in spans)}  # canon -> last fenced position
     if len(fenced) == 1:
-        return ParsedJSON(fenced[0], None, True)
+        (fc, fi), = fenced.items()
+        # A differing object after the fenced one may be its revision: the fence decides only when last (L19).
+        if not any(i > fi and c != fc for i, c, _ in canon):
+            return ParsedJSON(next(o for _, c, o in canon if c == fc), None, True)
     return ParsedJSON(None, AMBIGUOUS_ERROR, True)
 
 
@@ -938,8 +952,12 @@ def parse_json(text: Optional[str], expect_keys: Iterable[str] = ()) -> Tuple[Op
     return obj, err
 
 
-def _top_level_objects(text: str) -> Tuple[List[Tuple[int, dict]], str]:
-    """(start index, object) for each top-level JSON object in text, and the last decode error."""
+def _top_level_objects(text: str) -> Tuple[List[Tuple[int, dict]], str, bool]:
+    """
+    (start index, object) for each top-level JSON object in text, the last
+    decode error, and whether the text ends inside an object opened with '{"'
+    (a reply cut off before its final object closed).
+    """
     try:
         whole = json.loads(text.strip())
     except (ValueError, RecursionError):
@@ -954,10 +972,11 @@ def _top_level_objects(text: str) -> Tuple[List[Tuple[int, dict]], str]:
         end = _brace_end(text, i)
         if end == -1:
             last_err = "invalid JSON: unterminated object"
-            if text[i + 1:].lstrip()[:1] in ('"', "}"):
+            if text[i + 1:].lstrip()[:1] == '"':
                 # A JSON object never closed (reply cut off): every later "{" is
-                # nested inside it, and a nested fragment must not pass for the reply.
-                break
+                # nested inside it, and a nested fragment must not pass for the reply;
+                # nor may an earlier complete draft (L18).
+                return found, last_err, True
             i = text.find("{", i + 1)  # a stray brace in prose
             continue
         try:
@@ -969,7 +988,7 @@ def _top_level_objects(text: str) -> Tuple[List[Tuple[int, dict]], str]:
         if isinstance(obj, dict):
             found.append((i, obj))
         i = text.find("{", end + 1)
-    return found, last_err
+    return found, last_err, False
 
 
 def complete_json(model: str, system: str, user: str, *,

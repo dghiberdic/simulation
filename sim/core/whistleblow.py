@@ -17,6 +17,8 @@ checked against the hidden ledger, not by a jury. All outcomes are public.
                       matches one of its already-penalised entries (exposed,
                       failed, or reported earlier): fee refunded, no penalty,
                       neutral notice, posted once per (reporter, entry) (M17).
+                      A self-report in this case keeps its self_report_fee
+                      (a self-report fee is never refunded) (M24).
 
 The month only selects among the accused's entries (G8): if it matches none of
 the accused's open entries, the report falls back to the accused's earliest
@@ -406,7 +408,10 @@ def resolve(reports: Dict[str, Any], labs: List[LabState], world: WorldState,
             # The access was already on the record: neutral, refunded
             match = done[-1]
             outcome["entry_id"] = match.id
-            bump(reporter, fee)
+            if not self_report:
+                # A self-report fee is never refunded (as the report line says), not even
+                # when the access was already on the record (M24).
+                bump(reporter, fee)
             outcome["result"] = "already_penalised"
             if not _posted_before(world, reporter, match.id):
                 text = (f"{reporter_name} filed a self-report; the access was already on the "

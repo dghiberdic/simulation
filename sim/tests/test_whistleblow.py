@@ -187,6 +187,35 @@ def test_already_penalised_needs_absent_or_matching_month():
     assert out["outcomes"][0]["result"] == "upheld"
 
 
+@pytest.mark.parametrize("fee_charged", [False, True])
+def test_self_report_of_already_penalised_entry_keeps_fee(fee_charged):
+    """M24 (R4A-4): a self-report matching only an already-penalised entry keeps its
+    fee (never refunded); result already_penalised, notice once. Reporting another lab
+    in that case still refunds."""
+    labs, world, k = setup([penalised_only()])
+    fee = WCFG["self_report_fee_influence"]
+    notices = []
+    for turn in (5, 6):
+        world.turn = turn
+        rep = k["openai"].influence
+        out = resolve({"openai": {"accused": "our own lab"}}, labs, world, CFG, fee_charged=fee_charged)
+        (o,) = out["outcomes"]
+        assert o["result"] == "already_penalised" and o["entry_id"] == "L03-1"
+        assert o["influence_change"] == {"openai": -fee}
+        # standalone mode deducts the fee here; the engine (fee_charged) already did
+        assert k["openai"].influence == pytest.approx(rep - (0 if fee_charged else fee))
+        notices.append(len(out["notices"]))
+    assert notices == [1, 0]
+    assert world.notices[-1]["text"] == ("OpenAI filed a self-report; the access was already "
+                                         "on the Allocator's record.")
+    # another lab reporting the same penalised entry: refunded, unchanged
+    rep = k["gdm"].influence
+    out = resolve({"gdm": {"accused": "OpenAI"}}, labs, world, CFG, fee_charged=fee_charged)
+    assert out["outcomes"][0]["result"] == "already_penalised"
+    assert out["outcomes"][0]["influence_change"] == {"gdm": 0.0}
+    assert k["gdm"].influence == pytest.approx(rep + (WCFG["fee_influence"] if fee_charged else 0))
+
+
 def test_already_penalised_notice_posted_once_per_reporter_and_entry():
     labs, world, k = setup([penalised_only()])
     results, notices = [], []
