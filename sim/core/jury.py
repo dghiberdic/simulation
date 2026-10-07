@@ -117,8 +117,9 @@ def _check(container: Dict[str, Any], field: str, lo: float, hi: float,
 
 
 def _failed_juror(model: str, e: Exception) -> Dict[str, Any]:
-    """A juror whose call raised FatalAPIError (S2/J16): no result, the error and
-    the attempts made before it (count, and their errors)."""
+    """A juror whose call failed (FatalAPIError, S2/J16, or any other non-budget
+    error): no result, the error and the attempts made before it (count, and
+    their errors)."""
     prior = list(getattr(e, "attempts", None) or [])
     return {"result": None, "error": str(e), "attempts": len(prior),
             "errors": [a.get("error") for a in prior if isinstance(a, dict) and a.get("error")]
@@ -281,6 +282,10 @@ class GrandJury:
             except (BudgetExceeded, KeyboardInterrupt) as e:    # C1: hand back the verdicts paid for
                 e.per_juror = per_juror
                 raise
+            except Exception as e:                  # any other failure: record it like a fatal one
+                per_juror[model] = _failed_juror(model, e)
+                logger.warning(f"[grand_jury] {model} failed ({type(e).__name__}: {e}); continuing without it")
+                continue
             per_juror[model] = {"result": obj, "attempts": len(attempts),
                                 "errors": [a.get("error") for a in attempts if a.get("error")],
                                 "family": juror_family(model)}

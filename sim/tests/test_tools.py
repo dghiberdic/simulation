@@ -1678,3 +1678,8 @@ def test_r6_disposition_resolves_every_family_seat_and_exits_3(tmp_path, capsys)
     assert not out.exists()
     assert disp_tool.main([str(f), "--write", "--output", str(out), "--force"]) == 0
     assert json.loads(out.read_text())["xai"] == disp_tool.DEFAULT_DISPOSITION
+
+
+def test_trust_screen_matches_verb_form_grievance():
+    assert SR.TRUST_RE.search("We share a grievance against OpenAI.")
+    assert SR.TRUST_RE.search("They share our rival, so let's talk.")

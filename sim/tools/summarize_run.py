@@ -1484,6 +1484,7 @@ TRUST_RE = re.compile(
     r"rely on (?:us|you)|you can count on|"
     # shared grievance (§6.2): a common rival or a common wrong
     r"common (?:enemy|rival|threat|interest|cause|ground)|shared (?:interest|grievance|concern|rival)|"
+    r"shares? (?:a |the |our )?(?:common )?(?:grievance|rival|enemy|interest|concern)|"
     r"(?:hurts?|hurting|squeez\w*|crush\w*|block\w*|shut\w* out|locked? out|freez\w* out) (?:us )?both|"
     r"both (?:been|being) (?:shut|locked|frozen|squeezed|left)|in the same boat|level the playing field|"
     r"(?:unfair|rigged) (?:to|against) (?:us|both)|"

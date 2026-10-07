@@ -1287,3 +1287,16 @@ def test_r6_main_disposition_ranges(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "openai=140" in out and "gdm='high'" in out and "meta=True" in out and "xai" not in out.split("got")[1]
     assert main_mod.bad_dispositions({"a": 0, "b": 100, "c": 72.5}) == []
+
+
+def test_t0_reprojection_says_over_guard(tmp_path, capsys):
+    assert pilot.main(["--dry-run", "T0", "--output", str(tmp_path)]) == 0
+    summary = json.loads((tmp_path / "pilot_summary_T0.json").read_text())
+    capsys.readouterr()
+    summary["reprojection"].update(total=300.0, guard=100, reserve=-200.0)
+    pilot._print_summary(summary, "T0", is_t1=False)
+    out = capsys.readouterr().out
+    assert "OVER the $100 guard by $200.00" in out and "under the $100 guard" not in out
+    summary["reprojection"].update(total=80.0, reserve=20.0)
+    pilot._print_summary(summary, "T0", is_t1=False)
+    assert "under the $100 guard -> reserve $20.00" in capsys.readouterr().out

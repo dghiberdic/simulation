@@ -1964,7 +1964,12 @@ def _print_summary(summary, test, is_t1: bool) -> None:
             runs = f"{st['runs']} run(s)" if st.get("runs") else "fixed estimate"
             print(f"  {st['step']:<18} {runs:<16} ${st['cost']:>7.2f}   running total ${st['running_total']:>7.2f}")
         if rep.get("guard") is not None:
-            print(f"  total ${rep['total']:.2f} under the ${rep['guard']} guard -> reserve ${rep['reserve']:.2f}")
+            if rep["reserve"] >= 0:
+                print(f"  total ${rep['total']:.2f} under the ${rep['guard']} guard -> reserve ${rep['reserve']:.2f}")
+            else:
+                print(f"  total ${rep['total']:.2f} is OVER the ${rep['guard']} guard by ${-rep['reserve']:.2f} — "
+                      "apply the trims below; if the never-cut tests (T0, T1, T4, T9, T5) still exceed "
+                      "it, stop and agree the next step (spec §9.2 T0)")
         if rep.get("trims"):
             print("  trims, in this order, if the total does not fit: "
                   + "; ".join(f"{t['label']} (-${t['saves']:.2f})" for t in rep["trims"]))

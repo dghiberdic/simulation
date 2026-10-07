@@ -523,3 +523,15 @@ def test_macro_and_disposition_budget_stop_carry_what_was_paid():
     with pytest.raises(BudgetExceeded) as info:
         DispositionJury().rate(["stub:gemini-r6d", "stub:gpt-r6mbudget"], "Record of one lab.")
     assert [r["juror"] for r in info.value.ratings] == ["stub:gemini-r6d"]
+
+
+def test_grand_jury_non_api_error_keeps_other_verdicts():
+    """A juror failing with a non-API error is recorded; the verdicts already paid stand."""
+    def boom(system, user):
+        raise ZeroDivisionError("parser bug")
+    register_stub("gj_ok_r7", _grand_reply)
+    register_stub("gpt-boom-r7", boom)
+    res = GrandJury(["stub:gj_ok_r7", "stub:gpt-boom-r7"]).evaluate("T", list(LAB_KEYS), {})
+    assert res["per_juror"]["stub:gpt-boom-r7"]["result"] is None
+    assert "parser bug" in res["per_juror"]["stub:gpt-boom-r7"]["error"]
+    assert res["ups"] is not None and res["per_juror"]["stub:gj_ok_r7"]["result"] is not None
