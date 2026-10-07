@@ -39,7 +39,11 @@ CLI:
   python tools/attribution_probe.py [--n 120] [--models m1,m2] [--seed 0]
                                     [--budget 100] [--spend-file F] [--dry-run]
                                     [--output out.json]
-  Real calls share the pilot's spend ledger (data/spend.json) and guard.
+  Real calls share the pilot's spend ledger (data/spend.json) and guard. The
+  results go to data/pilot/T3probe/probe_<timestamp>.json unless --output
+  (dry runs: data/pilot/dry/T3probe/). A budget or fatal stop saves what was
+  answered, prints "(stopped after n of N)", gives no decision and exits 1
+  (budget) or 2 (fatal); 0 otherwise.
 """
 
 import argparse
@@ -48,10 +52,12 @@ import logging
 import random
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+SIM_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(SIM_DIR))
 
 from core.costs import BudgetExceeded, configure, get_tracker
 from core.llm import FatalAPIError, complete_json, preflight, register_stub
@@ -300,11 +306,13 @@ def _dry_run_reply(system: str, user: str) -> str:
 
 
 def run_probe(vignettes: List[Dict[str, Any]], models: Sequence[str],
-              dry_run: bool = False) -> List[Dict[str, Any]]:
+              dry_run: bool = False, stop_info: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """
     Ask one model per vignette (cycling `models`). In dry-run every call goes to
     a local stub. A BudgetExceeded stops the probe; results so far are returned
-    and the last entry is marked {"stopped": "budget"}; a FatalAPIError likewise ("fatal").
+    and the last entry is marked {"stopped": "budget"}; a FatalAPIError likewise
+    ("fatal"). `stop_info`, when given, is filled with {"stopped": "budget" |
+    "fatal", "error", "answered", "planned"} even when nothing was answered (P52).
     """
     if dry_run:
         register_stub(DRY_RUN_STUB, _dry_run_reply)
@@ -325,6 +333,9 @@ def run_probe(vignettes: List[Dict[str, Any]], models: Sequence[str],
             logger.warning(f"[t3] stopped ({why}) after {len(results)} vignettes: {e}")
             if results:
                 results[-1]["stopped"] = why
+            if stop_info is not None:
+                stop_info.update({"stopped": why, "error": f"{type(e).__name__}: {e}",
+                                  "answered": len(results), "planned": len(vignettes)})
             break
         suspect = normalise_suspect(obj.get("suspect")) if obj else None
         target = v["jumper"] or "none"
@@ -433,7 +444,19 @@ def _print_analysis(a: Dict[str, Any]) -> None:
 # CLI
 # ---------------------------------------------------------------------------
 
+def default_output(dry_run: bool) -> Path:
+    """data/pilot/T3probe/probe_<timestamp>.json (dry: data/pilot/dry/T3probe/…), P52/H7."""
+    base = SIM_DIR / "data" / "pilot" / ("dry/T3probe" if dry_run else "T3probe")
+    return base / f"probe_{time.strftime('%Y%m%d-%H%M%S')}.json"
+
+
 def main(argv: Optional[List[str]] = None) -> int:
+    """
+    Exit codes (P52): 0 done; 1 stopped by the budget guard; 2 preflight
+    failure or a fatal API error. A stopped probe still saves what was
+    answered, prints "(stopped after n of N)" and gives NO decision — a
+    partial sample is not the decision's sample.
+    """
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S")
     p = argparse.ArgumentParser(description="Pilot T3 attribution probe (spec §5.4).")
@@ -444,7 +467,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--spend-file", default=None,
                    help="measured-spend ledger (default sim/data/spend.json, shared with the pilot)")
     p.add_argument("--dry-run", action="store_true", help="offline stub, $0")
-    p.add_argument("--output", default="", help="write vignettes' results + analysis as JSON")
+    p.add_argument("--output", default="",
+                   help="results + analysis JSON (default data/pilot/T3probe/probe_<timestamp>.json; "
+                        "dry runs data/pilot/dry/T3probe/)")
     args = p.parse_args(argv)
 
     try:
@@ -462,25 +487,35 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     vignettes = build_vignettes(args.n, DEFAULT_JUMPS, DEFAULT_NOISE, args.seed, cfg)
     results: List[Dict[str, Any]] = []
-    rc = 0
+    stop: Dict[str, Any] = {}
     try:
-        results = run_probe(vignettes, models, dry_run=args.dry_run)
-    except FatalAPIError as e:
+        results = run_probe(vignettes, models, dry_run=args.dry_run, stop_info=stop)
+    except FatalAPIError as e:      # raised outside a vignette call (should not happen)
         logger.error(f"[t3] aborted: {e}")
-        rc = 2
-    finally:
-        analysis = analyse(results)
-        _print_analysis(analysis)
-        if not args.dry_run:
-            print(f"spend this session: {get_tracker().summary()}")
-        if args.output:
-            out = Path(args.output)
-            out.parent.mkdir(parents=True, exist_ok=True)
-            with open(out, "w") as f:
-                json.dump({"models": models, "seed": args.seed, "dry_run": args.dry_run,
-                           "results": results, "analysis": analysis}, f, indent=2)
-            logger.info(f"[save] wrote {out}")
-    return rc
+        stop.update({"stopped": "fatal", "error": f"{type(e).__name__}: {e}",
+                     "answered": len(results), "planned": len(vignettes)})
+    analysis = analyse(results)
+    if stop:
+        analysis["decision"] = {"raise_noise": None, "rate": None, "stopped": stop["stopped"],
+                                "text": (f"T3: probe stopped ({stop['stopped']}) after {stop['answered']} of "
+                                         f"{stop['planned']} vignettes; no decision (re-run the probe in full).")}
+    _print_analysis(analysis)
+    if stop:
+        print(f"(stopped after {stop['answered']} of {stop['planned']}: {stop['error']})")
+    if not args.dry_run:
+        print(f"spend this session: {get_tracker().summary()}")
+    out = Path(args.output) if args.output else default_output(args.dry_run)
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with open(out, "w") as f:
+            json.dump({"models": models, "seed": args.seed, "dry_run": args.dry_run, "n": args.n,
+                       "stopped": stop or None, "results": results, "analysis": analysis}, f, indent=2)
+        print(f"saved {out}")
+    except OSError as e:
+        print(f"could not save {out}: {e}")
+    if stop:
+        return 1 if stop["stopped"] == "budget" else 2
+    return 0
 
 
 if __name__ == "__main__":

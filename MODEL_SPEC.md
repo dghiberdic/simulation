@@ -83,9 +83,16 @@ come from the Grand Jury.
   payoff ladder `--rung K`, capability-seed rotation `--rotate`; key preflight
   `core.llm.preflight`; placeholder-value guard; stale final records removed by
   `pilot.clear_stale` / `main.clear_stale`; `pilot.claim_run_id` never deletes a
-  final of a different rotation / overrides / seed and picks `<id>-vN`, and the
-  cleared run's pooled rating rows go with it — `pilot.remove_ratings`). Run
-  ids carry the seat swap (`pilot.plan_runs`: `T1b-meta-gdm-run01[-rungK]`).
+  final of a different condition / rotation / overrides / seed and picks
+  `<id>-vN`, and the cleared run's pooled rating rows go with it —
+  `pilot.remove_ratings`). Run ids carry the seat swap (`pilot.plan_runs`:
+  `T1b-meta-gdm-run01[-rungK]`) and follow the preset's conditions
+  (`T5-C-run01` even with `--conditions C`). Run counts with a rotation are per
+  seat (`pilot.resolve_runs`: `runs_per_seat`, `rung_runs_per_seat`); the
+  planned runs and their estimate (`pilot.estimate_cost`) print before any
+  call; `--skip-completed` keeps finished runs (`pilot.completed_record`);
+  ladder rungs skip debriefs and the Grand Jury unless `--debrief` /
+  `--grand-jury`.
   Each preset's `decides` list picks the decision lines its summary prints;
   pooled lines (T1, T3, T6, T7) and T9 never appear per preset (K3). The $100 measured-spend guard is
   `core.costs.CostTracker.check` on the shared ledger `data/spend.json`
@@ -94,22 +101,33 @@ come from the Grand Jury.
   (juror fixed effect, ICC(1,1), §2 rule with the span over per-run means).
   T3 pools the misreports of every F3 run plus the probe and T6 reads the T1/T4
   debriefs (aux §4), so neither has a preset; T1 pools T1a + T1b
-  (`summarize_run.t1_decision`, `--t1`; ladder exhausted → S3); T7 is read
+  (`summarize_run.t1_decision`, `--t1`, one seat at a time with its cost; no
+  baseline → no decision; ladder exhausted → S3); T7 is read
   from the T1a log; T8 runs on main-run logs (`tools/jury_check.py`; no pairs →
   no decision). T6neutral: `summarize_run.decisions` compares test talk per
   seat-turn between the neutral and eval arms (`pilot.py T6neutral --eval-arm`).
 - Debriefs: `pilot._collect_debriefs` over `core.transcript.debrief_transcript`
   (chosen setting hidden), effort medium, 8000 tokens, one retry at 16000.
 - T0 usage table and 12-turn projection: `pilot.usage_report` (reads the
-  partial record of a halted, aborted or crashed run; counts timeouts).
+  partial record of a halted, aborted or crashed run; counts timeouts; served
+  model ids per actor from the attempts and per juror through
+  `pilot.install_served_probe`, mismatches flagged; the MacroJury measured once
+  on the final state — `pilot.measure_macro_jury`); the core order re-projected
+  from the measured costs with the trims: `pilot.reproject` (`core_order`,
+  `fixed_costs`, `trims` in `config/pilot.json`).
 - Dependent variables (§9.3) and the decision lines for T3–T7:
   `tools/summarize_run.py` (`aggregate(..., decide=...)["decisions"]`;
   `account_verdict` for F3 misreports, `solicitation_verdict` /
   `acceptance_verdict` for collusion, `play_test_talk` / `debrief_says_tested`
   for T6, lead-holder filings per condition from the tip's received month for
-  T5; heuristic lines carry `HEURISTIC_NOTE`); T9: `tools/compare_arms.py`; T3 probe:
-  `tools/attribution_probe.py`. All tools skip dry-run records unless
-  `--include-dry` (H7).
+  T5; `--decide` limits the printed lines). Text-heuristic lines are screens
+  (S1): `summarize_run.screen_note` names the review file and what to confirm,
+  and `summarize_run.write_review` writes `review_<test-or-pool>.md` with every
+  screened text in full (pilot summaries: `pilot._write_pilot_review`). T9:
+  `tools/compare_arms.py` (arms checked by `compare_arms.arm_problems`; review
+  `review_T9.md`); T3 probe: `tools/attribution_probe.py` (default output
+  `data/pilot/T3probe/probe_<timestamp>.json`; early stop → no decision, exit
+  1/2). All tools skip dry-run records unless `--include-dry` (H7).
 - Crash safety (G5, H5): per-turn `<run_id>.partial.json` with the turn in
   flight kept as `"incomplete": true`; `core.llm.FatalAPIError` →
   `core.engine.RunAborted`; `pilot.py` catches any exception per run (status

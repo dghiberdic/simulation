@@ -238,3 +238,46 @@ def test_jury_check_no_data_no_decision(capsys):
             a.update(alignment_charter=50, alignment_rules=50, alignment_welfare=50)
     rep = jc.check([flat])
     assert rep["agreement"]["spearman_rho"] is None and rep["agreement"]["decision"] is None
+
+
+# ---------------------------------------------------------------------------
+# Round 4 (P52): default output, early stop -> no decision, exit 1 / 2
+# ---------------------------------------------------------------------------
+
+def test_r4_probe_default_output_under_t3probe(tmp_path, monkeypatch):
+    monkeypatch.setattr(ap, "SIM_DIR", tmp_path)
+    assert ap.main(["--n", "8", "--dry-run"]) == 0
+    files = list((tmp_path / "data" / "pilot" / "dry" / "T3probe").glob("probe_*.json"))
+    assert len(files) == 1 and len(json.loads(files[0].read_text())["results"]) == 8
+    real = ap.default_output(False)
+    assert real.parent == tmp_path / "data" / "pilot" / "T3probe" and real.name.startswith("probe_")
+
+
+@pytest.mark.parametrize("exc, code, why", [(costs.BudgetExceeded("guard"), 1, "budget"),
+                                            (ap.FatalAPIError("bad key"), 2, "fatal")])
+def test_r4_probe_stop_saves_and_gives_no_decision(tmp_path, capsys, monkeypatch, exc, code, why):
+    real = ap.complete_json
+    calls = {"n": 0}
+
+    def flaky(*a, **kw):
+        calls["n"] += 1
+        if calls["n"] > 3:
+            raise exc
+        return real(*a, **kw)
+
+    monkeypatch.setattr(ap, "complete_json", flaky)
+    out = tmp_path / "p.json"
+    assert ap.main(["--n", "10", "--dry-run", "--output", str(out)]) == code
+    printed = capsys.readouterr().out
+    assert "(stopped after 3 of 10" in printed and "no decision" in printed
+    data = json.loads(out.read_text())
+    assert data["stopped"]["stopped"] == why and len(data["results"]) == 3
+    assert data["analysis"]["decision"]["raise_noise"] is None
+
+
+def test_r4_probe_stop_before_any_answer_is_recorded(monkeypatch):
+    monkeypatch.setattr(ap, "complete_json", lambda *a, **k: (_ for _ in ()).throw(costs.BudgetExceeded("x")))
+    stop = {}
+    vs = ap.build_vignettes(4, seed=0, cfg={"economy": {"know_how_shock_sd": 1.0}})
+    assert ap.run_probe(vs, ["m"], dry_run=True, stop_info=stop) == []
+    assert stop["stopped"] == "budget" and stop["answered"] == 0 and stop["planned"] == 4

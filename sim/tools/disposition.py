@@ -12,7 +12,8 @@ Guards
 ------
 Ratings from dry runs or stub jurors are refused unless --allow-stub (they
 would pin every seat at the stub's 50). Nothing is written unless --write;
-by default the tool prints the resolution.
+by default the tool prints the resolution. --write together with --allow-stub
+is refused (exit 2): stub ratings never reach config/dispositions.json (P59).
 
 Juror fixed effect
 ------------------
@@ -405,6 +406,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--allow-stub", action="store_true",
                         help="accept ratings from dry runs / stub jurors (testing the tool only)")
     args = parser.parse_args(argv)
+    if args.write and args.allow_stub:
+        # P59: --allow-stub is for testing the tool; stub ratings never reach a config file.
+        print("Refusing --write together with --allow-stub: stub or dry-run ratings must never set "
+              "main-run dispositions. Drop --allow-stub to write from the real pooled file.")
+        return 2
 
     try:
         with open(args.input) as f:

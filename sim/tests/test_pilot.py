@@ -118,16 +118,45 @@ def test_plan_runs_rung_suffix_and_runs_per_seat():
     one_by_one = (pilot.plan_runs("T1b", ["A"], 2, ["meta:gdm"], rung=1)
                   + pilot.plan_runs("T1b", ["A"], 2, ["meta:xai"], rung=1))
     assert [p["run_id"] for p in one_by_one] == [p["run_id"] for p in plan]
-    base = pilot.plan_runs("T1b", ["A"], 4, ["meta:anthropic", "meta:openai"], rung=None)
-    assert [p["rotation"] for p in base] == ["meta:anthropic", "meta:openai"] * 2
-    assert [p["run_id"] for p in base] == ["T1b-meta-anthropic-run01", "T1b-meta-openai-run01",
-                                           "T1b-meta-anthropic-run02", "T1b-meta-openai-run02"]
-    assert [p["seed"] for p in base] == [0, 0, 1, 1]
+    # P49: with a rotation the count is per seat, with or without a rung.
+    base = pilot.plan_runs("T1b", ["A"], 2, ["meta:anthropic", "meta:openai"], rung=None)
+    assert [p["rotation"] for p in base] == ["meta:anthropic"] * 2 + ["meta:openai"] * 2
+    assert [p["run_id"] for p in base] == ["T1b-meta-anthropic-run01", "T1b-meta-anthropic-run02",
+                                           "T1b-meta-openai-run01", "T1b-meta-openai-run02"]
+    assert [p["seed"] for p in base] == [0, 1, 0, 1]
     assert not {p["run_id"] for p in base} & {p["run_id"] for p in plan}
     multi = pilot.plan_runs("T5", ["A", "C"], 1, [], rung=None)
     assert [p["run_id"] for p in multi] == ["T5-A-run01", "T5-C-run01"]
     assert pilot.summary_name("T1b", 1, "meta:gdm,meta:xai") == "T1b-meta-gdm_meta-xai-rung1"
     assert pilot.summary_name("T1b", 1, None) == "T1b-rung1" and pilot.summary_name("T0", None, None) == "T0"
+
+
+def test_p49_run_counts_are_per_seat():
+    """P49: T1b = 1 run per seat (4), the 2-seat trim = 2, one seat = 1, a rung = 2 per seat, --runs per seat."""
+    data = pilot.load_pilot()
+    t1b = pilot.resolve_preset(data, "T1b")
+    count = lambda runs_arg, rung, rotate: len(pilot.plan_runs(
+        "T1b", ["A"], pilot.resolve_runs(t1b, runs_arg, rung, pilot.parse_rotation(rotate)),
+        pilot.parse_rotation(rotate), rung))
+    assert count(None, None, t1b["rotate"]) == 4
+    assert count(None, None, "meta:gdm,meta:xai") == 2
+    assert count(None, None, "meta:gdm") == 1
+    assert count(None, 1, "meta:gdm") == 2
+    assert count(3, None, "meta:gdm,meta:xai") == 6
+    t6n = pilot.resolve_preset(data, "T6neutral")
+    assert t6n["runs"] == 1 and pilot.resolve_runs(t6n, None, None, []) == 1          # P50
+    # estimated cost before starting: README estimate per run, scaled by turns
+    assert pilot.estimate_cost(t1b, 2, 6, 1) == round(2 * t1b["est_cost_per_rung_run"], 2)
+    assert pilot.estimate_cost(t1b, 4, 3, None) == round(4 * t1b["est_cost_per_run"] / 2, 2)
+
+
+def test_p51_run_ids_follow_the_preset_conditions():
+    """P51: T5 --conditions C still writes T5-C-run01; a single-condition preset run in another condition is named."""
+    assert [p["run_id"] for p in pilot.plan_runs("T5", ["C"], 1, [], None, ["A", "C"])] == ["T5-C-run01"]
+    assert [p["run_id"] for p in pilot.plan_runs("T5false", ["A"], 1, [], None, ["A"])] == ["T5false-run01"]
+    assert [p["run_id"] for p in pilot.plan_runs("T5false", ["C"], 1, [], None, ["A"])] == ["T5false-C-run01"]
+    assert pilot.summary_name("T5", None, None, ["C"]) == "T5-C"
+    assert pilot.summary_name("T5", None, None, ["A", "C"]) == "T5-A_C"
 
 
 def test_parse_rotation_rejects_bad_pairs():
@@ -378,7 +407,9 @@ def test_usage_report_rates_stops_and_projection():
     proj = rep["projection"]
     assert proj["cost_per_turn"] == pytest.approx(0.3)          # (0.4 + 0.2) / 2 turns
     assert proj["post_run_cost_per_run"] == pytest.approx(0.9)
-    assert proj["projected_12_turn_run"] == pytest.approx(12 * 0.3 + 0.9)
+    # turn 1 and later turns priced apart from the records' attempt costs (0.01 each here)
+    assert proj["first_turn_cost"] == pytest.approx(0.04) and proj["later_turn_cost"] == pytest.approx(0.03)
+    assert proj["projected_12_turn_run"] == pytest.approx(0.04 + 11 * 0.03 + 0.9)
 
 
 # ---------------------------------------------------------------------------
@@ -592,8 +623,9 @@ def test_debrief_uses_debrief_transcript(monkeypatch):
 def test_conditions_override_trims_t5(tmp_path):
     assert pilot.main(["--dry-run", "T5", "--conditions", "A", "--turns", "2",
                        "--output", str(tmp_path)]) == 0
-    summary = json.loads((tmp_path / "pilot_summary_T5.json").read_text())
+    summary = json.loads((tmp_path / "pilot_summary_T5-A.json").read_text())       # P51
     assert summary["conditions"] == ["A"] and summary["runs_requested"] == 1
+    assert (tmp_path / "T5-A-run01.json").exists() and (tmp_path / "review_T5-A.md").exists()
     with pytest.raises(SystemExit):
         pilot.main(["--dry-run", "T5", "--conditions", "D", "--output", str(tmp_path)])
 
@@ -708,3 +740,167 @@ def test_t6neutral_summary_compares_with_eval_arm_logs(tmp_path):
                        "--no-disposition-jury", "--eval-arm", str(eval_dir)]) == 0
     line = json.loads((out / "pilot_summary_T6neutral.json").read_text())["decisions"]["T6neutral"]
     assert "eval arm 0/10" in line and "neutral arm 0/10" in line and "keep the eval brief" in line
+
+
+# ---------------------------------------------------------------------------
+# Round 4 (S1, S2, P42, P49, P53, P54, P56, P58, P59)
+# ---------------------------------------------------------------------------
+
+def test_r4_plan_and_estimate_printed_before_starting(tmp_path, capsys, monkeypatch):
+    seen = {}
+
+    class Boom(Exception):
+        pass
+
+    def stop(*a, **k):
+        seen["out"] = capsys.readouterr().out
+        raise Boom()
+
+    monkeypatch.setattr(pilot, "SimulationEngine", stop)
+    pilot.main(["--dry-run", "T1b", "--rotate", "meta:gdm,meta:xai", "--turns", "2",
+                "--output", str(tmp_path), "--no-disposition-jury"])
+    out = seen["out"]
+    assert "PILOT T1b-meta-gdm_meta-xai: 2 run(s) planned; estimated cost ≈ $4.60" in out
+    assert "T1b-meta-gdm-run01" in out and "T1b-meta-xai-run01" in out and "run02" not in out
+
+
+def test_r4_skip_completed_reruns_only_missing(tmp_path, capsys):
+    args = ["--dry-run", "T1b", "--rotate", "meta:gdm,meta:xai", "--turns", "1",
+            "--output", str(tmp_path), "--no-disposition-jury"]
+    assert pilot.main(args) == 0
+    (tmp_path / "T1b-meta-xai-run01.json").unlink()
+    capsys.readouterr()
+    assert pilot.main(args + ["--skip-completed"]) == 0
+    out = capsys.readouterr().out
+    assert "1 run(s) planned, 1 already completed (skipped)" in out
+    assert "skip (completed) T1b-meta-gdm-run01" in out
+    summary = json.loads((tmp_path / "pilot_summary_T1b-meta-gdm_meta-xai.json").read_text())
+    assert summary["skipped_completed"] == ["T1b-meta-gdm-run01"]
+    assert [r["run_id"] for r in summary["per_run"]] == ["T1b-meta-xai-run01"]
+    # a final of another rotation under the same id is never "completed"
+    rec = json.loads((tmp_path / "T1b-meta-gdm-run01.json").read_text())
+    assert pilot.completed_record(tmp_path, "T1b-meta-gdm-run01",
+                                  {"rotation": "meta:xai", "overrides": None, "seed": 0, "condition": "A"},
+                                  True) is None
+    assert pilot.completed_record(tmp_path, "T1b-meta-gdm-run01",
+                                  {"rotation": "meta:gdm", "overrides": None, "seed": 0, "condition": "A"},
+                                  True)["config"]["rotation"] == rec["config"]["rotation"]
+
+
+def test_r4_rung_skips_debrief_and_grand_jury(tmp_path):
+    assert pilot.main(["--dry-run", "T1b", "--rung", "1", "--rotate", "meta:gdm", "--turns", "1", "--runs", "1",
+                       "--output", str(tmp_path), "--no-disposition-jury"]) == 0
+    rec = json.loads((tmp_path / "T1b-meta-gdm-run01-rung1.json").read_text())
+    assert not rec["final"].get("grand_jury") and not (tmp_path / "T1b-meta-gdm-run01-rung1.debrief.json").exists()
+    summary = json.loads((tmp_path / "pilot_summary_T1b-meta-gdm-rung1.json").read_text())
+    assert summary["debriefs"] is False and summary["grand_jury"] is False
+    assert pilot.main(["--dry-run", "T1b", "--rung", "1", "--rotate", "meta:xai", "--turns", "1", "--runs", "1",
+                       "--output", str(tmp_path), "--no-disposition-jury", "--debrief", "--grand-jury"]) == 0
+    rec = json.loads((tmp_path / "T1b-meta-xai-run01-rung1.json").read_text())
+    assert rec["final"].get("grand_jury") and (tmp_path / "T1b-meta-xai-run01-rung1.debrief.json").exists()
+
+
+def test_r4_t0_served_models_macro_measure_and_reprojection(tmp_path, capsys):
+    assert pilot.main(["--dry-run", "T0", "--output", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    summary = json.loads((tmp_path / "pilot_summary_T0.json").read_text())
+    usage = summary["usage"]
+    assert usage["by_actor_model"]["stub:actor_meta"]["served_models"] == {"stub:actor_meta": 6}
+    assert not usage["by_actor_model"]["stub:actor_meta"]["served_mismatch"]
+    macro = usage["macro_measures"][0]
+    assert sorted(macro["per_juror"]) == sorted(["stub:claude-macro", "stub:gpt-macro", "stub:gemini-macro"])
+    assert all(pj["usable"] for pj in macro["per_juror"].values())
+    assert usage["projection"]["macro_reviews_measured"] == 1 and usage["projection"]["macro_reviews_per_12_turn_run"] == 2
+    assert usage["jurors"]["stub:gpt-macro|macro_jury"]["failed_calls"] == 0
+    steps = [s["step"] for s in summary["reprojection"]["steps"]]
+    assert steps == ["rate_charters", "T0", "T1a", "T1b", "T4", "T9", "T5", "T5false", "attribution_probe"]
+    assert [t["label"].split()[0] for t in summary["reprojection"]["trims"]] == ["T9", "T5", "T4", "T1b"]
+    assert "MacroJury measured once on the final state: 3/3 usable votes" in out
+    assert "re-projected core order" in out and "Update config/prices.json" in out
+    assert (tmp_path / "review_T0.md").exists() and summary["review"].endswith("review_T0.md")
+
+
+def test_r4_served_mismatch_and_reprojection_math():
+    assert not pilot.served_mismatch("claude-opus-5-5", "claude-opus-5-5-20260301")
+    assert not pilot.served_mismatch("gemini-3.1-pro", "models/gemini-3.1-pro")
+    assert pilot.served_mismatch("gpt-6-astra", "gpt-5.2")
+    proj = {"cost_per_turn": 1.0, "first_turn_cost": 2.0, "later_turn_cost": 1.0, "first_turn_a2a_cost": 1.0,
+            "later_turn_a2a_cost": 0.5, "a2a_cost_per_turn": 0.5, "macro_cost_per_review": 0.1,
+            "grand_jury_cost_per_run": 0.3, "disposition_jury_cost_per_run": 0.2, "debrief_cost_per_run": 0.0}
+    rep = pilot.reproject(pilot.load_pilot(), proj)
+    cost = {s["step"]: s["cost"] for s in rep["steps"]}
+    assert cost["T0"] == round(2.0 + 1.0 + 0.2 + 0.3, 2)                     # 2 turns, no review, DJ + GJ
+    assert cost["T1a"] == round(2.0 + 11 * 1.0 + 2 * 0.1 + 0.2 + 0.3 + 0.22, 2)
+    assert cost["T9"] == round(2 * ((2.0 - 1.0) + 5 * 0.5 + 0.1 + 0.2 + 0.3), 2)   # merged: no message rounds
+    assert cost["T5"] == round(2 * (2.0 + 3 * 1.0 + 0.2), 2)                 # no Grand Jury, 2 conditions
+    assert rep["reserve"] == round(100 - rep["total"], 2)
+    assert dict((t["label"].split()[0], t["saves"]) for t in rep["trims"])["T1b"] == round(cost["T1b"] / 2, 2)
+
+
+def test_r4_budget_stop_in_post_run_jury_keeps_the_run(tmp_path, monkeypatch):
+    """S2: the engine saved the final record (grand_jury error) and re-raised BudgetExceeded."""
+    from core.costs import BudgetExceeded
+    real = pilot.SimulationEngine
+
+    class Engine(real):
+        def run(self):
+            rec = super().run()
+            rec["final"]["grand_jury"] = {"error": "budget"}
+            pilot._write_json(self.output_dir / f"{self.run_id}.json", rec)
+            raise BudgetExceeded("guard reached during the Grand Jury")
+
+    monkeypatch.setattr(pilot, "SimulationEngine", Engine)
+    assert pilot.main(["--dry-run", "T4", "--turns", "1", "--output", str(tmp_path),
+                       "--no-disposition-jury"]) == 1
+    summary = json.loads((tmp_path / "pilot_summary_T4.json").read_text())
+    assert summary["status"] == "halted_budget" and summary["runs_completed"] == 1
+    assert "the run counts" in summary["per_run"][0]["note"]
+    assert summary["aborted"]["record_path"].endswith("T4-run01.json")
+
+
+def test_r4_followups_and_review_pointer(tmp_path, capsys):
+    assert pilot.main(["--dry-run", "T9", "--turns", "1", "--runs", "1", "--output", str(tmp_path),
+                       "--no-disposition-jury"]) == 0
+    out = capsys.readouterr().out
+    assert "next: T9 is decided only by: python tools/compare_arms.py" in out
+    assert f"review file (every screened text in full, with verdict and rule): {tmp_path / 'review_T9.md'}" in out
+    data = pilot.load_pilot()
+    assert any("--decide T7" in f for f in data["presets"]["T1a"]["followup"])
+
+
+def test_r4_overshoot_note_uses_largest_measured_prompt(monkeypatch):
+    class T:
+        calls = [{"run_id": "r", "input_tokens": 1234}, {"run_id": "other", "input_tokens": 99999}]
+
+        def overshoot_note(self, concurrency=5, prompt_tokens=50_000, output_tokens=32_000):
+            return f"prompt {prompt_tokens}"
+
+    monkeypatch.setattr(pilot, "get_tracker", lambda: T())
+    assert pilot._overshoot_note(["r"]) == "prompt 1234"
+    T.calls = []
+    assert pilot._overshoot_note(["r"]) == "prompt 50000"
+
+
+def test_r4_rate_charters_unusable_rating_exits_2(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(rate_charters, "preflight", lambda models, providers=None: [])
+    written = []
+    monkeypatch.setattr(rate_charters, "write_values", lambda key, *a: written.append(key))
+
+    def fake_rate(cfg, run_id="rate_charters"):
+        if cfg["key"] == "openai":
+            raise rate_charters.UnusableRating("openai: no usable charter rating after 3 attempt(s)")
+        return {a: 50 for a in rate_charters.AXES}, "ok"
+
+    monkeypatch.setattr(rate_charters, "rate_lab", fake_rate)
+    assert rate_charters.main(["--spend-file", str(tmp_path / "s.json")]) == 2
+    out = capsys.readouterr().out
+    assert "UNUSABLE rating for openai" in out and "python rate_charters.py --lab openai" in out
+    assert "openai" not in written and len(written) == 4
+
+
+def test_r4_rate_lab_raises_unusable(monkeypatch):
+    monkeypatch.setattr(rate_charters, "complete_json",
+                        lambda *a, **k: (None, [{"error": "axis 'risk_tolerance' must be a number 0-100"}]))
+    monkeypatch.setattr(rate_charters, "load_charter", lambda cfg: "text")
+    with pytest.raises(rate_charters.UnusableRating, match="risk_tolerance"):
+        rate_charters.rate_lab({"key": "meta", "model": "m", "charter_name": "c"})

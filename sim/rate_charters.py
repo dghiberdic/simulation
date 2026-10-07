@@ -15,7 +15,12 @@ Use --dry-run to exercise it offline (no write), or --lab KEY to do a single
 seat. Real calls go through the shared spend ledger after a key preflight. The
 guard is the ledger total, so the default is the REMAINING budget: whatever the
 ledger already holds plus $10 (--headroom); --budget sets an absolute ceiling
-instead (P23). Expected cost of all five ratings: about $1.
+instead (P23). Expected cost of all five ratings: about $1.5-2 (each seat's
+model reads its whole charter; GPT-6 Astra's is ~68k tokens). A seat whose
+model gives no usable rating (after the corrective retries) is reported with
+its last errors, the other seats are still rated, and the tool exits 2; re-rate
+that seat alone with --lab KEY (P58). Exit codes: 0 all rated; 2 preflight
+failure, budget or fatal stop, or an unusable rating.
 
   python rate_charters.py --dry-run          # offline, prints, writes nothing
   python rate_charters.py                     # real: rate all five and write
@@ -76,15 +81,25 @@ def _validate(obj: dict):
     return None
 
 
+class UnusableRating(RuntimeError):
+    """The seat's model gave no valid rating after every retry (P58)."""
+
+
 def rate_lab(lab_cfg: dict, run_id: str = "rate_charters"):
-    """Rate one seat's charter with its own model. Returns (values: Dict[str,int], notes: str)."""
+    """
+    Rate one seat's charter with its own model. Returns (values: Dict[str,int],
+    notes: str); raises UnusableRating (with the attempts' errors) when no
+    reply validated.
+    """
     text = load_charter(lab_cfg)
     obj, attempts = complete_json(
         lab_cfg["model"], _SYSTEM, _user(lab_cfg["charter_name"], text),
         validate=_validate, max_tokens=MAX_TOKENS, cache_system=False,
         purpose="charter_rating", run_id=run_id)
     if obj is None:
-        raise RuntimeError(f"{lab_cfg['key']}: no usable charter rating after {len(attempts)} attempts")
+        errors = [str(a.get("error")) for a in attempts if isinstance(a, dict) and a.get("error")]
+        raise UnusableRating(f"{lab_cfg['key']}: no usable charter rating after {len(attempts)} attempt(s)"
+                             + (f" (last error: {errors[-1]})" if errors else ""))
     values = {a: int(round(obj[a])) for a in AXES}
     return values, str(obj.get("rationale") or obj.get("notes") or "")
 
@@ -149,6 +164,7 @@ def main(argv=None) -> int:
             print("Preflight failed; nothing was called:\n  " + "\n  ".join(problems))
             return 2
 
+    unusable = []
     for key, lab_cfg in cfgs.items():
         model = lab_cfg["model"]
         if args.dry_run:
@@ -158,6 +174,11 @@ def main(argv=None) -> int:
         except (BudgetExceeded, FatalAPIError) as e:
             print(f"stopped at {key}: {e}")
             return 2
+        except UnusableRating as e:
+            # P58: reported, the other seats still rated; the seat keeps its old values.
+            print(f"UNUSABLE rating for {key} ({model}): {e}; its config is unchanged")
+            unusable.append(key)
+            continue
         if args.dry_run:
             print(f"{key:<10} ({model}) -> {values}  rationale: {notes}")
         else:
@@ -167,6 +188,9 @@ def main(argv=None) -> int:
         print("\n(dry-run: configs unchanged; placeholder values kept)")
     else:
         print(f"measured spend: ${get_tracker().persisted_total():.2f}")
+    if unusable:
+        print("re-rate: " + "; ".join(f"python rate_charters.py --lab {k}" for k in unusable))
+        return 2
     return 0
 
 
