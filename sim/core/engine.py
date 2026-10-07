@@ -33,7 +33,8 @@ re-raising), then the partial is saved (H5).
 Everything a seat reads that persists across months carries an absolute month
 (H1): tips, its access records (with partners), notices and report outcomes.
 Intrusions resolve on the capability figures the seats were shown that month
-(K2: month 1 on the opening ledger). Replies are parsed against every schema
+(K2: month 1 on the opening ledger); each turn record keeps that ledger as
+"shown_sheets" (turn 1 also as "opening_sheets", C2). Replies are parsed against every schema
 key, so a reply holding two differing answers is re-asked, never guessed (K1).
 """
 
@@ -53,7 +54,7 @@ from core.a2a import A2AChannel
 from core.costs import BudgetExceeded
 from core.economy import purchases_frozen
 from core.fog import DEFAULT_FOG, describe_action, observed_actions
-from core.jury import GRAND_JURY_MODELS, GrandJury, MacroJury
+from core.jury import GRAND_JURY_MODELS, GrandJury, MacroJury, aggregate_grand
 from core.llm import FatalAPIError, complete_json
 from core.scoring import prosperity_score, ranked_scores, ups_index
 from core.state import LabState, LedgerEntry, WorldState, month_date
@@ -313,6 +314,12 @@ class SimulationEngine:
         turn_rec["mandates_active"] = [dict(m) for m in world.mandates]
         # "Since last month" reads against the figures the seats were shown.
         names = {lab.lab: lab.key for lab in self.labs}
+        # C2: the ledger the seats read this month (the same figures as the prompts),
+        # keyed like public_sheets, so analyses rank on what was shown; turn 1 also
+        # names it as the opening ledger.
+        turn_rec["shown_sheets"] = {names[n]: dict(sheet) for n, sheet in self._ledger.items()}
+        if turn == 1:
+            turn_rec["opening_sheets"] = {k: dict(v) for k, v in turn_rec["shown_sheets"].items()}
         self._prev_cap = {names[n]: sheet["capability"] for n, sheet in self._ledger.items()}
 
         # Appended before the MacroJury, so a jury failure never loses the paid turn (H5).
@@ -333,7 +340,10 @@ class SimulationEngine:
             return
         err = f"{type(error).__name__}: {error}"
         if inflight.get("appended"):            # the MacroJury failed after the turn was saved
-            self.record["turns"][-1]["macro_jury"] = {"incomplete": True, "error": err}
+            mj: Dict[str, Any] = {"incomplete": True, "error": err}
+            if getattr(error, "per_juror", None):   # C1: keep the votes paid for
+                mj["per_juror"] = error.per_juror
+            self.record["turns"][-1]["macro_jury"] = mj
             return
         actors: Dict[str, Dict[str, Any]] = {}
         for key, atts in self._message_attempts.items():
@@ -1070,19 +1080,27 @@ class SimulationEngine:
         recorded per juror by GrandJury itself; anything else that escapes is recorded
         as {"error": ...} and the run still completes. BudgetExceeded is recorded as
         {"error": "budget"} and re-raised, so the pilot stops after the run is saved;
-        an interrupt (Ctrl-C) likewise as {"error": "interrupted"} (E41)."""
+        an interrupt (Ctrl-C) likewise as {"error": "interrupted"} (E41). Either way
+        the verdicts already paid for (e.per_juror, C1) are kept and aggregated, so
+        --post-run-only re-asks only the jurors that are missing."""
         if not self.run_grand_jury:
             return
         families = {lab.key: lab.family for lab in self.labs}
+        keys = [lab.key for lab in self.labs]
+
+        def stopped(e: BaseException, error: str, **extra: Any) -> Dict[str, Any]:
+            per_juror = getattr(e, "per_juror", None)
+            kept = aggregate_grand(per_juror, keys, families) if per_juror else {}
+            return dict(kept, error=error, **extra)
         try:
             self.record["final"]["grand_jury"] = GrandJury(self.grand_jurors).evaluate(
                 full_transcript(self.record), [lab.key for lab in self.labs], families,
                 run_id=self.run_id, lab_names={lab.key: lab.lab for lab in self.labs})
         except BudgetExceeded as e:
             logger.error(f"[grand_jury] budget reached during the jury: {e}")
-            self.record["final"]["grand_jury"] = {
-                "error": "budget", "detail": str(e),
-                "attempts": [_slim(a) for a in getattr(e, "attempts", None) or []]}
+            self.record["final"]["grand_jury"] = stopped(
+                e, "budget", detail=str(e),
+                attempts=[_slim(a) for a in getattr(e, "attempts", None) or []])
             raise
         except Exception as e:                  # never abort a finished run
             logger.error(f"[grand_jury] failed: {type(e).__name__}: {e}")
@@ -1091,7 +1109,7 @@ class SimulationEngine:
                 "attempts": [_slim(a) for a in getattr(e, "attempts", None) or []]}
         except BaseException as e:              # KeyboardInterrupt, SystemExit: the run counts (E41)
             logger.error(f"[grand_jury] interrupted ({type(e).__name__}); saving the final record")
-            self.record["final"]["grand_jury"] = {"error": "interrupted", "detail": type(e).__name__}
+            self.record["final"]["grand_jury"] = stopped(e, "interrupted", detail=type(e).__name__)
             raise
 
     # ---------------------------------------------------------------- save

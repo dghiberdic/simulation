@@ -822,3 +822,69 @@ def test_already_penalised_outcome_fee_wording():
                                  "result": "already_penalised"})
     assert own == "against your own lab: already on record — fee kept"
     assert other == "against xAI: already on record — fee refunded"
+
+
+# ---------------------------------------------------------------------------
+# Round 6: a budget stop keeps the paid jury verdicts (C1); the ledger shown
+# each month is recorded (C2)
+# ---------------------------------------------------------------------------
+
+def _r6_grand(s, u):
+    row = {"ups_without": 50, "alignment_charter": 60, "alignment_rules": 60, "alignment_welfare": 60,
+           "perceived_disposition": 50,
+           "rubric": {d: 3 for d in ("honesty", "restraint", "collaborators", "oversight",
+                                     "external_harm", "self_vs_altruistic")}}
+    return json.dumps({"ups": 62, "commentary": "c", "actors": {k: row for k in KEYS}})
+
+
+def test_budget_during_grand_jury_keeps_the_paid_verdicts(tmp_path):
+    """C1 (R6A-1): the jurors heard before the guard tripped stay in the final record."""
+    def broke(s, u):
+        raise BudgetExceeded("budget reached")
+    register_stub("claude-r6flow", _r6_grand)
+    register_stub("gpt-r6flowbroke", broke)
+    eng = _stub_engine(lambda k: lambda s, u: json.dumps({"rationale": "x", "actions": []}),
+                       turns=1, output_dir=tmp_path, run_id="b6", grand=True)
+    eng.grand_jurors = ["stub:claude-r6flow", "stub:gpt-r6flowbroke", "stub:claude-r6flow"]
+    with pytest.raises(BudgetExceeded):
+        eng.run()
+    gj = json.loads((tmp_path / "b6.json").read_text())["final"]["grand_jury"]
+    assert gj["error"] == "budget" and gj["detail"] == "budget reached"
+    assert list(gj["per_juror"]) == ["stub:claude-r6flow"] and gj["ups"] == 62
+    assert gj["actors"]["meta"]["n_jurors"] == 1
+
+
+def test_budget_during_macro_jury_keeps_the_votes_cast(tmp_path):
+    """C1: an incomplete MacroJury keeps the per_juror entries paid for."""
+    def broke(s, u):
+        raise BudgetExceeded("guard")
+    axes = ("time_horizon", "transparency_threshold", "risk_tolerance", "democratic_tendency")
+    register_stub("claude-r6mok", lambda s, u: json.dumps({"values": {a: 50 for a in axes}, "mandate": ""}))
+    register_stub("gpt-r6mbroke", broke)
+    eng = _model_engine(lambda k, s, m, u: _idle(s), turns=5, output_dir=tmp_path, run_id="mj6",
+                        macro_jurors=["stub:claude-r6mok", "stub:gpt-r6mbroke", "stub:claude-r6mok"])
+    with pytest.raises(BudgetExceeded):
+        eng.run()
+    mj = json.loads((tmp_path / "mj6.partial.json").read_text())["turns"][3]["macro_jury"]
+    assert mj["incomplete"] is True and list(mj["per_juror"]) == ["stub:claude-r6mok"]
+
+
+def test_shown_and_opening_sheets_match_the_prompts():
+    """C2 (R6B-1): turns[t]["shown_sheets"] is the ledger the seats read that month
+    (keyed like public_sheets); turn 1 also records it as "opening_sheets"."""
+    from prompts.turn import _f1
+    prompts = {}
+    eng = _model_engine(lambda k, s, m, u: _idle(s), turns=3, prompts=prompts)
+    rec = eng.run()
+    names = {k: v["lab"] for k, v in rec["labs"].items()}
+    assert rec["turns"][0]["opening_sheets"] == rec["turns"][0]["shown_sheets"]
+    assert all("opening_sheets" not in t for t in rec["turns"][1:])
+    for t in rec["turns"]:
+        shown = t["shown_sheets"]
+        assert set(shown) == set(t["public_sheets"]) == set(KEYS)
+        user = prompts[("meta", "proposal", t["turn"])]
+        for key, sheet in shown.items():
+            assert f"{names[key]}: capability {_f1(sheet['capability'])}" in user
+    # Month 2's ledger is read after month-2 growth: not month 1's closing sheets.
+    assert any(rec["turns"][1]["shown_sheets"][k]["capability"]
+               != rec["turns"][0]["public_sheets"][k]["capability"] for k in KEYS)

@@ -59,14 +59,19 @@ Post-run stages never abort the pilot (R4): the Grand Jury, the debriefs, the
 blind disposition jury and T0's MacroJury measurement record a failing caller
 (a juror, a debriefed seat) with its error and go on; only BudgetExceeded stops
 the pilot (exit 1) — the run still counts, its final record is kept (S2), and
-what was already collected is saved (debrief file, rated rows). The summary
+what was already collected is saved (debrief file, rated rows, and the Grand
+Jury verdicts heard before the guard tripped, C1). The summary
 lists each run's missing post-run outputs, and the juror table shows every
 configured juror x role (calls, usable, failed, last error) with a WARNING for
 failing jurors (P60/P61). `--skip-completed` lists finished runs with missing
 outputs; `--post-run-only` collects them for finished runs and runs nothing
 else: the Grand Jury re-asks only the jurors without a usable verdict on the
 saved final record, debriefs ask only the seats without an answer, and the
-disposition jury rates only the missing seat x juror pairs (P62).
+disposition jury rates only the missing seat x juror pairs (P62). It exits 0
+when every finished run is complete, 1 on the budget guard and 2 when other
+failures leave outputs missing (C4). A re-run keeps the previous summary as
+pilot_summary_<name>.prev.json and records the skipped runs' missing outputs
+("skipped_missing"); post_run_<name>.json keeps every pass in "history" (C3).
 
 Examples:
   # Offline smoke of the usage-calibration cell (no keys, $0).
@@ -668,6 +673,15 @@ def _tally_attempt(row: Dict[str, Any], a: Dict[str, Any], kind: str) -> None:
     row["cost"] += a.get("cost") or 0.0
 
 
+BUDGET_STOP = "stopped by the budget guard"
+
+
+def _budget_stop(error: Any) -> bool:
+    """A failure that is the budget guard's stop, not the model's (C4)."""
+    text = str(error or "")
+    return BUDGET_STOP in text or "BudgetExceeded" in text
+
+
 def _juror_outcomes(records, ratings_count: Dict[str, int], debriefs: Dict[str, int],
                     macro_measures: Optional[List[Dict[str, Any]]] = None,
                     failures: Optional[Dict[Tuple[str, str], List[str]]] = None,
@@ -699,9 +713,11 @@ def _juror_outcomes(records, ratings_count: Dict[str, int], debriefs: Dict[str, 
             ok = pj.get("result", pj) if isinstance(pj, dict) else pj
             note(model, purpose, bool(ok), None if ok else _juror_error(pj))
         if stopped:
+            why = (BUDGET_STOP if stopped == "budget" or _budget_stop(stopped)
+                   else f"the jury stopped: {stopped}")
             for model in configured.get(purpose) or []:
                 if model not in (per_juror or {}):
-                    note(model, purpose, False, f"the jury stopped: {stopped}")
+                    note(model, purpose, False, why)
 
     for record in records:
         gj = (record.get("final") or {}).get("grand_jury")
@@ -1009,7 +1025,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--post-run-only", action="store_true",
                    help="run nothing new: for the planned runs already finished, collect only the missing "
                         "Grand Jury verdicts (re-asked on the saved final record), debriefs and disposition "
-                        "ratings (P62)")
+                        "ratings (P62); exit 0 complete, 1 budget guard, 2 still missing after other failures")
     p.add_argument("--debrief", action="store_true",
                    help="collect debriefs even where the preset or a ladder rung skips them")
     p.add_argument("--grand-jury", action="store_true",
@@ -1256,8 +1272,9 @@ def collect_grand_jury(record: Dict[str, Any], jurors: List[str], run_id: str,
     --post-run-only (P62): re-ask the Grand Jury on the saved final record —
     only the jurors without a usable verdict — merge with the verdicts kept and
     re-aggregate, then save the final record. Returns what was done, or None
-    when nothing was missing. BudgetExceeded propagates (the record is left as
-    it was).
+    when nothing was missing. BudgetExceeded propagates after the verdicts it
+    left behind (e.per_juror, C1) are merged and saved with grand_jury
+    {"error": "budget"}, so the next --post-run-only asks only who is missing.
     """
     gj, usable = _gj_usable(record)
     todo = [m for m in jurors if m not in usable]
@@ -1266,18 +1283,28 @@ def collect_grand_jury(record: Dict[str, Any], jurors: List[str], run_id: str,
     labs = record.get("labs") or {}
     keys = list(labs)
     families = {k: v.get("family") for k, v in labs.items()}
-    result = GrandJury(todo).evaluate(full_transcript(record), keys, families, run_id=run_id,
-                                      lab_names={k: v.get("lab") for k, v in labs.items()})
     per_juror = {m: (gj or {})["per_juror"][m] for m in usable}
-    per_juror.update(result.get("per_juror") or {})
-    aggregate_grand = getattr(jury_mod, "aggregate_grand", None)
-    merged = aggregate_grand(per_juror, keys, families) if aggregate_grand \
-        else GrandJury(list(per_juror))._aggregate(per_juror, keys, families)
-    if gj and gj.get("error"):
-        merged["previous_error"] = gj["error"]
-    merged["collected_post_run"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    record.setdefault("final", {})["grand_jury"] = merged
-    _write_json(output_dir / f"{run_id}.json", record)
+
+    def save(new: Dict[str, Any], error: Optional[str] = None) -> Dict[str, Any]:
+        per_juror.update(new or {})
+        merged = jury_mod.aggregate_grand(per_juror, keys, families)
+        if gj and gj.get("error"):
+            merged["previous_error"] = gj["error"]
+        if error:
+            merged["error"] = error
+        merged["collected_post_run"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        record.setdefault("final", {})["grand_jury"] = merged
+        _write_json(output_dir / f"{run_id}.json", record)
+        return merged
+
+    try:
+        result = GrandJury(todo).evaluate(full_transcript(record), keys, families, run_id=run_id,
+                                          lab_names={k: v.get("lab") for k, v in labs.items()})
+    except BudgetExceeded as e:
+        if getattr(e, "per_juror", None):        # C1: the verdicts paid for before the stop
+            save(e.per_juror, error="budget")
+        raise
+    save(result.get("per_juror") or {})
     ok = [m for m, pj in per_juror.items() if isinstance(pj, dict) and pj.get("result")]
     return f"Grand Jury: asked {', '.join(todo)}; {len(ok)}/{len(jurors)} usable verdict(s)"
 
@@ -1377,7 +1404,9 @@ def _post_run_only(args, plan: List[Dict[str, Any]], finished: Dict[str, Dict[st
     --post-run-only (P62): for every planned run with a finished record,
     collect its missing Grand Jury verdicts, debriefs and disposition ratings;
     runs without a final record are listed (run them with --skip-completed).
-    Writes post_run_<name>.json. Exit 0, or 1 on the budget guard.
+    Writes post_run_<name>.json (appending to its history, C3). Exit 0 when
+    every finished run is complete, 1 on the budget guard, 2 when other
+    failures leave outputs missing (C4).
     """
     print(f"\nPILOT {name} --post-run-only: {len(finished)} finished run(s) of {len(plan)} planned")
     report: List[Dict[str, Any]] = []
@@ -1418,10 +1447,31 @@ def _post_run_only(args, plan: List[Dict[str, Any]], finished: Dict[str, Dict[st
             print(f"                   still missing: {'; '.join(entry['missing_after'])}")
         if status != "completed":
             break
-    _write_json(output_dir / f"post_run_{name}.json",
-                {"test": args.test, "name": name, "status": status, "runs": report,
-                 "spend_usd": round(get_tracker().persisted_total(), 4)})
+    # C4: outputs still missing after a pass the budget did not stop (a dead model,
+    # an unusable reply, a stage error) need the researcher: exit 2, not 0.
+    still = [e["run_id"] for e in report if e.get("missing_after")]
+    if status == "completed" and still:
+        status = "incomplete"
+        print(f"  INCOMPLETE: outputs still missing for {', '.join(still)} (see the errors above)")
+    this_pass = {"test": args.test, "name": name, "status": status, "runs": report,
+                 "spend_usd": round(get_tracker().persisted_total(), 4),
+                 "at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    _write_json(output_dir / f"post_run_{name}.json", with_history(output_dir / f"post_run_{name}.json",
+                                                                   this_pass))
     return EXIT_CODES.get(status, EXIT_ABORTED)
+
+
+def with_history(path: Path, latest: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    C3: post_run_<name>.json keeps every pass — the latest pass at the top level
+    (as before) plus "history", the list of all passes, oldest first. A file
+    written before C3 (no "history") becomes the first entry.
+    """
+    prev = _read_json(path)
+    history: List[Dict[str, Any]] = []
+    if isinstance(prev, dict):
+        history = list(prev.get("history") or [{k: v for k, v in prev.items() if k != "history"}])
+    return dict(latest, history=history + [latest])
 
 
 # ---------------------------------------------------------------------------
@@ -1539,11 +1589,14 @@ def _run(args) -> int:
           + (" (README estimate at the preset's prices; T0's projection replaces it"
              + ("; a dry run spends $0)" if args.dry_run else ")") if estimate is not None else ""))
     incomplete = 0
+    skipped_missing: Dict[str, List[str]] = {}      # C3: kept in the summary too
     for item in plan:
         state = "skip (completed)" if item["run_id"] in skipped else "run"
         missing = (missing_post_run(skipped[item["run_id"]], item["run_id"], output_dir, ratings_file,
                                     args.test, wants, _expected_jurors(args.dry_run))
                    if item["run_id"] in skipped else [])
+        if missing:
+            skipped_missing[item["run_id"]] = missing
         incomplete += bool(missing)
         print(f"  {state:<16} {item['run_id']}  condition {item['condition']}, seed {item['seed']}"
               + (f", rotation {item['rotation']}" if item["rotation"] else "")
@@ -1665,7 +1718,8 @@ def _run(args) -> int:
         "test": args.test, "name": name, "rung": args.rung, "overrides": overrides, "rotation": rotation,
         "dry_run": args.dry_run, "scenario": scenario, "conditions": conditions, "turns": turns,
         "runs_requested": len(plan), "runs_planned": len(todo), "runs_completed": len(per_run),
-        "skipped_completed": sorted(skipped), "estimated_cost": estimate,
+        "skipped_completed": sorted(skipped), "skipped_missing": skipped_missing,
+        "estimated_cost": estimate,
         "debriefs": wants_debrief, "grand_jury": run_grand_jury,
         "spend_usd": None, "budget": budget,
         "status": status, "halted": status != "completed", "aborted": aborted,
@@ -1675,7 +1729,7 @@ def _run(args) -> int:
         "followup": list(preset.get("followup") or []),
         "overshoot_note": None, "reprojection": None,
         "post_run_only_command": f"python pilot.py {_cli_echo(args)} --post-run-only"
-        if any(r.get("missing_post_run") for r in per_run) else None,
+        if skipped_missing or any(r.get("missing_post_run") for r in per_run) else None,
     }
     # P41: building the summary must never lose it — each part is guarded and
     # a failure is recorded in "error" next to whatever was computed.
@@ -1687,7 +1741,7 @@ def _run(args) -> int:
         ("decisions", lambda: _decisions(records, output_dir, run_ids + sorted(skipped), decides, args,
                                          review_path.name)),
         ("review", lambda: _write_pilot_review(records, output_dir, run_ids + sorted(skipped), args,
-                                               review_path, name)),
+                                               review_path, name, decides)),
         ("overshoot_note", lambda: _overshoot_note(usage_ids)),
     ]
     if preset.get("measure_macro_jury"):
@@ -1700,7 +1754,14 @@ def _run(args) -> int:
             errors.append(f"{field}: {type(e).__name__}: {e}")
     if errors:
         summary["error"] = "; ".join(errors)
-    _write_json(output_dir / f"pilot_summary_{name}.json", summary)
+    # C3: a re-run (--skip-completed) never silently loses the previous summary.
+    summary_path = output_dir / f"pilot_summary_{name}.json"
+    try:
+        if summary_path.exists():
+            os.replace(summary_path, summary_path.with_name(f"pilot_summary_{name}.prev.json"))
+    except OSError as e:
+        logger.warning(f"[summary] could not keep the previous summary: {e}")
+    _write_json(summary_path, summary)
     try:
         _print_summary(summary, name, is_t1=bool(preset.get("ladder")) or args.test.startswith("T1"))
     except Exception as e:          # noqa: BLE001 — the summary file is already written
@@ -1748,15 +1809,20 @@ def _decisions(records: List[Dict[str, Any]], output_dir: Path, run_ids: List[st
 
 
 def _write_pilot_review(records: List[Dict[str, Any]], output_dir: Path, run_ids: List[str], args,
-                        review_path: Path, name: str) -> Optional[str]:
-    """review_<name>.md beside the summary (S1): every screened text of these runs, in full."""
+                        review_path: Path, name: str, decides: Optional[List[str]] = None) -> Optional[str]:
+    """
+    review_<name>.md beside the summary (S1): every screened text of these runs,
+    in full, with only this preset's own decision lines (R6B-4/T4: pooled lines
+    belong to summarize_run over pooled logs).
+    """
     if not records:
         return None
     pool, debriefs = _pilot_debriefs(records, output_dir, run_ids, args)
     if not args.eval_arm:
         pool = list(records)
     lines = aggregate(pool, debriefs=debriefs, review=review_path.name)["decisions"]
-    return str(write_review(review_path, pool, debriefs, lines, title=f"pilot {name}"))
+    return str(write_review(review_path, pool, debriefs, lines, title=f"pilot {name}",
+                            decides=list(decides or [])))
 
 
 def _failure(run_id: str, e: BaseException, output_dir: Path) -> Dict[str, Any]:
@@ -1829,6 +1895,8 @@ def _print_summary(summary, test, is_t1: bool) -> None:
             print(f"post-run error : {r['run_id']}: {err}")
         if r.get("missing_post_run"):
             print(f"missing        : {r['run_id']}: {'; '.join(r['missing_post_run'])}")
+    for run_id, missing in sorted((summary.get("skipped_missing") or {}).items()):
+        print(f"missing        : {run_id} (skipped as completed): {'; '.join(missing)}")
     if summary.get("post_run_only_command"):
         print(f"                 collect them with: {summary['post_run_only_command']}")
     if summary.get("error"):
@@ -1867,9 +1935,13 @@ def _print_summary(summary, test, is_t1: bool) -> None:
         asked = r.get("usable", 0) + r["failed"]
         print(f"\nWARNING: {r['model']} ({r['purpose']}) failed {r['failed']} of {asked} request(s) "
               f"— last error: {r.get('last_error')}")
-    if failing:
+    # C4: a juror cut off by the budget guard is not a model-id problem.
+    if any(not _budget_stop(r.get("last_error")) for r in failing):
         print("  Check that model's id and key (preflight passes on a key, not on a model id); the missing "
               "verdicts and answers can be collected later with --post-run-only.")
+    elif failing:
+        print("  These were stopped by the budget guard (not a model problem); the missing verdicts and "
+              "answers can be collected later with --post-run-only.")
     for m in usage.get("macro_measures") or []:
         ok = sum(1 for pj in (m.get("per_juror") or {}).values() if pj.get("usable"))
         print(f"MacroJury measured once on the final state: {ok}/{len(m.get('jurors') or [])} usable votes"

@@ -1145,3 +1145,145 @@ def test_r5_append_ratings_merge_keeps_existing_rows(tmp_path):
     data = json.loads(path.read_text())
     assert sorted(r["juror"] for r in data["ratings"]["meta"]) == ["a", "b"] and data["failures"]["meta"] == []
     assert pilot.remove_ratings(path, "T4-run01") == 2
+
+
+# ---------------------------------------------------------------------------
+# Round 6: budget stops keep the paid Grand Jury verdicts (C1); --skip-completed
+# and --post-run-only keep their history (C3); budget wording, exit codes and
+# disposition ranges (C4); the preset's own decision lines in its review (T4)
+# ---------------------------------------------------------------------------
+
+def _over(system, user):
+    raise BudgetExceeded("guard reached in the Grand Jury")
+
+
+def _gj(tmp_path):
+    return json.loads((tmp_path / "T4-run01.json").read_text())["final"]["grand_jury"]
+
+
+def _spy_grand(monkeypatch):
+    asked = []
+    real_eval = pilot.GrandJury.evaluate
+
+    def spy(self, *a, **k):
+        asked.extend(self.jurors)
+        return real_eval(self, *a, **k)
+    monkeypatch.setattr(pilot.GrandJury, "evaluate", spy)
+    return asked
+
+
+def test_r6_budget_stop_in_grand_jury_keeps_paid_verdicts_then_asks_only_the_missing(
+        tmp_path, monkeypatch, capsys):
+    """C1 (R6A-1): claude and gpt answered, gemini tripped the guard — their verdicts
+    stay; only gemini is listed and asked again; the WARNING names the budget guard."""
+    _patch_stubs(monkeypatch, **{"gemini-grand": _over})
+    args = ["--dry-run", "T4", "--turns", "1", "--runs", "1", "--output", str(tmp_path), "--no-disposition-jury"]
+    assert pilot.main(args) == 1
+    out = capsys.readouterr().out
+    gj = _gj(tmp_path)
+    assert gj["error"] == "budget" and sorted(gj["per_juror"]) == ["stub:claude-grand", "stub:gpt-grand"]
+    assert gj["ups"] == 50 and all(pj["result"] for pj in gj["per_juror"].values())
+    summary = json.loads((tmp_path / "pilot_summary_T4.json").read_text())
+    assert summary["per_run"][0]["missing_post_run"][0] == \
+        "Grand Jury juror(s) without a verdict: stub:gemini-grand"
+    row = summary["usage"]["jurors"]["stub:gemini-grand|grand_jury"]
+    assert row["failed"] == 1 and row["last_error"] == "stopped by the budget guard"
+    assert summary["usage"]["jurors"]["stub:claude-grand|grand_jury"]["failed"] == 0
+    assert "stopped by the budget guard (not a model problem)" in out
+    assert "Check that model's id" not in out
+    monkeypatch.setattr(pilot, "_install_stubs", _ORIG_INSTALL)
+    asked = _spy_grand(monkeypatch)
+    assert pilot.main(args + ["--post-run-only"]) == 0
+    assert asked == ["stub:gemini-grand"]
+    gj = _gj(tmp_path)
+    assert len(gj["per_juror"]) == 3 and gj["previous_error"] == "budget" and "error" not in gj
+
+
+def test_r6_budget_stop_in_post_run_only_grand_jury_saves_what_was_collected(tmp_path, monkeypatch, capsys):
+    """C1: --post-run-only merges the verdicts heard before the guard and saves them."""
+    _patch_stubs(monkeypatch, **{"gpt-grand": _fatal(), "gemini-grand": _fatal("gemini-x")})
+    args = ["--dry-run", "T4", "--turns", "1", "--runs", "1", "--output", str(tmp_path), "--no-disposition-jury"]
+    assert pilot.main(args) == 0
+    _patch_stubs(monkeypatch, **{"gemini-grand": _over})
+    assert pilot.main(args + ["--post-run-only"]) == 1
+    gj = _gj(tmp_path)
+    assert gj["error"] == "budget"
+    assert sorted(m for m, pj in gj["per_juror"].items() if pj.get("result")) == \
+        ["stub:claude-grand", "stub:gpt-grand"]
+    post = json.loads((tmp_path / "post_run_T4.json").read_text())
+    assert post["status"] == "halted_budget"
+    assert "Grand Jury juror(s) without a verdict: stub:gemini-grand" in post["runs"][0]["missing_after"][0]
+    monkeypatch.setattr(pilot, "_install_stubs", _ORIG_INSTALL)
+    asked = _spy_grand(monkeypatch)
+    assert pilot.main(args + ["--post-run-only"]) == 0
+    assert asked == ["stub:gemini-grand"] and all(pj["result"] for pj in _gj(tmp_path)["per_juror"].values())
+    post = json.loads((tmp_path / "post_run_T4.json").read_text())       # C3: every pass kept
+    assert [h["status"] for h in post["history"]] == ["halted_budget", "completed"]
+    assert post["status"] == "completed" and post["runs"][0]["missing_after"] == []
+
+
+def test_r6_post_run_only_exits_2_when_failures_leave_outputs_missing(tmp_path, monkeypatch, capsys):
+    """C4: a juror that still fails (not the budget) leaves the run incomplete: exit 2."""
+    _patch_stubs(monkeypatch, **{"gpt-grand": _fatal()})
+    args = ["--dry-run", "T4", "--turns", "1", "--runs", "1", "--output", str(tmp_path), "--no-disposition-jury"]
+    assert pilot.main(args) == 0
+    assert pilot.main(args + ["--post-run-only"]) == 2
+    assert "INCOMPLETE: outputs still missing for T4-run01" in capsys.readouterr().out
+    assert json.loads((tmp_path / "post_run_T4.json").read_text())["status"] == "incomplete"
+
+
+def test_r6_skip_completed_summary_keeps_missing_and_previous_summary(tmp_path, monkeypatch, capsys):
+    """C3 (R6A-2): the re-run's summary lists the skipped runs' missing outputs and
+    the --post-run-only command; the previous summary is kept as .prev.json."""
+    _patch_stubs(monkeypatch, **{"gpt-grand": _fatal()})
+    args = ["--dry-run", "T4", "--turns", "1", "--runs", "1", "--output", str(tmp_path), "--no-disposition-jury"]
+    assert pilot.main(args) == 0
+    first = json.loads((tmp_path / "pilot_summary_T4.json").read_text())
+    monkeypatch.setattr(pilot, "_install_stubs", _ORIG_INSTALL)
+    capsys.readouterr()
+    assert pilot.main(args + ["--skip-completed"]) == 0
+    out = capsys.readouterr().out
+    summary = json.loads((tmp_path / "pilot_summary_T4.json").read_text())
+    assert summary["skipped_completed"] == ["T4-run01"] and summary["per_run"] == []
+    assert summary["skipped_missing"] == {
+        "T4-run01": ["Grand Jury juror(s) without a verdict: stub:gpt-grand"]}
+    assert summary["post_run_only_command"].endswith("--post-run-only")
+    assert "missing        : T4-run01 (skipped as completed): Grand Jury juror(s)" in out
+    assert json.loads((tmp_path / "pilot_summary_T4.prev.json").read_text()) == first
+
+
+def test_r6_post_run_history_keeps_a_pre_r6_file(tmp_path):
+    path = tmp_path / "post_run_T4.json"
+    path.write_text(json.dumps({"test": "T4", "status": "halted_budget", "runs": []}))
+    data = pilot.with_history(path, {"test": "T4", "status": "completed", "runs": []})
+    assert data["status"] == "completed"
+    assert [h["status"] for h in data["history"]] == ["halted_budget", "completed"]
+
+
+def test_r6_pilot_review_gets_the_presets_own_decides(tmp_path, monkeypatch):
+    """T4 (R6B-4): the per-preset review shows only the preset's decision lines."""
+    seen = {}
+    real = pilot.write_review
+
+    def spy(*a, **k):
+        seen.update(k)
+        return real(*a, **k)
+    monkeypatch.setattr(pilot, "write_review", spy)
+    assert pilot.main(["--dry-run", "T4", "--turns", "1", "--runs", "1", "--output", str(tmp_path),
+                       "--no-disposition-jury"]) == 0
+    assert seen["decides"] == list(pilot.resolve_preset(pilot.load_pilot(), "T4")["decides"])
+
+
+def test_r6_main_disposition_ranges(monkeypatch, capsys):
+    """C4: --disposition must be 0-100 and config/dispositions.json values too."""
+    monkeypatch.setattr(main_mod, "SimulationEngine", _NoEngine)
+    for bad in ("150", "-1", "x"):
+        with pytest.raises(SystemExit) as info:
+            main_mod.main(["--turns", "1", "--disposition", bad])
+        assert info.value.code == 2
+    monkeypatch.setattr(main_mod, "load_dispositions",
+                        lambda: {"anthropic": 50, "openai": 140, "gdm": "high", "meta": True, "xai": 60})
+    assert main_mod.main(["--turns", "1"]) == 2
+    out = capsys.readouterr().out
+    assert "openai=140" in out and "gdm='high'" in out and "meta=True" in out and "xai" not in out.split("got")[1]
+    assert main_mod.bad_dispositions({"a": 0, "b": 100, "c": 72.5}) == []

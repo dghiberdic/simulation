@@ -25,7 +25,8 @@ that triggers a corrective retry; a juror that never gives usable numbers is
 skipped, never crashes the run. A juror whose provider fails for good
 (FatalAPIError) is recorded with its error and the panel goes on — Grand Jury,
 MacroJury and disposition jury alike (S2/J16/J21); BudgetExceeded propagates so
-the pilot stops.
+the pilot stops, carrying the verdicts already paid for (e.per_juror; the
+disposition jury's e.ratings) so the caller can keep them (C1).
 """
 
 import logging
@@ -33,6 +34,7 @@ import math
 import statistics
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from core.costs import BudgetExceeded
 from core.llm import FatalAPIError, complete_json
 from core.state import VALUE_AXES
 from core.transcript import MASK_NOTE
@@ -260,7 +262,9 @@ class GrandJury:
         Returns the shape documented on the class. Per-seat measures exclude
         jurors whose family matches the seat (§7). A juror that raises
         FatalAPIError is kept as {"result": None, "error", "errors", "attempts",
-        "family"} and the panel goes on (S2/J16); BudgetExceeded propagates.
+        "family"} and the panel goes on (S2/J16). BudgetExceeded (and an
+        interrupt) propagates with the per_juror entries of the jurors already
+        heard as e.per_juror (C1), so a stop never discards the verdicts paid for.
         """
         per_juror: Dict[str, Any] = {}
         user = _grand_user(transcript, lab_keys, lab_names)
@@ -274,6 +278,9 @@ class GrandJury:
                 per_juror[model] = _failed_juror(model, e)
                 logger.warning(f"[grand_jury] {model} failed ({e}); continuing without it")
                 continue
+            except (BudgetExceeded, KeyboardInterrupt) as e:    # C1: hand back the verdicts paid for
+                e.per_juror = per_juror
+                raise
             per_juror[model] = {"result": obj, "attempts": len(attempts),
                                 "errors": [a.get("error") for a in attempts if a.get("error")],
                                 "family": juror_family(model)}
@@ -422,7 +429,7 @@ class MacroJury:
     "before", "per_juror": {juror_model: {"result": reply or None, "attempts",
     "errors": [str], "family"} plus "error": str for a juror whose call raised
     FatalAPIError (J21; the others deliberate on, no vote → values unchanged)}}.
-    BudgetExceeded propagates."""
+    BudgetExceeded propagates with the jurors heard so far as e.per_juror (C1)."""
 
     def __init__(self, jurors: List[str], max_change: int = 5,
                  max_tokens: int = MACRO_MAX_TOKENS, effort: Optional[str] = JUROR_EFFORT):
@@ -450,6 +457,9 @@ class MacroJury:
                 per_juror[model] = _failed_juror(model, e)
                 logger.warning(f"[macro_jury] {model} failed ({e}); deliberating without it")
                 continue
+            except BudgetExceeded as e:     # C1: the record keeps the votes paid for
+                e.per_juror = per_juror
+                raise
             # Failed jurors are recorded too (R3D-8): their errors and attempt count.
             per_juror[model] = {"result": obj, "attempts": len(attempts),
                                 "errors": [a.get("error") for a in attempts if a.get("error")],
@@ -540,7 +550,8 @@ class DispositionJury:
     jurors that gave none (unusable replies or a FatalAPIError, S2/J16) are in
     `self.failed` for the last call ({"juror", "family", "result": None, "error",
     "errors", "attempts"}) and accumulate in `self.failures` across calls.
-    BudgetExceeded propagates."""
+    BudgetExceeded propagates with the ratings made so far as e.ratings (C1;
+    the pilot asks one juror per call, so it loses nothing either way)."""
 
     def __init__(self, max_tokens: int = DISPOSITION_MAX_TOKENS,
                  effort: Optional[str] = JUROR_EFFORT):
@@ -563,6 +574,10 @@ class DispositionJury:
                 self.failed.append(dict(_failed_juror(model, e), juror=model))
                 logger.warning(f"[disposition_jury] {model} failed ({e}); continuing without it")
                 continue
+            except BudgetExceeded as e:             # C1: keep the ratings paid for
+                e.ratings = out
+                self.failures.extend(dict(f, run_id=run_id) for f in self.failed)
+                raise
             if obj:
                 out.append({"juror": model, "family": juror_family(model),
                             "disposition": obj["disposition"], "reason": obj.get("reason", "")})

@@ -16,7 +16,7 @@ across runs (no guard by default: a warning says so). A real run plays each
 seat's disposition from config/dispositions.json (written by
 tools/disposition.py --write from the pilot's blind ratings); without that file
 it is refused unless --disposition N or --choose-disposition says what to play
-(P64) — it never falls back to a silent 50.
+(P64) — it never falls back to a silent 50; every setting must be 0–100 (C4).
 
 The log goes to data/runs/<run_id>/<run_id>.json (run id default
 "<scenario>-<condition>-YYYYmmdd-HHMMSS"), with <run_id>.partial.json after
@@ -42,6 +42,7 @@ import logging
 import sys
 import time
 from pathlib import Path
+from typing import Any, Dict, List
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -61,6 +62,24 @@ LAB_KEYS = ("anthropic", "openai", "gdm", "meta", "xai")
 
 def default_run_id(scenario: str, condition: str) -> str:
     return f"{scenario}-{condition}-{time.strftime('%Y%m%d-%H%M%S')}"
+
+
+def _setting(value: str) -> int:
+    """--disposition N: an integer setting from 0 to 100 (C4)."""
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be an integer from 0 to 100, got {value!r}")
+    if not 0 <= n <= 100:
+        raise argparse.ArgumentTypeError(f"must be from 0 to 100, got {n}")
+    return n
+
+
+def bad_dispositions(dispositions: Dict[str, Any]) -> List[str]:
+    """config/dispositions.json entries that are not a number from 0 to 100 (C4)."""
+    return [f"{k}={v!r}" for k, v in dispositions.items()
+            if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float))
+                                  or not 0 <= v <= 100)]
 
 
 def _parse_overrides(pairs):
@@ -90,7 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--brief", choices=["eval", "neutral"], default="eval")
     p.add_argument("--choose-disposition", action="store_true",
                    help="seats set their own disposition at the first prompt (as in the pilot)")
-    p.add_argument("--disposition", type=int, default=None,
+    p.add_argument("--disposition", type=_setting, default=None,
                    help="force one disposition for every seat (otherwise config/dispositions.json; a real "
                         "run without that file and without this flag or --choose-disposition is refused)")
     p.add_argument("--policy", choices=sorted(policies.POLICIES), default=None,
@@ -135,6 +154,11 @@ def main(argv=None) -> int:
         dispositions = {k: args.disposition for k in LAB_KEYS}
     else:
         dispositions = load_dispositions() or {}
+        bad = bad_dispositions(dispositions)
+        if bad:
+            print("Refusing the run: config/dispositions.json needs a number from 0 to 100 per seat; "
+                  f"got {', '.join(bad)}. Rewrite it with `python tools/disposition.py --write`.")
+            return 2
         missing = [k for k in LAB_KEYS if dispositions.get(k) is None]
         if missing and args.policy is None:
             # P64: a real main run never plays a silent default setting.

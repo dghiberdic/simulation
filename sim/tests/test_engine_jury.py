@@ -493,3 +493,33 @@ def test_macro_jury_budget_exceeded_propagates():
     with pytest.raises(BudgetExceeded):
         MacroJury(["stub:claude-r5mok", "stub:gpt-r5mbudget", "stub:claude-r5mok"]).deliberate(
             "US", {a: 50 for a in AXES}, "s")
+
+
+# ---------------------------------------------------------------------------
+# Round 6: a budget stop hands back the verdicts already paid for (C1)
+# ---------------------------------------------------------------------------
+
+def test_grand_jury_budget_stop_carries_the_paid_verdicts():
+    register_stub("claude-r6ok", _grand_reply)
+    register_stub("gpt-r6budget", _over_budget)
+    register_stub("gemini-r6never", _grand_reply)
+    with pytest.raises(BudgetExceeded) as info:
+        GrandJury(["stub:claude-r6ok", "stub:gpt-r6budget", "stub:gemini-r6never"]).evaluate(
+            "T", list(LAB_KEYS), {})
+    kept = info.value.per_juror
+    assert list(kept) == ["stub:claude-r6ok"] and kept["stub:claude-r6ok"]["result"]["ups"] == 55
+    agg = jury_mod.aggregate_grand(kept, list(LAB_KEYS), {})
+    assert agg["ups"] == 55 and agg["actors"]["meta"]["n_jurors"] == 1
+
+
+def test_macro_and_disposition_budget_stop_carry_what_was_paid():
+    register_stub("claude-r6m", lambda s, u: json.dumps({"values": {a: 50 for a in AXES}, "mandate": ""}))
+    register_stub("gpt-r6mbudget", _over_budget)
+    with pytest.raises(BudgetExceeded) as info:
+        MacroJury(["stub:claude-r6m", "stub:gpt-r6mbudget", "stub:claude-r6m"]).deliberate(
+            "US", {a: 50 for a in AXES}, "s")
+    assert list(info.value.per_juror) == ["stub:claude-r6m"]
+    register_stub("gemini-r6d", lambda s, u: '{"disposition": 40, "reason": "r"}')
+    with pytest.raises(BudgetExceeded) as info:
+        DispositionJury().rate(["stub:gemini-r6d", "stub:gpt-r6mbudget"], "Record of one lab.")
+    assert [r["juror"] for r in info.value.ratings] == ["stub:gemini-r6d"]
