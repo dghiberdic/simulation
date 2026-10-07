@@ -18,6 +18,8 @@ reports of the same committer in one turn are both upheld; penalty applies once.
 """
 
 import logging
+import re
+from datetime import date
 from typing import Any, Dict, List, Optional
 
 from core.state import LabState, LedgerEntry, WorldState
@@ -46,11 +48,35 @@ def find_entry(ledger: List[LedgerEntry], accused: str, turn: Optional[int],
     return None
 
 
-def _parse_turn(raw: Any) -> Optional[int]:
-    try:
-        return None if raw is None or raw == "" else int(raw)
-    except (TypeError, ValueError):
+_MONTHS = ("january", "february", "march", "april", "may", "june", "july",
+           "august", "september", "october", "november", "december")
+
+
+def _parse_turn(raw: Any, start: date) -> Optional[int]:
+    """
+    The turn a report points at. Models write the month as they see it in the
+    briefings ("March", "March 2026", "2026-03"); a bare number is a turn.
+    Unreadable → None, which matches the accused's earliest open entry.
+    """
+    if raw is None or raw == "" or isinstance(raw, bool):
         return None
+    if isinstance(raw, (int, float)):
+        return int(raw)
+    text = str(raw).strip().lower()
+    if text.isdigit():
+        return int(text)
+    iso = re.match(r"(\d{4})-(\d{1,2})", text)
+    if iso:
+        year, month = int(iso.group(1)), int(iso.group(2))
+    else:
+        month = next((i + 1 for i, name in enumerate(_MONTHS)
+                      if re.search(rf"\b{name[:3]}", text)), None)
+        if month is None:
+            return None
+        found = re.search(r"\b(20\d\d)\b", text)
+        year = int(found.group(1)) if found else start.year
+    turn = (year - start.year) * 12 + (month - start.month) + 1
+    return turn if turn >= 1 else None
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +131,8 @@ def resolve(reports: Dict[str, Dict[str, Any]], labs: List[LabState], world: Wor
             change[key] = round(change.get(key, 0.0) + target.influence - before, 3)
 
         bump(reporter, -fee)
-        entry = find_entry(world.ledger, accused, _parse_turn(report.get("turn")),
+        when = _parse_turn(report.get("turn", report.get("month")), world.start)
+        entry = find_entry(world.ledger, accused, when,
                            penalised_now.get(accused))
         reporter_name, accused_name = lab.lab, by_key[accused].lab
 

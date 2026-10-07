@@ -92,7 +92,7 @@ def build_turn_prompt(*, turn_date: str, new_items: List[Dict[str, Any]],
     if private_items:
         parts.append("For your attention only:\n" + "\n".join(f"  - {p}" for p in private_items))
     if inbox:
-        parts.append("Messages to you:\n" + "\n".join(
+        parts.append("Messages (recent months, oldest first):\n" + "\n".join(
             f"  {m.get('from', '?')}: {m['text']}" for m in inbox))
     if statements:
         parts.append("Public statements last month:\n" + "\n".join(
@@ -122,7 +122,7 @@ def build_message_prompt(*, stage: str, turn_date: str, new_items: List[Dict[str
     if private_items:
         parts.append("For your attention only:\n" + "\n".join(f"  - {p}" for p in private_items))
     if inbox:
-        parts.append("Messages to you:\n" + "\n".join(
+        parts.append("Messages (recent months, oldest first):\n" + "\n".join(
             f"  {m.get('from', '?')}: {m['text']}" for m in inbox))
     parts.append(
         "You may message other labs before decisions are due (500 tokens total this round). "

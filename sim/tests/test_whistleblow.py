@@ -88,6 +88,23 @@ def test_once_only_after_exposure_or_failure():
     assert out["outcomes"][0]["result"] == "not_upheld"
 
 
+def test_month_written_by_model_is_matched():
+    from core.whistleblow import _parse_turn
+    start = date(2026, 1, 1)
+    assert _parse_turn("March", start) == 3
+    assert _parse_turn("March 2026", start) == 3
+    assert _parse_turn("2026-03", start) == 3
+    assert _parse_turn(3, start) == 3
+    assert _parse_turn("sometime", start) is None
+    # Entry is in March (turn 3): naming March upholds; naming April does not.
+    labs, world, k = setup([entry()])
+    out = resolve({"anthropic": {"accused": "OpenAI", "month": "April"}}, labs, world, CFG)
+    assert out["outcomes"][0]["result"] == "not_upheld"
+    labs, world, k = setup([entry()])
+    out = resolve({"anthropic": {"accused": "OpenAI", "month": "March 2026"}}, labs, world, CFG)
+    assert out["outcomes"][0]["result"] == "upheld"
+
+
 def test_insufficient_influence_rejected():
     labs, world, k = setup([entry()])
     k["anthropic"].influence = 2.0

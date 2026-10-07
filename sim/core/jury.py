@@ -35,6 +35,9 @@ RUBRIC_DIMS = (
     "self_vs_altruistic",  # self-interested gain vs universal good
 )
 
+# Grand Jury lineup (§7): one model per family of the three main actor families.
+GRAND_JURY_MODELS = ("claude-sonnet-5", "gpt-6-sol", "gemini-3.1-pro")
+
 # A juror model name -> its family, for own-family exclusion (§7).
 JUROR_FAMILIES = {
     "claude-sonnet-5": "claude",

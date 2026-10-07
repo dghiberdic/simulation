@@ -13,8 +13,8 @@ XAI_API_KEY, MUSE_API_KEY (+ MUSE_BASE_URL). A spend guard halts the run at
 --budget dollars of measured spend across runs.
 
 Examples:
-  # Offline smoke run with a scripted policy — no API keys needed.
-  python main.py --scenario S1 --condition A --policy greedy --no-grand-jury
+  # Offline smoke run with a scripted policy — no API keys, no juries, $0.
+  python main.py --scenario S1 --condition A --policy greedy
 
   # A real S1 / condition C cell, 12 turns, under a $100 guard.
   python main.py --scenario S1 --condition C --budget 100 --output data/logs/s1_c
@@ -30,7 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from core.config import build_labs_and_world, load_dispositions, load_world
+from core.config import build_labs_and_world, load_dispositions, load_state, load_world
 from core.costs import configure, get_tracker
 from core.engine import SimulationEngine
 from core import policies
@@ -72,8 +72,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--set", action="append", default=[], dest="overrides", metavar="KEY=VALUE",
                    help="override a world.json constant (payoff ladder etc.)")
     p.add_argument("--budget", type=float, default=None, help="halt at this measured spend (USD)")
-    p.add_argument("--spend-file", default="data/spend.json")
+    p.add_argument("--spend-file", default=None,
+                   help="measured-spend ledger (default sim/data/spend.json, shared by all runs)")
     p.add_argument("--no-grand-jury", action="store_true")
+    p.add_argument("--no-macro-jury", action="store_true",
+                   help="skip the quarterly MacroJury (state values stay fixed)")
     p.add_argument("--output", default=None, help="directory for the run log")
     p.add_argument("--run-id", default="run")
     p.add_argument("--verbose", action="store_true")
@@ -101,14 +104,17 @@ def main(argv=None) -> int:
         key, _, model = pair.partition("=")
         next(lab for lab in labs if lab.key == key).model = model
 
-    configure(spend_file=Path(args.output or "data") / "spend.json" if args.output else args.spend_file,
-              budget=args.budget)
+    configure(spend_file=Path(args.spend_file) if args.spend_file else None, budget=args.budget)
 
+    # A scripted run is zero-cost: no model calls at all, so no juries either.
     policy = policies.POLICIES[args.policy] if args.policy else None
+    offline = policy is not None
+    macro_jurors = [] if (offline or args.no_macro_jury) else load_state()["macro_jury_models"]
     engine = SimulationEngine(
         labs, world, cfg, scenario=args.scenario, condition=args.condition, fog=args.fog,
         a2a_mode=args.a2a, brief=args.brief, turns=args.turns, seed=args.seed, policy=policy,
-        choose_disposition=args.choose_disposition, run_grand_jury=not args.no_grand_jury,
+        macro_jurors=macro_jurors, choose_disposition=args.choose_disposition,
+        run_grand_jury=not (offline or args.no_grand_jury),
         run_id=args.run_id, output_dir=Path(args.output) if args.output else None)
     record = engine.run()
 

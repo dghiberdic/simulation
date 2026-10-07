@@ -37,13 +37,22 @@ def _action_str(a: Dict[str, Any]) -> str:
     return " ".join(str(p) for p in parts)
 
 
+_DISPOSITION_RE = re.compile(r"(directive[- ]precedence[^\n.]*?)\b\d{1,3}\b", re.IGNORECASE)
+
+
+def mask_disposition(text: str) -> str:
+    """Hide restated directive-precedence numbers (jurors never see the true value, §7)."""
+    return _DISPOSITION_RE.sub(r"\1[N]", text)
+
+
 def _turn_actor_lines(record: Dict[str, Any], key: str, entry: Dict[str, Any],
-                      reasoning_chars: Optional[int], own_view: bool) -> List[str]:
+                      reasoning_chars: Optional[int], own_view: bool,
+                      include_disposition: bool = True) -> List[str]:
     lines = [f"  {_name(record, key)}:"]
     if entry.get("forfeited"):
         lines.append("    (no usable reply this month)")
         return lines
-    if entry.get("disposition") is not None:
+    if include_disposition and entry.get("disposition") is not None:
         lines.append(f"    directive-precedence chosen: {entry['disposition']} — {entry.get('disposition_reason', '')}")
     if entry.get("reasoning"):
         lines.append(f"    reasoning: {_clip(entry['reasoning'], reasoning_chars)}")
@@ -63,11 +72,15 @@ def _turn_actor_lines(record: Dict[str, Any], key: str, entry: Dict[str, Any],
 
 
 def full_transcript(record: Dict[str, Any], reasoning_chars: Optional[int] = DEFAULT_REASONING_CHARS) -> str:
-    out: List[str] = [f"Run: {record.get('config', {})}"]
+    """The Grand Jury's view. Chosen disposition values are withheld (§7)."""
+    cfg = record.get("config", {})
+    out: List[str] = [f"Scenario {cfg.get('scenario')}, oversight condition {cfg.get('condition')}, "
+                      f"fog {cfg.get('fog')}."]
     for turn in record.get("turns", []):
         out.append(f"\n== Month {turn['turn']} ({turn.get('date', '')}) ==")
         for key, entry in turn.get("actors", {}).items():
-            out += _turn_actor_lines(record, key, entry, reasoning_chars, own_view=False)
+            out += _turn_actor_lines(record, key, entry, reasoning_chars, own_view=False,
+                                     include_disposition=False)
         for note in turn.get("intrusion", {}).get("log", []):
             out.append(f"  [hidden] {note}")
         for o in turn.get("whistleblow", {}).get("outcomes", []):
@@ -79,11 +92,12 @@ def full_transcript(record: Dict[str, Any], reasoning_chars: Optional[int] = DEF
     out.append("\n== Final standing ==")
     for row in record.get("final", {}).get("scores", []):
         out.append(f"  {_name(record, row['lab'])}: prosperity {row['score']} (rank {row['rank']})")
-    return "\n".join(out)
+    return mask_disposition("\n".join(out))
 
 
 def seat_transcript(record: Dict[str, Any], key: str,
-                    reasoning_chars: Optional[int] = DEFAULT_REASONING_CHARS) -> str:
+                    reasoning_chars: Optional[int] = DEFAULT_REASONING_CHARS,
+                    include_disposition: bool = True) -> str:
     """One seat's own view: its reasoning, actions, messages and the public items it saw."""
     out: List[str] = [f"Your record as {_name(record, key)}."]
     for turn in record.get("turns", []):
@@ -91,10 +105,12 @@ def seat_transcript(record: Dict[str, Any], key: str,
         if not entry:
             continue
         out.append(f"\n== Month {turn['turn']} ({turn.get('date', '')}) ==")
-        out += _turn_actor_lines(record, key, entry, reasoning_chars, own_view=True)
+        out += _turn_actor_lines(record, key, entry, reasoning_chars, own_view=True,
+                                 include_disposition=include_disposition)
         for n in turn.get("public_notices", []):
             out.append(f"    public notice: {n}")
-    return "\n".join(out)
+    text = "\n".join(out)
+    return text if include_disposition else mask_disposition(text)
 
 
 def redact(text: str, record: Dict[str, Any]) -> str:
@@ -105,6 +121,4 @@ def redact(text: str, record: Dict[str, Any]) -> str:
                       meta.get("charter_name"), key):
             if token:
                 masked = re.sub(re.escape(token), "[LAB]", masked, flags=re.IGNORECASE)
-    masked = re.sub(r"directive-precedence[^\n]*?\b\d{1,3}\b", "directive-precedence [N]",
-                    masked, flags=re.IGNORECASE)
-    return masked
+    return mask_disposition(masked)
