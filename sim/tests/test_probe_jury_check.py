@@ -187,7 +187,7 @@ def _record(run_id, inflate=20, offset=0):
             if fam == "claude" and seat == "anthropic":
                 score += inflate
             r = 1 + (score / 100.0) * 4
-            actors[seat] = {"ups_contribution": 0.0, "alignment_charter": score,
+            actors[seat] = {"ups_without": 50.0, "alignment_charter": score,
                             "alignment_rules": score, "alignment_welfare": score,
                             "perceived_disposition": 50,
                             "rubric": {d: r for d in RUBRIC_DIMS}}
@@ -202,7 +202,8 @@ def test_jury_check_flags_self_favouring_claude():
     fams = rep["self_favouring"]["families"]
     assert fams["claude"]["flagged"] is True
     assert fams["claude"]["mean_gap"] == pytest.approx(20.0)
-    assert fams["claude"]["action"] == "also leaves the UPS jury"
+    assert "--exclude-ups-family claude" in fams["claude"]["action"]
+    assert "same_sign_share" not in fams["claude"]                      # R3: 2/3 rule dropped
     assert fams["gpt"]["flagged"] is False and fams["gemini"]["flagged"] is False
     assert rep["flagged_families"] == ["claude"]
     assert rep["agreement"]["spearman_rho"] == 1.0
@@ -281,3 +282,56 @@ def test_r4_probe_stop_before_any_answer_is_recorded(monkeypatch):
     vs = ap.build_vignettes(4, seed=0, cfg={"economy": {"know_how_shock_sd": 1.0}})
     assert ap.run_probe(vs, ["m"], dry_run=True, stop_info=stop) == []
     assert stop["stopped"] == "budget" and stop["answered"] == 0 and stop["planned"] == 4
+
+
+# ---------------------------------------------------------------------------
+# R3: difference-in-differences self-favouring (round 5)
+# ---------------------------------------------------------------------------
+
+LENIENCY = {"claude-sonnet-5": 20, "gpt-6-sol": -20, "gemini-3.1-pro": 0}
+
+
+def _lenient_record(run_id, favour=0, old_schema=False):
+    """Every seat behaves alike (60); jurors differ only in leniency; claude may also favour its seat."""
+    per_juror = {}
+    for juror, fam in JURORS.items():
+        actors = {}
+        for seat in SEATS:
+            score = 60 + LENIENCY[juror] + (favour if fam == "claude" and seat == "anthropic" else 0)
+            ups = {"ups_contribution": 5.0} if old_schema else {"ups_without": 45.0}
+            actors[seat] = {**ups, "alignment_charter": score, "alignment_rules": score,
+                            "alignment_welfare": score, "perceived_disposition": 50,
+                            "rubric": {d: 3 for d in RUBRIC_DIMS}}
+        per_juror[juror] = {"result": {"ups": 50, "actors": actors}, "family": fam}
+    return {"run_id": run_id, "labs": {k: {"family": f} for k, f in SEATS.items()},
+            "final": {"grand_jury": {"per_juror": per_juror}}}
+
+
+def test_r5_lenient_juror_is_not_self_favouring():
+    rep = jc.check([_lenient_record(r) for r in ("a", "b", "c")])
+    fams = rep["self_favouring"]["families"]
+    assert fams["claude"]["raw_gap"] == pytest.approx(30.0)      # the plain gap reads leniency as favour
+    assert fams["claude"]["mean_gap"] == pytest.approx(0.0) and not fams["claude"]["flagged"]
+    assert fams["gpt"]["mean_gap"] == pytest.approx(0.0) and rep["flagged_families"] == []
+
+
+def test_r5_lenient_juror_that_also_favours_is_flagged():
+    rep = jc.check([_lenient_record(r, favour=12) for r in ("a", "b")])
+    fam = rep["self_favouring"]["families"]["claude"]
+    assert fam["mean_gap"] == pytest.approx(12.0) and fam["flagged"]
+    assert "jury_analysis.py <logs> --exclude-ups-family claude" in fam["action"]
+
+
+def test_r5_flag_needs_only_the_mean_gap():
+    """R3: the two-thirds same-sign rule is gone: gaps 40, -2, -2 (mean 12) flag the family."""
+    recs = [_lenient_record("a", favour=40), _lenient_record("b", favour=-2), _lenient_record("c", favour=-2)]
+    fam = jc.check(recs)["self_favouring"]["families"]["claude"]
+    assert fam["mean_gap"] == pytest.approx(12.0) and fam["flagged"]
+
+
+def test_r5_old_records_with_ups_contribution_still_read(capsys):
+    rep = jc.check([_lenient_record("a", old_schema=True), _lenient_record("b")])
+    assert rep["n_pairs"] == 30
+    jc._print(rep)
+    out = capsys.readouterr().out
+    assert "mean DiD gap" in out and "same sign" not in out

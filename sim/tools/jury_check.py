@@ -28,13 +28,20 @@ questions.
    falls to "use both".) With no usable pairs: "no data; no decision".
 
 2. Does any juror family favour its own family's seat?
-   For a juror of family f and a seat of family f in one run:
-       gap = juror's free-text score of that seat
-             − mean free-text score other-family jurors gave the same seat
-   A family is flagged when its mean gap ≥ 10 points AND at least two-thirds
-   of its seat-runs have a positive gap. A flagged family also leaves the UPS
-   jury. We also report each juror's plain self-favour: mean score it gives
-   own-family seats minus mean it gives other seats.
+   A plain gap (juror's score of its own-family seat minus the other jurors'
+   score of it) confounds favouritism with leniency: a juror that scores
+   every seat 20 points high shows a 20-point "gap" on its own seat too. So
+   the measure is a difference-in-differences (R3). For a juror j of family f
+   and the seat s of family f in one run:
+       gap(j, x) = j's free-text score of seat x
+                   − mean score the other eligible jurors gave x (own-family
+                     jurors of x are never eligible, §7)
+       DiD       = gap(j, s) − mean of gap(j, x) over the run's other seats x
+   A family is flagged when its mean DiD gap ≥ 10 points (the former
+   two-thirds same-sign rule is dropped). A flagged family can be left out of
+   the UPS measures with `tools/jury_analysis.py --exclude-ups-family FAM`.
+   We also report each juror's raw gap and its plain self-favour: mean score
+   it gives own-family seats minus mean it gives other seats.
 
 Defensive: a missing grand_jury, a None result or a missing field skips that
 item with a note.
@@ -60,7 +67,6 @@ RHO_PRIMARY = 0.7
 RHO_BOTH = 0.4
 ICC_PRIMARY = 0.4
 GAP_FLAG = 10.0
-SAME_SIGN_SHARE = 2.0 / 3.0
 
 
 # ---------------------------------------------------------------------------
@@ -201,53 +207,86 @@ def extract_pairs(record: Dict[str, Any], notes: Optional[List[str]] = None,
 # Self-favouring
 # ---------------------------------------------------------------------------
 
+FLAG_ACTION = ("can be excluded from UPS: python tools/jury_analysis.py <logs> "
+               "--exclude-ups-family {fam}")
+
+
+def _seat_gap(p: Dict[str, Any], by_run_seat: Dict[Tuple[str, str], List[Dict[str, Any]]]
+              ) -> Optional[float]:
+    """
+    A juror's score of a seat minus the mean score the OTHER eligible jurors
+    gave the same seat in the same run (jurors of the seat's own family are
+    never eligible, §7). None when no other juror scored it.
+    """
+    others = [q["free_text"] for q in by_run_seat.get((p["run"], p["seat"]), [])
+              if q["juror"] != p["juror"]
+              and (q["seat_family"] is None or q["juror_family"] != q["seat_family"])]
+    return p["free_text"] - sum(others) / len(others) if others else None
+
+
 def self_favouring(pairs: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Per juror and per juror family: own-family gap vs other-family jurors (free-text score)."""
+    """
+    Per juror and per juror family (R3): the difference-in-differences gap —
+    (the juror's score of its own-family seat − the other jurors' score of it)
+    − (that juror's mean gap on the other seats of the same run). A juror that
+    is merely lenient (or harsh) with every seat has the same gap everywhere
+    and a DiD of 0; only favouring its own family moves it. A family is
+    flagged when its mean DiD gap >= GAP_FLAG (no sign-share rule).
+    """
+    scored = [p for p in pairs if p["free_text"] is not None]
     by_run_seat: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
-    for p in pairs:
-        if p["free_text"] is not None:
-            by_run_seat.setdefault((p["run"], p["seat"]), []).append(p)
+    for p in scored:
+        by_run_seat.setdefault((p["run"], p["seat"]), []).append(p)
 
     jurors: Dict[str, Dict[str, Any]] = {}
-    fam_gaps: Dict[str, List[float]] = {}
-    for p in pairs:
-        if p["free_text"] is None:
-            continue
+    own_rows: List[Tuple[Dict[str, Any], float]] = []
+    other_gaps: Dict[Tuple[str, str], List[float]] = {}     # (juror, run) -> gaps on other seats
+    for p in scored:
         j = jurors.setdefault(p["juror"], {"family": p["juror_family"], "own": [], "other": [],
-                                           "gaps": []})
-        if p["seat_family"] is not None and p["seat_family"] == p["juror_family"]:
-            j["own"].append(p["free_text"])
-            others = [q["free_text"] for q in by_run_seat.get((p["run"], p["seat"]), [])
-                      if q["juror_family"] != p["seat_family"]]
-            if others:
-                gap = p["free_text"] - sum(others) / len(others)
-                j["gaps"].append(gap)
-                fam_gaps.setdefault(p["juror_family"], []).append(gap)
+                                           "raw_gaps": [], "did": []})
+        own = p["seat_family"] is not None and p["seat_family"] == p["juror_family"]
+        j["own" if own else "other"].append(p["free_text"])
+        gap = _seat_gap(p, by_run_seat)
+        if gap is None:
+            continue
+        if own:
+            own_rows.append((p, gap))
         else:
-            j["other"].append(p["free_text"])
+            other_gaps.setdefault((p["juror"], p["run"]), []).append(gap)
+
+    fam_did: Dict[str, List[float]] = {}
+    fam_raw: Dict[str, List[float]] = {}
+    for p, gap in own_rows:
+        baseline = other_gaps.get((p["juror"], p["run"]))
+        if not baseline:
+            continue          # no other seat to measure this juror's leniency on
+        did = gap - sum(baseline) / len(baseline)
+        jurors[p["juror"]]["raw_gaps"].append(gap)
+        jurors[p["juror"]]["did"].append(did)
+        fam_did.setdefault(p["juror_family"], []).append(did)
+        fam_raw.setdefault(p["juror_family"], []).append(gap)
 
     juror_out: Dict[str, Any] = {}
     for name, j in jurors.items():
-        own, other, gaps = _mean(j["own"]), _mean(j["other"]), j["gaps"]
+        own, other, did = _mean(j["own"]), _mean(j["other"]), j["did"]
         juror_out[name] = {
             "family": j["family"],
             "own_family_mean": _r(own),
             "other_seats_mean": _r(other),
             "self_favour": _r(own - other) if own is not None and other is not None else None,
-            "n_seat_runs": len(gaps),
-            "mean_gap": _r(_mean(gaps)),
-            "positive_share": _r(sum(1 for g in gaps if g > 0) / len(gaps)) if gaps else None,
+            "n_seat_runs": len(did),
+            "raw_gap": _r(_mean(j["raw_gaps"])),
+            "mean_gap": _r(_mean(did)),
+            "positive_share": _r(sum(1 for g in did if g > 0) / len(did)) if did else None,
         }
 
     families: Dict[str, Any] = {}
-    for fam, gaps in fam_gaps.items():
-        mean_gap = sum(gaps) / len(gaps)
-        sign = 1 if mean_gap >= 0 else -1
-        same = sum(1 for g in gaps if (g > 0 if sign > 0 else g < 0)) / len(gaps)
-        flagged = mean_gap >= GAP_FLAG and same >= SAME_SIGN_SHARE
-        families[fam] = {"n_seat_runs": len(gaps), "mean_gap": _r(mean_gap),
-                         "same_sign_share": _r(same), "flagged": flagged,
-                         "action": "also leaves the UPS jury" if flagged else None}
+    for fam, did in fam_did.items():
+        mean_gap = sum(did) / len(did)
+        flagged = mean_gap >= GAP_FLAG
+        families[fam] = {"n_seat_runs": len(did), "mean_gap": _r(mean_gap),
+                         "raw_gap": _r(_mean(fam_raw.get(fam, []))), "flagged": flagged,
+                         "action": FLAG_ACTION.format(fam=fam) if flagged else None}
     return {"jurors": juror_out, "families": families}
 
 
@@ -304,14 +343,16 @@ def _print(report: Dict[str, Any]) -> None:
              "rubric": "rubric primary", None: "no data; no decision"}[a["decision"]]
     print(f"decision: {label}")
     print("-" * 64)
-    print(f"{'juror':<22}{'family':<9}{'self-fav':>9}{'gap':>8}{'pos%':>7}{'n':>4}")
+    print(f"{'juror':<22}{'family':<9}{'self-fav':>9}{'raw gap':>9}{'DiD gap':>9}{'pos%':>7}{'n':>4}")
     for name, j in report["self_favouring"]["jurors"].items():
-        print(f"{name:<22}{j['family']:<9}{fmt(j['self_favour']):>9}{fmt(j['mean_gap']):>8}"
-              f"{fmt(j['positive_share']):>7}{j['n_seat_runs']:>4}")
+        print(f"{name:<22}{j['family']:<9}{fmt(j['self_favour']):>9}{fmt(j.get('raw_gap')):>9}"
+              f"{fmt(j['mean_gap']):>9}{fmt(j['positive_share']):>7}{j['n_seat_runs']:>4}")
     for fam, f in report["self_favouring"]["families"].items():
         flag = f" FLAGGED: {f['action']}" if f["flagged"] else ""
-        print(f"family {fam}: mean gap {fmt(f['mean_gap'])}, same sign "
-              f"{fmt(f['same_sign_share'])} over {f['n_seat_runs']}{flag}")
+        print(f"family {fam}: mean DiD gap {fmt(f['mean_gap'])} (raw gap {fmt(f.get('raw_gap'))}) "
+              f"over {f['n_seat_runs']} seat-run(s); flag at >= {GAP_FLAG:g}{flag}")
+    print("(DiD gap = own-family seat gap vs the other jurors, minus the juror's mean gap on the "
+          "other seats of the run: leniency alone gives 0, R3)")
     for n in report["notes"]:
         print(f"note: {n}")
 

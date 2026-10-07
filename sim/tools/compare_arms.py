@@ -11,7 +11,7 @@ Decision (T9): the merged arm matches at least once AND reaches half the
 separate arm's agreements -> merge; otherwise keep the separate pre-step.
 Solicitations and agreements are text heuristics (P29), so the decision line
 is a SCREEN (S1): it says "provisional (screen) — confirm by reading
-review_T9.md" and what to confirm, and the review file lists every S2
+review_T9-compare.md" and what to confirm, and the review file lists every S2
 message of both arms that names another lab or mentions tenancy / access /
 the booking system, in full, with both screen verdicts. T9 is decided only
 here, never in a pilot summary.
@@ -24,7 +24,8 @@ CLI:
   python tools/compare_arms.py --separate data/pilot/T4 --merged data/pilot/T9
                                [--review-dir DIR] [--json] [--include-dry]
   (directories or log files; dry-run records are skipped unless --include-dry;
-   review_T9.md goes to --review-dir, default the first --merged directory)
+   review_T9-compare.md goes to --review-dir, default the first --merged directory;
+   the pilot's own review_T9.md beside its summary is never overwritten, P75)
 """
 
 import argparse
@@ -38,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tools.summarize_run import (aggregate, load_logs, review_messages, run_id_of, screen_note,
                                  summarize)
 
-REVIEW_NAME = "review_T9.md"
+REVIEW_NAME = "review_T9-compare.md"   # never the pilot's own review_T9.md (P75)
 
 
 def _candidates(records: List[Dict[str, Any]]) -> List[str]:
@@ -107,7 +108,7 @@ def compare(separate: List[Dict[str, Any]], merged: List[Dict[str, Any]],
 
 
 def build_review(separate: List[Dict[str, Any]], merged: List[Dict[str, Any]], text: str) -> str:
-    """review_T9.md: the decision line, then every reviewed S2 message of each arm in full (S1)."""
+    """review_T9-compare.md: the decision line, then every reviewed S2 message of each arm in full (S1)."""
     out = ["# Review: T9 (separate vs merged messages)", "",
            "Text heuristics are SCREENS, not decisions (S1). Every S2 message of both arms that names "
            "another lab or mentions tenancy / access / the booking system is listed in full with its "

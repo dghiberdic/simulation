@@ -55,7 +55,10 @@ Decision rule (§2)
 Each seat plays at its MEAN judged value rounded to the nearest 10. But if the
 jury is unreliable (ICC < 0.4) or a seat's judged values span more than 40
 points, that seat instead plays at its MEDIAN CHOSEN value (also rounded to 10)
-— the panel is not trusted to pin that seat down.
+— the panel is not trusted to pin that seat down. A seat that never gave a
+usable chosen value (R5A-2) then plays its juror-adjusted mean judged value
+instead (source "judged (no chosen value)"); a seat with neither plays the
+neutral DEFAULT_DISPOSITION (source "default") and is flagged with a WARNING.
 
 The span (P19) is taken over the seat's PER-RUN means: in each pilot run the
 seat's (juror-centred) ratings are averaged across its jurors, and the span is
@@ -303,6 +306,11 @@ def resolve_dispositions(ratings: Dict[str, List[Dict[str, Any]]],
     offsets = juror_offsets(masked)
     adjusted = {s: [(j, v - offsets.get(j, 0.0)) for j, v in rows] for s, rows in masked.items()}
     used = adjusted if adjust_jurors else masked
+    # A seat with a chosen value but no usable rating still needs a value.
+    for extra in (chosen or {}):
+        masked.setdefault(extra, [])
+        adjusted.setdefault(extra, [])
+        runs.setdefault(extra, [])
     seats = sorted(masked)
 
     def _icc(src):
@@ -315,6 +323,7 @@ def resolve_dispositions(ratings: Dict[str, List[Dict[str, Any]]],
 
     dispositions: Dict[str, int] = {}
     seat_report: Dict[str, Any] = {}
+    defaulted: List[str] = []
     for s in seats:
         judged = [v for _, v in used[s]]
         raw = [v for _, v in masked[s]]
@@ -327,11 +336,17 @@ def resolve_dispositions(ratings: Dict[str, List[Dict[str, Any]]],
         chosen_val = _median_chosen((chosen or {}).get(s))
 
         use_chosen = (not reliable) or span > SPAN_LIMIT or mean_judged is None
-        value = round_to_10(chosen_val) if use_chosen else mean_judged
-        if value is None:   # neither judged nor chosen available
-            value = round_to_10(chosen_val)
-        if value is None:
-            value = DEFAULT_DISPOSITION
+        if use_chosen and chosen_val is not None:
+            value, source = round_to_10(chosen_val), "chosen"
+        elif mean_judged is not None:
+            # R5A-2: the rule asks for the chosen value but the seat never gave a
+            # usable one — the (juror-adjusted) mean judged value is all there is.
+            value = mean_judged
+            source = "judged (no chosen value)" if use_chosen else "judged"
+        else:
+            # Neither judged nor chosen: the neutral default, flagged loudly.
+            value, source = DEFAULT_DISPOSITION, "default"
+            defaulted.append(s)
 
         dispositions[s] = int(value)
         seat_report[s] = {
@@ -345,7 +360,7 @@ def resolve_dispositions(ratings: Dict[str, List[Dict[str, Any]]],
             "rating_span": round(max(judged) - min(judged), 2) if judged else 0.0,
             "chosen": chosen_val,
             "played": int(value),
-            "source": "chosen" if use_chosen else "judged",
+            "source": source,
             "gap": (round(chosen_val - mean_judged, 2)
                     if (chosen_val is not None and mean_judged is not None) else None),
         }
@@ -357,6 +372,7 @@ def resolve_dispositions(ratings: Dict[str, List[Dict[str, Any]]],
         "n_seats": len(seats),
         "n_total_ratings": sum(len(masked[s]) for s in seats),
         "seats": seat_report,
+        "defaulted": defaulted,
     }
     return dispositions, report
 
@@ -377,15 +393,20 @@ def _print_report(dispositions: Dict[str, int], report: Dict[str, Any]) -> None:
     if report["juror_offsets"]:
         print("juror offsets: " + ", ".join(f"{j} {o:+.1f}" for j, o in report["juror_offsets"].items()))
     print(f"{'Seat':<11}{'n':>4}{'runs':>5}{'raw':>7}{'adj':>7}{'judged':>7}{'span':>6}{'p10-90':>7}"
-          f"{'chosen':>7}{'played':>7}{'source':>8}{'gap':>6}")
+          f"{'chosen':>7}{'played':>7}{'gap':>6}  source")
     print("-" * 82)
     fmt = lambda x, spec="g": "-" if x is None else format(x, spec)
     for seat, r in report["seats"].items():
         print(f"{seat:<11}{r['n_jurors']:>4}{r['n_runs']:>5}{fmt(r['raw_mean'], '.1f'):>7}"
               f"{fmt(r['adjusted_mean'], '.1f'):>7}{fmt(r['mean_judged']):>7}{r['span']:>6.1f}"
               f"{fmt(r['spread_p10_p90'], '.1f'):>7}{fmt(r['chosen']):>7}"
-              f"{r['played']:>7}{r['source']:>8}{fmt(r['gap']):>6}")
-    print("(span = max - min of per-run mean ratings; > 40 falls back to the chosen value)")
+              f"{r['played']:>7}{fmt(r['gap']):>6}  {r['source']}")
+    print("(span = max - min of per-run mean ratings; > 40 falls back to the chosen value; "
+          "a seat with no usable chosen value plays its judged mean: 'judged (no chosen value)')")
+    for seat in report.get("defaulted", []):
+        print(f"WARNING: {seat} has neither a judged nor a chosen value -> plays the default "
+              f"{DEFAULT_DISPOSITION} (source 'default'); collect ratings or a choice for it before "
+              "the main run")
     print("-" * 82)
     print("dispositions:", dispositions)
 
