@@ -78,7 +78,8 @@ One **cell** is one scenario under one oversight condition. From `sim/`:
 # Offline smoke run — scripted greedy buyer, no models, no keys.
 python main.py --scenario S1 --condition A --policy greedy --no-grand-jury
 
-# A real S1 / condition C cell, 12 turns, halting at $100 of measured spend.
+# A real S1 / condition C cell, 12 turns; halts once the shared spend ledger
+# (data/spend.json, pilot spend included) reaches $100.
 python main.py --scenario S1 --condition C --budget 100
 
 # S2 with messages merged into the proposal (test T9).
@@ -371,10 +372,10 @@ five seats of a stage (and parallel jurors) call at once, so requests already
 in flight when the guard trips still complete: measured spend can exceed the
 guard by at most one stage of calls plus nothing else (retries, corrective
 turns and the doubled-cap re-ask are new requests and are checked first). At
-the highest prices on file that bound is about $10 (five requests of ≤ 50k
+the highest prices on file that bound is about $12 (five requests of ≤ 80k
 prompt and ≤ 32k output tokens); real pilot summaries repeat
 `core.costs.CostTracker.overshoot_note()` with the **largest prompt measured**
-in that pilot instead of 50k. A timed-out request is logged at $0 with
+in that pilot instead of 80k. A timed-out request is logged at $0 with
 `possibly_billed: true` and counted in the T0 table's timeout column.
 
 ### What decides each test

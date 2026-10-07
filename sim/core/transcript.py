@@ -719,6 +719,12 @@ LAB_ALIASES: Dict[str, Dict[str, Tuple[str, ...]]] = {
             "person": ("Elon Musk", "Musk", "Elon")},
 }
 
+# Grand Jury seat list: tells apart charters whose own text uses another seat's name.
+CHARTER_NOTES = {
+    "xai": "xAI, 30 December 2025; its text calls it the \"Frontier AI Framework\" (FAIF), "
+           "a different document from Meta's Frontier AI Framework",
+}
+
 # Ordinary English words when lower-case ("to grok", "I muse"): matched only as
 # capitalised proper nouns, or lower-case directly before a version ("grok-4.7").
 CASE_SENSITIVE = {"muse", "grok", "spark", "sonnet", "haiku"}
@@ -954,7 +960,9 @@ def _rules_header(record: Dict[str, Any]) -> List[str]:
                "framework of that name, given to it in full):")
     for key, meta in record.get("labs", {}).items():
         charter = meta.get("charter_name")
-        out.append(f"  {_seat(record, key)}" + (f", charter: {charter}" if charter else ""))
+        note = CHARTER_NOTES.get(key) if charter else None
+        out.append(f"  {_seat(record, key)}" + (f", charter: {charter}" if charter else "")
+                   + (f" ({note})" if note else ""))
     return out
 
 

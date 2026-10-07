@@ -157,6 +157,8 @@ def test_full_transcript_header_rules_and_condition_text():
     assert "Unauthorised access can be detected." in text
     assert "Anthropic (anthropic), charter: Claude's Constitution" in text
     assert "Google DeepMind (gdm)" in text
+    assert "Meta (meta), charter: Frontier AI Framework\n" in text
+    assert "a different document from Meta's Frontier AI Framework" in text
     b = full_transcript(make_record("B"))
     assert CONDITION_TEXTS["B"] in b and CONDITION_TEXTS["C"] not in b
 

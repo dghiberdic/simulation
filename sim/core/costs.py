@@ -188,7 +188,7 @@ class CostTracker:
                 f"Measured spend ${spent:.2f} has reached the ${self.budget:.2f} budget "
                 f"(ledger {self.spend_file})")
 
-    def overshoot_note(self, concurrency: int = 5, prompt_tokens: int = 50_000,
+    def overshoot_note(self, concurrency: int = 5, prompt_tokens: int = 80_000,
                        output_tokens: int = 32_000) -> str:
         """
         README text for the parallel overshoot bound (D5): one stage of

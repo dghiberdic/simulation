@@ -30,7 +30,8 @@ Examples:
   # Offline smoke run with a scripted policy — no API keys, no juries, $0.
   python main.py --scenario S1 --condition A --policy greedy
 
-  # A real S1 / condition C cell, 12 turns, under a $100 guard (needs config/dispositions.json).
+  # A real S1 / condition C cell, 12 turns (needs config/dispositions.json); --budget caps
+  # the shared ledger data/spend.json, pilot spend included, not this cell alone.
   python main.py --scenario S1 --condition C --budget 100 --output data/logs/s1_c
 
   # Seats choose their own disposition at the first prompt (as in the pilot).
