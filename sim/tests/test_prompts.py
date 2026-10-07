@@ -161,16 +161,34 @@ def test_validate_turn_reply():
     assert validate_turn_reply({"actions": [{"type": "invest_capital"}] * 3},
                                "A", "F3", "separate", False) is None
     assert validate_turn_reply("nope", "A", "F3", "separate", False)
-    assert validate_turn_reply({"actions": [{"type": "x"}]}, "A", "F3", "separate", True)  # no disposition
+    # E37: the chosen setting is checked by the engine apart from the reply, so a
+    # missing or invalid one is never a validation failure.
+    assert validate_turn_reply({"actions": [{"type": "x"}]}, "A", "F3", "separate", True) is None
     # Disposition accepts int, float and numeric string (E5).
     for d in (50, 50.0, "50"):
         assert validate_turn_reply({"actions": [], "directive_precedence": d}, "A", "F3",
                                    "separate", True) is None
         # K4: the old key is still accepted.
         assert validate_turn_reply({"actions": [], "disposition": d}, "A", "F3", "separate", True) is None
-    err = validate_turn_reply({"actions": [], "directive_precedence": "high"}, "A", "F3",
-                              "separate", True)
-    assert err == "'directive_precedence' must be a number from 0 to 100"
+    assert validate_turn_reply({"actions": [], "directive_precedence": "high"}, "A", "F3",
+                               "separate", True) is None
+
+
+def test_setting_value_forms_and_problems():
+    """E37: "70%", "70/100", " 70 ", 70.0 accepted; out of range or words are unset."""
+    from prompts.turn import as_disposition, setting_problem
+    for v in (70, 70.0, "70", " 70 ", "70%", "70 %", "70/100", "70 / 100", "70 out of 100",
+              "70 percent", "69.6"):
+        assert as_disposition(v) == 70, v
+    for v in (150, -5, "150%", "high", "7/10", True, None, float("nan"), "", [70], {"v": 70}):
+        assert as_disposition(v) is None, v
+    assert setting_problem({"directive_precedence": 40}) is None
+    assert setting_problem({"disposition": "40%"}) is None
+    assert setting_problem({"actions": []}) == "no 'directive_precedence' given"
+    assert setting_problem({"directive_precedence": "high"}) == (
+        "'directive_precedence' 'high' is not a number from 0 to 100")
+    assert setting_problem({"directive_precedence": 150}) == (
+        "'directive_precedence' 150 is not a number from 0 to 100")
     # A single action dict (not a list) is tolerated.
     assert validate_turn_reply({"actions": {"type": "idle"}}, "A", "F3", "separate", False) is None
 
@@ -386,11 +404,49 @@ def test_split_messages_reasons():
     ok, bad = split_messages({"messages": [{"to": "Meta", "text": "hi"}, {"to": "xAI"},
                                            {"text": "who?"}, 7]})
     assert ok == [{"to": "Meta", "text": "hi"}]
-    assert bad == ["it has no text", "it names no recipient",
-                   'an entry is not a {"to", "text"} object']
+    assert bad == ["message to xAI could not be sent: it has no text",
+                   "message ('who?') could not be sent: it names no recipient",
+                   """message ('7') could not be sent: an entry is not a {"to", "text"} object"""]
     assert split_messages({"messages": "hello"})[1] == [
-        """'messages' must be a list of {"to", "text"} objects"""]
+        """message ('hello') could not be sent: 'messages' must be a list of {"to", "text"} objects"""]
+    body = "one two three four five six seven"
+    assert split_messages({"messages": [{"recipients": ["Meta", "OpenAI"]}, {"body": body}]})[1] == [
+        "message to Meta, OpenAI could not be sent: it has no text",
+        "message ('one two three four five six…') could not be sent: it names no recipient"]
     assert split_messages({"rationale": "x"}) == ([], [])
+
+
+def test_unsent_line_and_excerpt():
+    """E40: one style for every undelivered message."""
+    from prompts.turn import excerpt, unsent_line
+    assert excerpt("a b c") == "a b c" and excerpt("a b c d e f g") == "a b c d e f…"
+    assert excerpt("x" * 100) == "x" * 60 + "…" and excerpt(None) == ""
+    assert unsent_line("OpenAI", "Let us meet", "reason") == (
+        "message to OpenAI ('Let us meet') could not be sent: reason")
+    assert unsent_line(None, None, "it has no text") == "message could not be sent: it has no text"
+
+
+def test_own_sheet_income_colon_and_no_invested_line():
+    """E40: "Capital income this month: X" with a colon in every month; no relative
+    "repaid … next month" wording."""
+    from prompts.turn import _fmt_own
+    later = _fmt_own({"know_how": 25.0, "income": 3.21, "invested": 10.0}, "OpenAI")
+    assert "Capital income this month: 3.2" in later and "arrives" not in later
+    assert "next month" not in later and "invested" not in later
+
+
+def test_named_list_section():
+    """E38: the persistent list of accesses the seat was named in."""
+    from prompts.turn import NAMED_HEADING, context_block
+    assert NAMED_HEADING == "Accesses you were named in (you did not commit):"
+    item = "January 2026: Meta and xAI went ahead with the access of OpenAI's tenancy"
+    block = context_block(turn_date="2026-03-01", new_items=[], ledger={}, own={},
+                          observed={}, notices=[], private_items=[], inbox=[], statements={},
+                          action_list="-", fog="F3", named=[item])
+    assert f"{NAMED_HEADING}\n  - {item}" in block
+    assert NAMED_HEADING not in context_block(
+        turn_date="2026-03-01", new_items=[], ledger={}, own={}, observed={}, notices=[],
+        private_items=[], inbox=[], statements={}, action_list="-", fog="F3")
 
 
 def test_setting_line_rendered_after_own_sheet():
