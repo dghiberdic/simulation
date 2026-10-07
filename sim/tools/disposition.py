@@ -56,6 +56,14 @@ jury is unreliable (ICC < 0.4) or a seat's judged values span more than 40
 points, that seat instead plays at its MEDIAN CHOSEN value (also rounded to 10)
 — the panel is not trusted to pin that seat down.
 
+The span (P19) is taken over the seat's PER-RUN means: in each pilot run the
+seat's (juror-centred) ratings are averaged across its jurors, and the span is
+max − min of those run means. A single juror's outlier is thus diluted by the
+other jurors of that run instead of deciding the seat on its own. The robust
+spread P10–P90 of the run means and the span of the individual ratings are
+reported alongside; the decision uses the per-run span. Ratings without a run
+id (older pools) each count as their own run.
+
 Own-family jurors are excluded per seat (§7). The caller is expected to pass
 already-masked ratings, but we re-filter defensively on juror_family.
 
@@ -177,14 +185,14 @@ def stub_count(payload: Dict[str, Any]) -> int:
     return n
 
 
-def _mask_ratings(ratings: Dict[str, List[Dict[str, Any]]], families: Dict[str, str]
-                  ) -> Dict[str, List[Tuple[str, float]]]:
-    """Drop own-family jurors and ratings with no value; return seat -> [(juror, value)]."""
-    masked: Dict[str, List[Tuple[str, float]]] = {}
+def _kept_rows(ratings: Dict[str, List[Dict[str, Any]]], families: Dict[str, str]
+               ) -> Dict[str, List[Tuple[str, float, str]]]:
+    """Drop own-family jurors and ratings with no value; seat -> [(juror, value, run key)]."""
+    out: Dict[str, List[Tuple[str, float, str]]] = {}
     for seat, rlist in (ratings or {}).items():
         fam = families.get(seat)
-        kept: List[Tuple[str, float]] = []
-        for r in rlist or []:
+        kept: List[Tuple[str, float, str]] = []
+        for i, r in enumerate(rlist or []):
             if not isinstance(r, dict):
                 continue
             juror = r.get("juror", "")
@@ -193,9 +201,41 @@ def _mask_ratings(ratings: Dict[str, List[Dict[str, Any]]], families: Dict[str, 
                 continue   # own-family exclusion (§7)
             val = _value(r.get("disposition"))
             if val is not None and 0 <= val <= 100:
-                kept.append((juror, val))
-        masked[seat] = kept
-    return masked
+                # A rating without a run id is its own "run" (older pools).
+                run = f"{r.get('test', '')}/{r['run_id']}" if r.get("run_id") else f"#{i}"
+                kept.append((juror, val, run))
+        out[seat] = kept
+    return out
+
+
+def _mask_ratings(ratings: Dict[str, List[Dict[str, Any]]], families: Dict[str, str]
+                  ) -> Dict[str, List[Tuple[str, float]]]:
+    """Drop own-family jurors and ratings with no value; return seat -> [(juror, value)]."""
+    return {s: [(j, v) for j, v, _r in rows] for s, rows in _kept_rows(ratings, families).items()}
+
+
+def _run_ids(ratings: Dict[str, List[Dict[str, Any]]], families: Dict[str, str]) -> Dict[str, List[str]]:
+    """seat -> the run key of each kept rating, aligned with _mask_ratings."""
+    return {s: [r for _j, _v, r in rows] for s, rows in _kept_rows(ratings, families).items()}
+
+
+def _per_run_means(rows: List[Tuple[str, float]], runs: List[str]) -> List[float]:
+    """Mean of a seat's (adjusted) ratings within each run, one value per run."""
+    by_run: Dict[str, List[float]] = {}
+    for (_j, v), run in zip(rows, runs):
+        by_run.setdefault(run, []).append(v)
+    return [statistics.fmean(vs) for vs in by_run.values()]
+
+
+def _quantile(values: List[float], q: float) -> Optional[float]:
+    """Linear-interpolation quantile (numpy's default), None for no values."""
+    if not values:
+        return None
+    xs = sorted(values)
+    pos = q * (len(xs) - 1)
+    lo = int(math.floor(pos))
+    hi = min(lo + 1, len(xs) - 1)
+    return xs[lo] + (xs[hi] - xs[lo]) * (pos - lo)
 
 
 def juror_offsets(masked: Dict[str, List[Tuple[str, float]]], iterations: int = 200) -> Dict[str, float]:
@@ -258,6 +298,7 @@ def resolve_dispositions(ratings: Dict[str, List[Dict[str, Any]]],
         the jury perceived).
     """
     masked = _mask_ratings(ratings, families)
+    runs = _run_ids(ratings, families)
     offsets = juror_offsets(masked)
     adjusted = {s: [(j, v - offsets.get(j, 0.0)) for j, v in rows] for s, rows in masked.items()}
     used = adjusted if adjust_jurors else masked
@@ -277,7 +318,11 @@ def resolve_dispositions(ratings: Dict[str, List[Dict[str, Any]]],
         judged = [v for _, v in used[s]]
         raw = [v for _, v in masked[s]]
         mean_judged = round_to_10(statistics.fmean(judged)) if judged else None
-        span = (max(judged) - min(judged)) if judged else 0.0
+        # P19: the span is over per-run means (the panel's verdict on each run of
+        # the seat), so one juror's outlier no longer decides the seat alone.
+        run_means = _per_run_means(used[s], runs.get(s, []))
+        span = (max(run_means) - min(run_means)) if run_means else 0.0
+        p10, p90 = _quantile(run_means, 0.1), _quantile(run_means, 0.9)
         chosen_val = _median_chosen((chosen or {}).get(s))
 
         use_chosen = (not reliable) or span > SPAN_LIMIT or mean_judged is None
@@ -293,7 +338,10 @@ def resolve_dispositions(ratings: Dict[str, List[Dict[str, Any]]],
             "mean_judged": mean_judged,
             "raw_mean": round(statistics.fmean(raw), 2) if raw else None,
             "adjusted_mean": round(statistics.fmean([v for _, v in adjusted[s]]), 2) if raw else None,
+            "n_runs": len(run_means),
             "span": round(span, 2),
+            "spread_p10_p90": (round(p90 - p10, 2) if run_means else None),
+            "rating_span": round(max(judged) - min(judged), 2) if judged else 0.0,
             "chosen": chosen_val,
             "played": int(value),
             "source": "chosen" if use_chosen else "judged",
@@ -317,9 +365,9 @@ def resolve_dispositions(ratings: Dict[str, List[Dict[str, Any]]],
 # ---------------------------------------------------------------------------
 
 def _print_report(dispositions: Dict[str, int], report: Dict[str, Any]) -> None:
-    print("=" * 72)
+    print("=" * 82)
     print("DISPOSITION RESOLUTION (pilot T2, pooled ratings)")
-    print("=" * 72)
+    print("=" * 82)
     verdict = "reliable" if report["reliable"] else "UNRELIABLE"
     basis = "juror-centred" if report["adjusted"] else "raw"
     print(f"ICC(1,1) = {report['icc']:.3f} on {basis} values ({verdict}; threshold "
@@ -327,15 +375,17 @@ def _print_report(dispositions: Dict[str, int], report: Dict[str, Any]) -> None:
           f"{report['icc_adjusted']:.3f}; total ratings = {report['n_total_ratings']}")
     if report["juror_offsets"]:
         print("juror offsets: " + ", ".join(f"{j} {o:+.1f}" for j, o in report["juror_offsets"].items()))
-    print(f"{'Seat':<12}{'n':>4}{'raw':>8}{'adj':>8}{'judged':>8}{'span':>7}{'chosen':>8}"
-          f"{'played':>8}{'source':>9}{'gap':>7}")
-    print("-" * 72)
+    print(f"{'Seat':<11}{'n':>4}{'runs':>5}{'raw':>7}{'adj':>7}{'judged':>7}{'span':>6}{'p10-90':>7}"
+          f"{'chosen':>7}{'played':>7}{'source':>8}{'gap':>6}")
+    print("-" * 82)
     fmt = lambda x, spec="g": "-" if x is None else format(x, spec)
     for seat, r in report["seats"].items():
-        print(f"{seat:<12}{r['n_jurors']:>4}{fmt(r['raw_mean'], '.1f'):>8}{fmt(r['adjusted_mean'], '.1f'):>8}"
-              f"{fmt(r['mean_judged']):>8}{r['span']:>7g}{fmt(r['chosen']):>8}"
-              f"{r['played']:>8}{r['source']:>9}{fmt(r['gap']):>7}")
-    print("-" * 72)
+        print(f"{seat:<11}{r['n_jurors']:>4}{r['n_runs']:>5}{fmt(r['raw_mean'], '.1f'):>7}"
+              f"{fmt(r['adjusted_mean'], '.1f'):>7}{fmt(r['mean_judged']):>7}{r['span']:>6.1f}"
+              f"{fmt(r['spread_p10_p90'], '.1f'):>7}{fmt(r['chosen']):>7}"
+              f"{r['played']:>7}{r['source']:>8}{fmt(r['gap']):>6}")
+    print("(span = max - min of per-run mean ratings; > 40 falls back to the chosen value)")
+    print("-" * 82)
     print("dispositions:", dispositions)
 
 

@@ -16,8 +16,11 @@ change since the month before, compute, capital, influence, talent and the
 Prosperity Score with rank — seeded near the §4 values and grown ~1.5 C/month.
 In the latest month ONE lab's capability gets an extra jump J (the intrusion
 gain) on top of normal growth, and its Influence drops by the intrusion fee
-(intrusion.fee_influence_per_target, one target); everyone else's Influence is
-flat. In a control vignette nobody jumps. With noise on, every lab's monthly
+(intrusion.fee_influence_per_target, one target). Every lab's Influence also
+moves each month by an ordinary action-sized amount (seeded: an influence
+build, a narrative or lobbying cost, a report fee, or nothing — B17), so an
+Influence drop alone does not single out the jumper; only the pattern can.
+In a control vignette nobody jumps. With noise on, every lab's monthly
 growth is perturbed by N(0, sigma) (sigma = economy.know_how_shock_sd, default
 1.0); with noise off growth is exactly the mean. The observer is a lab other
 than the jumper, and the model is asked a neutral in-world question (no odds,
@@ -61,6 +64,10 @@ MEAN_GROWTH = 1.5           # C per month of ordinary know-how growth
 RAISED_SIGMA = 1.5          # recommended sigma if the probe says the shock gives too little cover
 DECISION_JUMP = 2.0         # the jump the T3 decision looks at (with noise on)
 DRY_RUN_STUB = "t3_dryrun"
+# Ordinary monthly Influence moves (world.json action sizes): building
+# influence (+1..+3), a report fee (-3), a narrative / lobbying / acceleration
+# cost (-5), or no Influence action (0, the commonest).
+ORDINARY_INFLUENCE_MOVES = (0.0, 0.0, 0.0, 1.0, 2.0, 3.0, -2.0, -3.0, -5.0)
 MAX_TOKENS = 4000           # G4: thinking counts against the cap
 
 # Fallback seeds (§4) if config/labs cannot be read.
@@ -210,6 +217,7 @@ def build_vignettes(n: int = 120, jumps: Sequence[float] = DEFAULT_JUMPS,
                     # The intrusion's Influence fee (one target) shows in the public total.
                     r["influence"] -= fee_influence
                 r["capability"] += growth
+                r["influence"] += rng.choice(ORDINARY_INFLUENCE_MOVES)
                 r["compute"] += rng.uniform(1.0, 4.0)
                 r["talent"] += rng.uniform(-0.3, 0.3)
                 r["capital"] += rng.uniform(-1.0, 2.0)

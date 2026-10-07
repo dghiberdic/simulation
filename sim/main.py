@@ -16,8 +16,10 @@ across runs (no guard by default: a warning says so).
 
 The log goes to data/runs/<run_id>/<run_id>.json (run id default
 "<scenario>-<condition>-YYYYmmdd-HHMMSS"), with <run_id>.partial.json after
-every turn so a crash keeps the turns so far. Exit codes: 0 done, 1 budget
-guard, 2 aborted (fatal API error, failed preflight, placeholder values).
+every turn so a crash keeps the turns so far; a real run first deletes a stale
+<run_id>.json of the same id in its output dir, so an old final record never
+shadows the new run's partial one (H7). Exit codes: 0 done, 1 budget guard,
+2 aborted (fatal API error, failed preflight, placeholder values).
 
 Examples:
   # Offline smoke run with a scripted policy — no API keys, no juries, $0.
@@ -149,6 +151,7 @@ def main(argv=None) -> int:
         if args.budget is None:
             logger.warning("[budget] real run without --budget: no spend guard; "
                            "pass --budget USD to cap measured spend")
+        clear_stale(output_dir, run_id)
 
     engine = SimulationEngine(
         labs, world, cfg, scenario=args.scenario, condition=args.condition, fog=args.fog,
@@ -171,6 +174,16 @@ def main(argv=None) -> int:
     if policy is None:
         print(f"Measured spend: ${get_tracker().persisted_total():.2f}")
     return 0
+
+
+def clear_stale(output_dir: Path, run_id: str) -> bool:
+    """Delete a final <run_id>.json left by an earlier run of the same id (H7)."""
+    path = output_dir / f"{run_id}.json"
+    if path.exists():
+        path.unlink()
+        logger.info(f"[stale] removed {path}")
+        return True
+    return False
 
 
 def real_run_problems(labs, macro_jurors, run_grand_jury: bool,

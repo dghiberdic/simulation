@@ -12,8 +12,10 @@ to name the rating model and date.
 Ships NOT run — the configs keep their placeholder values until a maintainer
 runs this with API keys (real pilot and main runs refuse placeholder values).
 Use --dry-run to exercise it offline (no write), or --lab KEY to do a single
-seat. Real calls go through the shared spend ledger under a --budget guard
-(default $10), after a key preflight.
+seat. Real calls go through the shared spend ledger after a key preflight. The
+guard is the ledger total, so the default is the REMAINING budget: whatever the
+ledger already holds plus $10 (--headroom); --budget sets an absolute ceiling
+instead (P23). Expected cost of all five ratings: about $1.
 
   python rate_charters.py --dry-run          # offline, prints, writes nothing
   python rate_charters.py                     # real: rate all five and write
@@ -26,6 +28,7 @@ import logging
 import sys
 from datetime import date
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -38,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 AXES = VALUE_AXES  # time_horizon, transparency_threshold, risk_tolerance, democratic_tendency
 MAX_TOKENS = 8000  # G4: thinking counts against the cap
-DEFAULT_BUDGET = 10.0
+DEFAULT_HEADROOM = 10.0   # default guard = current ledger total + this
 
 # Rubric kept consistent with core.state.VALUE_AXES docstrings.
 AXIS_RUBRIC = {
@@ -106,13 +109,20 @@ def _stub_reply(system: str, user: str) -> str:
                        "risk_tolerance": 40, "democratic_tendency": 45, "rationale": "stub rating"})
 
 
+def guard_for(spent: float, budget: Optional[float], headroom: float) -> float:
+    """The ledger total at which to stop: --budget if given, else what is spent plus the headroom."""
+    return budget if budget is not None else spent + headroom
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Rate each seat's charter on the four value axes.")
     p.add_argument("--dry-run", action="store_true",
                    help="use stub models; print ratings but write nothing (non-destructive)")
     p.add_argument("--lab", choices=list(LAB_ORDER), default=None, help="rate a single seat")
-    p.add_argument("--budget", type=float, default=DEFAULT_BUDGET,
-                   help=f"halt at this measured spend (USD, shared ledger; default {DEFAULT_BUDGET:g})")
+    p.add_argument("--budget", type=float, default=None,
+                   help="absolute guard on the shared ledger total (USD); default: current total + --headroom")
+    p.add_argument("--headroom", type=float, default=DEFAULT_HEADROOM,
+                   help=f"spend allowed on top of the ledger's current total (default {DEFAULT_HEADROOM:g})")
     p.add_argument("--spend-file", default=None,
                    help="measured-spend ledger (default sim/data/spend.json, shared by all runs)")
     p.add_argument("--verbose", action="store_true")
@@ -129,7 +139,10 @@ def main(argv=None) -> int:
     if args.dry_run:
         register_stub("rate_charters", _stub_reply)
     else:
-        configure(spend_file=Path(args.spend_file) if args.spend_file else None, budget=args.budget)
+        tracker = configure(spend_file=Path(args.spend_file) if args.spend_file else None, budget=None)
+        tracker.set_budget(guard_for(tracker.persisted_total(), args.budget, args.headroom))
+        logger.info(f"[budget] guard ${tracker.budget:.2f} on the shared ledger "
+                    f"(already spent ${tracker.persisted_total():.2f})")
         problems = preflight([c["model"] for c in cfgs.values()],
                              {c["model"]: c["provider"] for c in cfgs.values() if c.get("provider")})
         if problems:

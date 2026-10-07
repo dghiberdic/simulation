@@ -40,7 +40,8 @@ Defensive: a missing grand_jury, a None result or a missing field skips that
 item with a note.
 
 CLI:
-  python tools/jury_check.py <log.json> [<log2.json> ...] [--json]
+  python tools/jury_check.py <log.json|dir> [...] [--json] [--include-dry]
+  (dry-run records are skipped unless --include-dry, H7)
 """
 
 import argparse
@@ -314,18 +315,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(description="Pilot T8 Grand Jury check (spec §7).")
     p.add_argument("logs", nargs="+", help="main-run log JSON files")
     p.add_argument("--json", action="store_true", help="print the report as JSON")
+    p.add_argument("--include-dry", action="store_true", help="read dry-run records too")
     args = p.parse_args(argv)
-    records = []
-    for path in args.logs:
-        try:
-            with open(path) as f:
-                rec = json.load(f)
-            if not isinstance(rec, dict):
-                raise ValueError("not a JSON object")
-            rec.setdefault("run_id", Path(path).stem)
-            records.append(rec)
-        except (OSError, ValueError) as e:
-            print(f"note: could not read {path}: {e}", file=sys.stderr)
+    from tools.summarize_run import load_logs
+    records = [rec for _p, rec in load_logs(args.logs, include_dry=args.include_dry)[0]]
     report = check(records)
     if args.json:
         print(json.dumps(report, indent=2))

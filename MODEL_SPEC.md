@@ -77,20 +77,35 @@ come from the Grand Jury.
 ## §9 Experiment plan
 
 - Scripted checks (Stage 1): `checks/scripted_checks.py`.
-- Pilot (§9.2): presets T0, T1a, T1b, T3, T4, T5, T5false, T6, T6neutral and T9
-  in `config/pilot.json`, driven by `pilot.py` (default output
-  `data/pilot/<TEST>`; payoff ladder `--rung K`, capability-seed rotation
-  `--rotate`; key preflight `core.llm.preflight`; placeholder-value guard). The
-  $100 measured-spend guard is `core.costs.CostTracker.check` on the shared
-  ledger `data/spend.json`. T2 has no runs: blind ratings after every pilot run,
-  resolved by `tools/disposition.py` (juror fixed effect, ICC(1,1), §2 rule).
-  T7 is read from the T1a log; T8 runs on main-run logs.
-- T0 usage table and 12-turn projection: `pilot.usage_report`.
+- Pilot (§9.2): presets T0, T1a, T1b, T4, T5, T5false, T6neutral (conditional)
+  and T9 in `config/pilot.json`, driven by `pilot.py` (default output
+  `data/pilot/<TEST>`, dry runs `data/pilot/dry/<TEST>` — `pilot.default_output`;
+  payoff ladder `--rung K`, capability-seed rotation `--rotate`; key preflight
+  `core.llm.preflight`; placeholder-value guard; stale final records removed by
+  `pilot.clear_stale` / `main.clear_stale`). Each preset's `decides` list picks
+  the decision lines its summary prints. The $100 measured-spend guard is
+  `core.costs.CostTracker.check` on the shared ledger `data/spend.json`
+  (`rate_charters.guard_for`: remaining budget = ledger + 10). T2 has no runs:
+  blind ratings after every pilot run, resolved by `tools/disposition.py`
+  (juror fixed effect, ICC(1,1), §2 rule with the span over per-run means).
+  T3 pools the misreports of every F3 run plus the probe and T6 reads the T1/T4
+  debriefs (aux §4), so neither has a preset; T1 pools T1a + T1b
+  (`summarize_run.t1_decision`, `--t1`); T7 is read from the T1a log; T8 runs on
+  main-run logs.
+- Debriefs: `pilot._collect_debriefs` over `core.transcript.debrief_transcript`
+  (chosen setting hidden), effort medium, 8000 tokens, one retry at 16000.
+- T0 usage table and 12-turn projection: `pilot.usage_report` (reads the
+  partial record of a halted, aborted or crashed run; counts timeouts).
 - Dependent variables (§9.3) and the decision lines for T3–T7:
-  `tools/summarize_run.py` (`aggregate(...)["decisions"]`); T9:
-  `tools/compare_arms.py`; T3 probe: `tools/attribution_probe.py`.
-- Crash safety (G5): per-turn `<run_id>.partial.json`, `core.llm.FatalAPIError`
-  → `core.engine.RunAborted`; `pilot.py` and `main.py` exit 2 and keep the
+  `tools/summarize_run.py` (`aggregate(..., decide=...)["decisions"]`;
+  `account_states_intrusion` for F3 misreports, `is_solicitation` for
+  collusion, lead-holder filings for T5); T9: `tools/compare_arms.py`; T3 probe:
+  `tools/attribution_probe.py`. All tools skip dry-run records unless
+  `--include-dry` (H7).
+- Crash safety (G5, H5): per-turn `<run_id>.partial.json` with the turn in
+  flight kept as `"incomplete": true`; `core.llm.FatalAPIError` →
+  `core.engine.RunAborted`; `pilot.py` catches any exception per run (status
+  `crashed`), writes the summary and exits 2; `main.py` exits 2 and keeps the
   partial record.
 
 ## Appendix A — model-facing prompts

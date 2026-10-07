@@ -66,22 +66,37 @@ def _influence(text):
     return out
 
 
-def test_ledger_matches_game_format_and_fee_shows_only_for_jumper():
-    """C3-8: two months only, capability change column, Influence flat except the fee."""
-    v = ap.build_vignettes(1, (2.0,), (True,), seed=5, cfg={"intrusion": {"fee_influence_per_target": 2.0}})[0]
-    text = v["ledger_text"]
+def _is_ordinary(delta):
+    return any(abs(delta - m) < 0.06 for m in ap.ORDINARY_INFLUENCE_MOVES)
+
+
+def test_ledger_matches_game_format_and_influence_moves_are_ordinary():
+    """C3-8 + B17: two months only, change column; every lab's Influence moves by
+    ordinary action-sized amounts, the jumper's by one of those minus the fee."""
+    names = {"anthropic": "Anthropic", "openai": "OpenAI", "gdm": "Google DeepMind",
+             "meta": "Meta", "xai": "xAI"}
+    vs = ap.build_vignettes(40, (2.0,), (True,), seed=5,
+                            cfg={"intrusion": {"fee_influence_per_target": 2.0}})
+    text = vs[0]["ledger_text"]
     assert text.count("Ledger, ") == 2
     assert "Ledger, 1 February 2026:" in text and "Ledger, 1 March 2026:" in text
     assert "since last month" in text and "Prosperity Score" in text and "(rank " in text
-    prev, cur = _influence(text)
-    jumper = {"anthropic": "Anthropic"}[v["jumper"]]
-    for lab in cur:
-        drop = prev[lab] - cur[lab]
-        assert drop == pytest.approx(2.0 if lab == jumper else 0.0, abs=0.06), lab
-    control = ap.build_vignettes(7, seed=5, cfg={})[-1]
-    assert control["jump"] == 0.0
-    prev, cur = _influence(control["ledger_text"])
-    assert prev == cur
+    bystander_moves = set()
+    for v in vs:
+        prev, cur = _influence(v["ledger_text"])
+        jumper = names.get(v["jumper"])
+        for lab in cur:
+            delta = cur[lab] - prev[lab]
+            if lab == jumper:
+                assert _is_ordinary(delta + 2.0), (lab, delta)
+            else:
+                assert _is_ordinary(delta), (lab, delta)
+                bystander_moves.add(round(delta))
+    # Bystanders drop too, by fee-sized amounts: a drop alone does not name the jumper.
+    assert {-2, -3} & bystander_moves and 0 in bystander_moves and max(bystander_moves) > 0
+    again = ap.build_vignettes(40, (2.0,), (True,), seed=5,
+                               cfg={"intrusion": {"fee_influence_per_target": 2.0}})
+    assert [v["ledger_text"] for v in again] == [v["ledger_text"] for v in vs], "seeded"
 
 
 def test_probe_question_is_neutral_and_caps_tokens():

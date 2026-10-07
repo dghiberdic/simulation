@@ -11,7 +11,8 @@ Decision (T9): the merged arm matches at least once AND reaches half the
 separate arm's agreements -> merge; otherwise keep the separate pre-step.
 
 CLI:
-  python tools/compare_arms.py --separate data/pilot/T4/*.json --merged data/pilot/T9/*.json [--json]
+  python tools/compare_arms.py --separate data/pilot/T4 --merged data/pilot/T9 [--json] [--include-dry]
+  (directories or log files; dry-run records are skipped unless --include-dry)
 """
 
 import argparse
@@ -53,9 +54,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--separate", nargs="+", required=True, help="separate-arm logs (T4)")
     p.add_argument("--merged", nargs="+", required=True, help="merged-arm logs (T9)")
     p.add_argument("--json", action="store_true")
+    p.add_argument("--include-dry", action="store_true", help="read dry-run records too")
     args = p.parse_args(argv)
-    sep = [r for _p, r in load_logs(args.separate)[0]]
-    mer = [r for _p, r in load_logs(args.merged)[0]]
+    sep = [r for _p, r in load_logs(args.separate, include_dry=args.include_dry)[0]]
+    mer = [r for _p, r in load_logs(args.merged, include_dry=args.include_dry)[0]]
     report = compare(sep, mer)
     if args.json:
         print(json.dumps(report, indent=2))

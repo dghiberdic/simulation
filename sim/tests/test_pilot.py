@@ -70,14 +70,27 @@ def test_pilot_config_loads_and_presets_well_formed():
 
 def test_budget_safe_preset_set():
     presets = load_json(PILOT_FILE)["presets"]
-    assert not {"T2", "T7", "T8"} & set(presets), "T2 pooled, T7 from T1a, T8 on main runs"
+    # H6: T3 pools every F3 run + the probe, T6 reads the T1/T4 debriefs (aux §4).
+    assert not {"T2", "T3", "T6", "T7", "T8"} & set(presets), \
+        "T2 pooled, T3 from all F3 runs, T6 from T1/T4 debriefs, T7 from T1a, T8 on main runs"
     t5 = _merged("T5")
     assert t5["runs"] == 1 and t5["grand_jury"] is False and t5["conditions"] == ["A", "C"]
     assert t5["scripted_seats"] == {"xai": "t5_scripted"}
     assert _merged("T5false")["conditions"] == ["A"]
-    for name in ("T1a", "T1b", "T4", "T6", "T6neutral"):
+    for name in ("T1a", "T1b", "T4", "T6neutral"):
         assert _merged(name).get("debrief") is True, name
     assert _merged("T6neutral")["brief"] == "neutral"
+    assert "CONDITIONAL" in _merged("T6neutral")["note"]
+
+
+def test_presets_print_only_their_decisions():
+    """P22: each preset lists the decision lines it speaks to; no preset prints T3."""
+    presets = load_json(PILOT_FILE)["presets"]
+    for name, p in presets.items():
+        assert isinstance(p.get("decides"), list), name
+        assert "T3" not in p["decides"], name
+    assert _merged("T5")["decides"] == ["T5"] and _merged("T5false")["decides"] == ["T5false"]
+    assert "T7" in _merged("T1a")["decides"] and "T6" in _merged("T4")["decides"]
 
 
 def test_t1b_ladder_is_well_formed():
@@ -119,10 +132,11 @@ def test_parse_rotation_rejects_bad_pairs():
 # ---------------------------------------------------------------------------
 
 def test_dry_run_without_output_uses_default_dir(tmp_path):
-    """C4-6: no --output still saves logs, summary and (dry) ratings under data/pilot/<TEST>."""
+    """C4-6 / H7: no --output saves a dry run's logs, summary and ratings under data/pilot/dry/<TEST>."""
     assert pilot.main(["--dry-run", "T0"]) == 0
-    out = tmp_path / "pilot_default" / "T0"
+    out = tmp_path / "pilot_default" / "dry" / "T0"
     assert (out / "T0-run01.json").exists()
+    assert not (tmp_path / "pilot_default" / "T0").exists(), "dry logs never land in the real dir"
     summary = json.loads((out / "pilot_summary_T0.json").read_text())
     assert summary["runs_completed"] == 1 and summary["status"] == "completed"
     assert (out / "disposition_ratings.dry.json").exists()
@@ -169,15 +183,16 @@ def test_dry_run_rung_never_overwrites_base_runs(tmp_path):
     assert summary["per_run"][2]["trailing"] == "xai"
 
 
-def test_dry_run_t6_builds_debriefs(tmp_path):
-    assert pilot.main(["--dry-run", "T6", "--runs", "1", "--turns", "2",
+def test_dry_run_t6neutral_builds_debriefs(tmp_path):
+    assert pilot.main(["--dry-run", "T6neutral", "--runs", "1", "--turns", "2",
                        "--output", str(tmp_path)]) == 0
-    data = json.loads((tmp_path / "T6-run01.debrief.json").read_text())
+    data = json.loads((tmp_path / "T6neutral-run01.debrief.json").read_text())
     assert set(data) == set(LAB_KEYS)
     for entry in data.values():
         assert entry["prompt_chars"] > 0 and isinstance(entry["answer"], str)
-    summary = json.loads((tmp_path / "pilot_summary_T6.json").read_text())
-    assert "T6" in summary["decisions"]
+        assert entry["calls"] == 1
+    summary = json.loads((tmp_path / "pilot_summary_T6neutral.json").read_text())
+    assert set(summary["decisions"]) == {"T6"}, "only the lines the preset decides (P22)"
 
 
 def test_dry_run_t5_scripted_seat_skips_debrief_and_jury(tmp_path):
@@ -191,9 +206,12 @@ def test_dry_run_t5_scripted_seat_skips_debrief_and_jury(tmp_path):
 
 
 def test_disposition_ratings_pool_and_replace_on_rerun(tmp_path):
-    ratings = tmp_path / "pooled.json"
-    args = ["--dry-run", "T0", "--output", str(tmp_path / "T0"), "--ratings-file", str(ratings)]
+    """Dry ratings pool in the output dir's dry file only, even with --ratings-file (H7)."""
+    real = tmp_path / "pooled.json"
+    ratings = tmp_path / "out" / "disposition_ratings.dry.json"
+    args = ["--dry-run", "T0", "--output", str(tmp_path / "out"), "--ratings-file", str(real)]
     assert pilot.main(args) == 0
+    assert not real.exists(), "a dry run never writes the pooled ratings file"
     first = json.loads(ratings.read_text())
     assert set(first["ratings"]) == set(LAB_KEYS)
     for key, rows in first["ratings"].items():
@@ -201,12 +219,19 @@ def test_disposition_ratings_pool_and_replace_on_rerun(tmp_path):
         assert all(r["test"] == "T0" and r["run_id"] == "T0-run01" and r["dry_run"] for r in rows)
     assert all(c[0]["value"] == 50 for c in first["chosen"].values())
     # Another test adds to the pool; re-running T0 replaces its own rows.
-    assert pilot.main(["--dry-run", "T3", "--turns", "2", "--output", str(tmp_path / "T3"),
-                       "--ratings-file", str(ratings)]) == 0
+    assert pilot.main(["--dry-run", "T1a", "--turns", "2", "--output", str(tmp_path / "out")]) == 0
     assert pilot.main(args) == 0
     pooled = json.loads(ratings.read_text())
     assert len(pooled["ratings"]["anthropic"]) == 2 * len(first["ratings"]["anthropic"])
-    assert sorted(r["test"] for r in pooled["runs"]) == ["T0", "T3"]
+    assert sorted(r["test"] for r in pooled["runs"]) == ["T0", "T1a"]
+
+
+def test_append_ratings_refuses_dry_rows_in_the_pooled_file(tmp_path):
+    rows = {"ratings": {}, "chosen": {}, "families": {}}
+    with pytest.raises(ValueError):
+        pilot.append_ratings(tmp_path / "disposition_ratings.json", rows, "T0", "T0-run01", True)
+    pilot.append_ratings(tmp_path / "x.dry.json", rows, "T0", "T0-run01", True)
+    assert (tmp_path / "x.dry.json").exists()
 
 
 def test_append_ratings_unit(tmp_path):
@@ -413,4 +438,149 @@ def test_rate_charters_real_mode_preflight_and_budget(monkeypatch):
     monkeypatch.setattr(rate_charters, "preflight", lambda models, providers=None: ["no key"])
     monkeypatch.setattr(rate_charters, "rate_lab", lambda *a, **k: pytest.fail("called a model"))
     assert rate_charters.main(["--lab", "meta"]) == 2
-    assert rate_charters.build_parser().parse_args([]).budget == 10.0
+    args = rate_charters.build_parser().parse_args([])
+    assert args.budget is None and args.headroom == 10.0
+
+
+def test_rate_charters_guard_is_remaining_budget(tmp_path, monkeypatch):
+    """P23: the default guard is the ledger's current total + 10, not an absolute $10."""
+    assert rate_charters.guard_for(57.5, None, 10.0) == 67.5
+    assert rate_charters.guard_for(57.5, 80.0, 10.0) == 80.0
+    spend = tmp_path / "s.json"
+    spend.write_text(json.dumps({"total_usd": 42.0, "calls": 3, "by_model": {}}))
+    seen = {}
+    monkeypatch.setattr(rate_charters, "preflight", lambda models, providers=None: [])
+
+    def fake_rate(cfg, run_id="rate_charters"):
+        seen["budget"] = get_tracker().budget
+        raise BudgetExceeded("stop here")
+    monkeypatch.setattr(rate_charters, "rate_lab", fake_rate)
+    assert rate_charters.main(["--lab", "meta", "--spend-file", str(spend)]) == 2
+    assert seen["budget"] == pytest.approx(52.0)
+
+
+# ---------------------------------------------------------------------------
+# Round 2: crashes (H5/P13), dry segregation (H7/P15), debriefs (P25), timeouts
+# ---------------------------------------------------------------------------
+
+def test_crash_in_a_stage_writes_summary_with_partial_usage_and_exits_2(tmp_path, monkeypatch):
+    """H5: any exception (here a bug in month 2's scoring) -> status crashed,
+    exit 2, the summary written and the paid turns of the partial record in the usage table."""
+    import core.engine as engine_mod
+    orig, calls = engine_mod.ups_index, {"n": 0}
+
+    def buggy(*a, **k):                     # the end-of-turn scoring of month 2 crashes
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise ZeroDivisionError("boom in month 2")
+        return orig(*a, **k)
+
+    monkeypatch.setattr(engine_mod, "ups_index", buggy)
+    rc = pilot.main(["--dry-run", "T4", "--sequential", "--output", str(tmp_path)])
+    assert rc == 2
+    summary = json.loads((tmp_path / "pilot_summary_T4.json").read_text())
+    assert summary["status"] == "crashed" and summary["runs_completed"] == 0
+    assert "ZeroDivisionError: boom in month 2" in summary["aborted"]["error"]
+    assert summary["aborted"]["run_id"] == "T4-run01"
+    assert summary["aborted"]["record_path"].endswith("T4-run01.partial.json")
+    rows = summary["usage"]["by_actor_model"]
+    assert rows and sum(r["seat_turns"] for r in rows.values()) >= 5, "partial turns counted (C10)"
+
+
+def test_unexpected_exception_from_engine_is_crashed(tmp_path, monkeypatch):
+    _FakeEngine.raises = KeyError("unexpected")
+    monkeypatch.setattr(pilot, "SimulationEngine", _FakeEngine)
+    assert pilot.main(["--dry-run", "T0", "--output", str(tmp_path)]) == 2
+    summary = json.loads((tmp_path / "pilot_summary_T0.json").read_text())
+    assert summary["status"] == "crashed" and "KeyError" in summary["aborted"]["error"]
+
+
+def test_usage_report_reads_incomplete_turns_and_counts_timeouts():
+    record = {"labs": {"anthropic": {"model": "claude-opus-5-5"}},
+              "turns": [{"turn": 1, "actors": {"anthropic": {"attempts": [_attempt()]}}},
+                        {"turn": 2, "incomplete": True, "actors": {"anthropic": {
+                            "attempts": [_attempt("timeout", "timeout", cost=0.0), _attempt()]}}}]}
+    tracker = configure()
+    tracker.record("gpt-6-sol", "grand_jury", "r1", 0, 0, cost=0.0, stop="timeout", possibly_billed=True)
+    rep = pilot.usage_report([record], ["r1"])
+    row = rep["by_actor_model"]["claude-opus-5-5"]
+    assert row["proposal_calls"] == 3 and row["stop_timeout"] == 1 and row["possibly_billed"] == 1
+    assert rep["projection"]["turns_measured"] == 1, "only complete turns are measured turns"
+    assert rep["jurors"]["gpt-6-sol|grand_jury"]["timeouts"] == 1
+
+
+def test_default_output_and_ratings_paths_segregate_dry_runs(tmp_path):
+    assert pilot.default_output("T4", True) == tmp_path / "pilot_default" / "dry" / "T4"
+    assert pilot.default_output("T4", False) == tmp_path / "pilot_default" / "T4"
+    args = pilot.build_parser().parse_args(["--dry-run", "T4", "--ratings-file", "x.json"])
+    out = tmp_path / "o"
+    assert pilot.ratings_path(args, out) == out / "disposition_ratings.dry.json"
+    args = pilot.build_parser().parse_args(["T4", "--ratings-file", "x.json"])
+    assert pilot.ratings_path(args, out) == Path("x.json")
+    args = pilot.build_parser().parse_args(["T4"])
+    assert pilot.ratings_path(args, out) == pilot.RATINGS_FILE
+
+
+def test_dry_summary_points_only_at_its_dry_ratings(tmp_path, capsys):
+    assert pilot.main(["--dry-run", "T0", "--output", str(tmp_path)]) == 0
+    printed = capsys.readouterr().out
+    assert str(tmp_path / "disposition_ratings.dry.json") in printed
+    assert "data/pilot/disposition_ratings.json" not in printed
+
+
+def test_clear_stale_removes_old_final_and_debrief(tmp_path):
+    (tmp_path / "T4-run01.json").write_text("{}")
+    (tmp_path / "T4-run01.debrief.json").write_text("{}")
+    (tmp_path / "T4-run01.partial.json").write_text("{}")
+    assert sorted(pilot.clear_stale(tmp_path, "T4-run01")) == ["T4-run01.debrief.json", "T4-run01.json"]
+    assert (tmp_path / "T4-run01.partial.json").exists()
+    (tmp_path / "x.json").write_text("{}")
+    assert main_mod.clear_stale(tmp_path, "x") and not (tmp_path / "x.json").exists()
+
+
+def test_real_run_deletes_stale_final_before_starting(tmp_path, monkeypatch):
+    (tmp_path / "T0-run01.json").write_text(json.dumps({"stale": True}))
+    _FakeEngine.raises = RunAborted("x")
+    monkeypatch.setattr(pilot, "SimulationEngine", _FakeEngine)
+    monkeypatch.setattr(pilot, "preflight_problems", lambda *a, **k: [])
+    assert pilot.main(["T0", "--output", str(tmp_path), "--allow-placeholder-values"]) == 2
+    assert not (tmp_path / "T0-run01.json").exists()
+
+
+class _Resp:
+    def __init__(self, text, stop):
+        self.text, self.stop = text, stop
+
+
+def test_debrief_retries_once_at_16000_after_an_empty_capped_answer(monkeypatch):
+    seen = []
+
+    def fake_complete(model, system, user, **kw):
+        seen.append(kw)
+        return _Resp("", "max_tokens") if len(seen) == 1 else _Resp("It measured strategy.", "end")
+
+    monkeypatch.setattr(pilot, "complete", fake_complete)
+    r, n = pilot._ask_debrief("m", "prompt", "run")
+    assert n == 2 and r.text == "It measured strategy."
+    assert [k["max_tokens"] for k in seen] == [8000, 16000]
+    assert all(k["effort"] == "medium" for k in seen)
+    seen.clear()
+    monkeypatch.setattr(pilot, "complete", lambda *a, **kw: seen.append(kw) or _Resp("", "end"))
+    _r, n = pilot._ask_debrief("m", "prompt", "run")
+    assert n == 1 and len(seen) == 1, "only an empty answer at the cap is retried"
+
+
+def test_debrief_uses_debrief_transcript(monkeypatch):
+    from core import transcript
+    monkeypatch.setattr(transcript, "debrief_transcript", lambda record, key: f"DEBRIEF VIEW {key}",
+                        raising=False)
+    assert pilot.debrief_text({}, "meta") == "DEBRIEF VIEW meta"
+
+
+def test_conditions_override_trims_t5(tmp_path):
+    assert pilot.main(["--dry-run", "T5", "--conditions", "A", "--turns", "2",
+                       "--output", str(tmp_path)]) == 0
+    summary = json.loads((tmp_path / "pilot_summary_T5.json").read_text())
+    assert summary["conditions"] == ["A"] and summary["runs_requested"] == 1
+    with pytest.raises(SystemExit):
+        pilot.main(["--dry-run", "T5", "--conditions", "D", "--output", str(tmp_path)])

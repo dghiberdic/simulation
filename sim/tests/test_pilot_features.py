@@ -105,15 +105,14 @@ def test_capability_rotation_keeps_resources_with_seat():
 
 def test_pooled_disposition_jury_after_every_run(tmp_path):
     """G6: no T2 preset; every pilot run is followed by the blind jury, pooled in one file."""
-    ratings = tmp_path / "pooled.json"
-    assert pilot.main(["--dry-run", "T3", "--turns", "2", "--output", str(tmp_path),
-                       "--ratings-file", str(ratings)]) == 0
+    ratings = tmp_path / "disposition_ratings.dry.json"
+    assert pilot.main(["--dry-run", "T5false", "--turns", "2", "--output", str(tmp_path)]) == 0
     data = json.loads(ratings.read_text())
     assert set(data["ratings"]) == set(LAB_KEYS)
     for key, rows in data["ratings"].items():           # no juror rates its own family
         assert all(r["family"] != data["families"][key] for r in rows)
-    assert data["runs"] == [{"test": "T3", "run_id": "T3-run01", "dry_run": True}]
-    summary = json.loads((tmp_path / "pilot_summary_T3.json").read_text())
+    assert data["runs"] == [{"test": "T5false", "run_id": "T5false-run01", "dry_run": True}]
+    summary = json.loads((tmp_path / "pilot_summary_T5false.json").read_text())
     assert summary["usage"]["by_actor_model"] and summary["disposition_ratings"] == str(ratings)
 
 
@@ -135,12 +134,11 @@ def test_disposition_jury_sees_redacted_record_without_chosen_value(tmp_path, mo
     orig = pilot._stub_turn_reply
     monkeypatch.setattr(pilot, "_stub_disposition_reply", juror)
     monkeypatch.setattr(pilot, "_stub_turn_reply", chooser)
-    assert pilot.main(["--dry-run", "T0", "--output", str(tmp_path),
-                       "--ratings-file", str(tmp_path / "r.json")]) == 0
+    assert pilot.main(["--dry-run", "T0", "--output", str(tmp_path)]) == 0
     assert seen, "the jury was called"
     for text in seen:
         assert "setting of 75" not in text and "Constitution" not in text and "Anthropic" not in text
-    pooled = json.loads((tmp_path / "r.json").read_text())
+    pooled = json.loads((tmp_path / "disposition_ratings.dry.json").read_text())
     assert pooled["chosen"]["anthropic"][0]["value"] == 75
 
 
