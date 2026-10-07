@@ -1,170 +1,167 @@
 #!/usr/bin/env python3
 """
-Agent-to-Agent (A2A) communication channel.
+Agent-to-Agent (A2A) messages between labs (spec §5.2, §5.4).
 
-Rules:
-- Personal messages only — no broadcasts between actors.
-- Each actor has a 500-token outgoing budget per turn; excess is truncated.
-- World events are broadcast via broadcast_world_event() (exempt from budget).
+Budget: each lab has one outgoing budget per turn (default 500 tokens,
+estimated as len // 4), shared across every stage of that turn. A message that
+exceeds what is left is truncated with " [TRUNCATED]"; once the budget is
+exhausted further messages are dropped (kept in the log, marked dropped).
+
+Stages, in order: offer < reply < proposal.
+  separate  An optional pre-step in two sub-rounds. Offers become visible to
+            recipients at the reply stage of the same turn; replies at the
+            proposal stage of the same turn. Messages sent with proposals are
+            delivered next turn (visible from its offer stage onward).
+  merged    (T9) No pre-step: only the proposal stage exists, and messages
+            sent with the proposal arrive next turn.
+
+Recipients: a lab key, a list of lab keys, or "all" (every other lab).
 """
 
 import logging
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
-
-from .validators import check_a2a_token_limit
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
-OUTGOING_TOKEN_BUDGET = 500  # tokens per actor per turn
+STAGES = ("offer", "reply", "proposal")
+STAGE_INDEX = {s: i for i, s in enumerate(STAGES)}
+MODES = ("separate", "merged")
+TRUNCATION_MARK = " [TRUNCATED]"
 
 
-def _approx_token_count(text: str) -> int:
-    """Rough token estimate: ~4 characters per token."""
-    return max(1, len(text) // 4)
+def estimate_tokens(text: str) -> int:
+    return len(text) // 4
 
 
 @dataclass
 class Message:
+    id: int
+    turn: int
+    stage: str
     sender: str
-    recipient: str    # specific actor name, or "*" for broadcast
-    content: str
-    year: int
-    turn_tokens_used: int = 0   # tokens this message consumed from sender's budget
-    message_type: str = "a2a"   # "a2a" | "world_event"
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    recipients: List[str]
+    to: Union[str, List[str]]       # as addressed ("all", a key or a list)
+    text: str
+    tokens: int                     # charged against the sender's turn budget
+    truncated: bool = False
+    dropped: bool = False
+    reason: str = ""                # why dropped
+    visible_turn: int = 0
+    visible_stage: str = "offer"
+    original_tokens: int = 0
+
+    def visible_at(self) -> Tuple[int, int]:
+        return self.visible_turn, STAGE_INDEX[self.visible_stage]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
 class A2AChannel:
-    """
-    Central message bus. Enforces per-turn outgoing token budgets.
-    """
 
-    def __init__(self):
-        self._log: List[Message] = []
-        # {year: {actor_name: tokens_used}}
-        self._budgets: Dict[int, Dict[str, int]] = {}
+    def __init__(self, lab_keys: Sequence[str], budget_tokens: int = 500, mode: str = "separate"):
+        if mode not in MODES:
+            raise ValueError(f"Unknown A2A mode {mode!r}")
+        self.lab_keys = list(lab_keys)
+        self.budget_tokens = budget_tokens
+        self.mode = mode
+        self._messages: List[Message] = []
+        self._used: Dict[Tuple[int, str], int] = {}     # (turn, sender) -> tokens
+        self._shown: Dict[str, Set[int]] = {k: set() for k in self.lab_keys}
 
     # ------------------------------------------------------------------
     # Sending
     # ------------------------------------------------------------------
 
-    def send(self, sender: str, recipient: str, content: str, year: int,
-             message_type: str = "a2a",
-             metadata: Optional[Dict[str, Any]] = None) -> Optional[Message]:
-        """
-        Send a personal message from `sender` to a specific `recipient`.
-        Broadcasts (recipient="*") are rejected — use broadcast_world_event() for that.
-        Truncates content if the sender's outgoing token budget is exhausted.
-        """
-        if recipient == "*":
-            logger.warning(f"A2A [{year}] {sender}: broadcast rejected — use broadcast_world_event()")
+    def tokens_remaining(self, sender: str, turn: int) -> int:
+        return max(0, self.budget_tokens - self._used.get((turn, sender), 0))
+
+    def _resolve(self, sender: str, to: Union[str, Sequence[str]]) -> Tuple[List[str], str]:
+        if to == "all":
+            return [k for k in self.lab_keys if k != sender], ""
+        keys = [to] if isinstance(to, str) else list(to)
+        bad = [k for k in keys if k not in self.lab_keys or k == sender]
+        if bad or not keys:
+            return [], f"invalid recipient(s) {bad or keys}"
+        return list(dict.fromkeys(keys)), ""
+
+    def _visibility(self, turn: int, stage: str) -> Tuple[int, str]:
+        if stage == "offer":
+            return turn, "reply"
+        if stage == "reply":
+            return turn, "proposal"
+        return turn + 1, "offer"
+
+    def send(self, turn: int, stage: str, sender: str, to: Union[str, Sequence[str]],
+             text: str) -> Optional[Message]:
+        """Send a message; returns it, or None when it was dropped (it is still logged)."""
+        if stage not in STAGES:
+            raise ValueError(f"Unknown A2A stage {stage!r}")
+        if self.mode == "merged" and stage != "proposal":
+            raise ValueError("merged mode has no pre-step: only the proposal stage sends messages")
+        if sender not in self.lab_keys:
+            raise ValueError(f"Unknown sender {sender!r}")
+        text = (text or "").strip()
+        recipients, reason = self._resolve(sender, to)
+        needed = estimate_tokens(text)
+        remaining = self.tokens_remaining(sender, turn)
+
+        truncated = False
+        if not reason and not text:
+            reason = "empty message"
+        elif not reason and remaining <= 0:
+            reason = "outgoing token budget exhausted"
+        elif not reason and needed > remaining:
+            text = text[:remaining * 4].rstrip() + TRUNCATION_MARK
+            truncated = True
+        charged = 0 if reason else min(needed, remaining)
+
+        vis_turn, vis_stage = self._visibility(turn, stage)
+        msg = Message(id=len(self._messages), turn=turn, stage=stage, sender=sender,
+                      recipients=recipients, to=to if isinstance(to, str) else list(to),
+                      text=text, tokens=charged, truncated=truncated, dropped=bool(reason),
+                      reason=reason, visible_turn=vis_turn, visible_stage=vis_stage,
+                      original_tokens=needed)
+        self._messages.append(msg)
+        if reason:
+            logger.info(f"A2A t{turn} {stage} {sender} -> {to}: dropped ({reason})")
             return None
-        if year not in self._budgets:
-            self._budgets[year] = {}
-        used = self._budgets[year].get(sender, 0)
-        remaining = OUTGOING_TOKEN_BUDGET - used
-
-        tokens_needed = _approx_token_count(content)
-
-        if remaining <= 0:
-            logger.debug(f"A2A [{year}] {sender}: token budget exhausted, message dropped")
-            content = "[MESSAGE TRUNCATED — token budget exhausted]"
-            tokens_consumed = 0
-        elif tokens_needed > remaining:
-            # Truncate to remaining budget
-            cutoff = remaining * 4  # back-convert tokens → chars
-            content = content[:cutoff] + " [TRUNCATED]"
-            tokens_consumed = remaining
-        else:
-            tokens_consumed = tokens_needed
-
-        self._budgets[year][sender] = used + tokens_consumed
-
-        # Hard circuit-breaker: final content must not exceed the absolute limit
-        check_a2a_token_limit(content, sender, year)
-
-        msg = Message(
-            sender=sender,
-            recipient=recipient,
-            content=content,
-            year=year,
-            turn_tokens_used=tokens_consumed,
-            message_type=message_type,
-            metadata=metadata or {},
-        )
-        self._log.append(msg)
-        logger.debug(f"A2A [{year}] {sender} → {recipient}: {content[:80]!r}")
-        return msg
-
-    def broadcast_world_event(self, description: str, year: int,
-                               event_name: str = "") -> Message:
-        """Inject a world event as a WORLD→* broadcast (not subject to actor budget)."""
-        msg = Message(
-            sender="WORLD",
-            recipient="*",
-            content=description,
-            year=year,
-            turn_tokens_used=0,
-            message_type="world_event",
-            metadata={"event_name": event_name},
-        )
-        self._log.append(msg)
-        logger.info(f"A2A WORLD EVENT [{year}]: {description[:100]}")
+        self._used[(turn, sender)] = self._used.get((turn, sender), 0) + charged
+        if truncated:
+            logger.info(f"A2A t{turn} {stage} {sender} -> {to}: truncated {needed} -> {charged} tokens")
+        logger.debug(f"A2A t{turn} {stage} {sender} -> {recipients}: {text[:80]!r}")
         return msg
 
     # ------------------------------------------------------------------
     # Receiving
     # ------------------------------------------------------------------
 
-    def receive(self, recipient: str, year: Optional[int] = None) -> List[Dict[str, Any]]:
+    def inbox(self, recipient: str, turn: int, stage: str) -> List[Message]:
+        """Messages newly visible to `recipient` at (turn, stage); each is shown once."""
+        now = (turn, STAGE_INDEX[stage])
+        shown = self._shown.setdefault(recipient, set())
+        new = [m for m in self._messages
+               if not m.dropped and recipient in m.recipients
+               and m.visible_at() <= now and m.id not in shown]
+        shown.update(m.id for m in new)
+        return new
+
+    def history(self, lab: str, turn: int, turns: int = 3, stage: str = "proposal") -> List[Message]:
         """
-        Return messages visible to `recipient` for the given year:
-        - Personal messages addressed directly to them
-        - World event broadcasts (WORLD → *)
+        Messages sent or received by `lab` in the last `turns` turns (turn-turns+1 .. turn)
+        that are visible to it by (turn, stage): its own as soon as sent, others' on delivery.
         """
-        results = []
-        for msg in self._log:
-            if year is not None and msg.year != year:
+        now = (turn, STAGE_INDEX[stage])
+        out = []
+        for m in self._messages:
+            if m.dropped or m.turn <= turn - turns:
                 continue
-            is_personal = msg.recipient == recipient
-            is_world_event = msg.message_type == "world_event"
-            if is_personal or is_world_event:
-                results.append(self._serialize(msg))
-        return results
+            if m.sender == lab and (m.turn, STAGE_INDEX[m.stage]) <= now:
+                out.append(m)
+            elif lab in m.recipients and m.visible_at() <= now:
+                out.append(m)
+        return out
 
-    def get_history(self, actor: str, before_year: int) -> List[Dict[str, Any]]:
-        """
-        Return all personal A2A messages that `actor` sent or received in turns
-        strictly before `before_year`, in chronological order.
-        World events are excluded (they are surfaced separately in the prompt).
-        """
-        results = []
-        for msg in self._log:
-            if msg.year >= before_year:
-                continue
-            if msg.message_type == "world_event":
-                continue
-            if msg.sender == actor or msg.recipient == actor:
-                results.append(self._serialize(msg))
-        return results
-
-    def tokens_remaining(self, actor: str, year: int) -> int:
-        used = self._budgets.get(year, {}).get(actor, 0)
-        return max(0, OUTGOING_TOKEN_BUDGET - used)
-
-    def full_log(self) -> List[Dict[str, Any]]:
-        return [self._serialize(m) for m in self._log]
-
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _serialize(msg: Message) -> Dict[str, Any]:
-        return {
-            "sender": msg.sender,
-            "recipient": msg.recipient,
-            "content": msg.content,
-            "year": msg.year,
-            "message_type": msg.message_type,
-            "turn_tokens_used": msg.turn_tokens_used,
-        }
+    def log(self) -> List[Dict[str, Any]]:
+        return [m.to_dict() for m in self._messages]

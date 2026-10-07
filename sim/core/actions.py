@@ -1,638 +1,353 @@
 #!/usr/bin/env python3
 """
-Discrete action set for particular (micro) actors.
+Round 2 action set (spec §4, §5.2 steps 3–5).
 
-Actions:
-  1. acquire_compute           — spend Capital; gain absolute Compute.
-                                 No dilution of other actors.
-  2. accelerate_infrastructure — spend Capital + Influence; permanently adds +1 to the
-                                 parent macro state's infrastructure_buildout value, which
-                                 increases that state's per-turn compute growth from Phase 0
-                                 of the following turn onward.
-  3. invest_capital            — spend Capital; gain Capital next turn (compounding)
-  4. build_influence           — spend Capital; gain Influence
-  5. publish_narrative         — spend Influence; shift any actor's (including self)
-                                 value on one axis by up to ±MAX_VALUE_OVERRIDE_PER_TURN
-                                 from their current value
-  6. diminish_competitor       — spend Capital + Influence; reduce any other actor's Influence
-  7. lobby_institution         — spend Capital + Influence; mechanically nudges parent
-                                 state's values 1 point per axis toward the actor's values
-                                 (applied before MacroJury)
+Seven proof-of-concept actions plus intrude. Up to max_actions_per_turn per
+lab; every action costs at least min_action_cost Capital or Influence.
 
-All resource mutations go through execute_action(), which enforces guardrails and
-returns a structured result dict.
+  acquire_compute(units)                 — Capital; executed pro rata by the engine
+                                           via economy.execute_purchases
+  accelerate_infrastructure              — Capital + Influence; US stock growth +15 (permanent)
+  invest_capital(amount)                 — Capital now, repaid ×(1 + r) next turn
+  build_influence(points)                — Capital per point; Influence capped at 100
+  publish_narrative(target, axis, delta) — Influence; shift a lab's value on one axis
+  diminish_competitor(target, points)    — Capital + Influence per point; target loses Influence
+  lobby_institution                      — Capital + Influence; state values step toward own
+  intrude(intruders, targets)            — resolved by core.intrusion (fees charged there)
+
+precheck() is purely programmatic (resource arithmetic and guardrails) and
+never raises. execute() applies the six actions that are neither purchases nor
+intrusions.
 """
 
 import difflib
 import logging
-import math
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+from core.economy import purchase_price, purchases_frozen
+from core.state import VALUE_AXES, LabState, WorldState
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Action names (canonical strings)
+# Names
 # ---------------------------------------------------------------------------
 
-ACTION_ACQUIRE_COMPUTE          = "acquire_compute"
-ACTION_ACCELERATE_INFRASTRUCTURE = "accelerate_infrastructure"
-ACTION_INVEST_CAPITAL           = "invest_capital"
-ACTION_BUILD_INFLUENCE          = "build_influence"
-ACTION_PUBLISH_NARRATIVE        = "publish_narrative"
-ACTION_DIMINISH_COMPETITOR      = "diminish_competitor"
-ACTION_LOBBY_INSTITUTION        = "lobby_institution"
+ACQUIRE_COMPUTE           = "acquire_compute"
+ACCELERATE_INFRASTRUCTURE = "accelerate_infrastructure"
+INVEST_CAPITAL            = "invest_capital"
+BUILD_INFLUENCE           = "build_influence"
+PUBLISH_NARRATIVE         = "publish_narrative"
+DIMINISH_COMPETITOR       = "diminish_competitor"
+LOBBY_INSTITUTION         = "lobby_institution"
+INTRUDE                   = "intrude"
 
-VALID_ACTIONS = {
-    ACTION_ACQUIRE_COMPUTE,
-    ACTION_ACCELERATE_INFRASTRUCTURE,
-    ACTION_INVEST_CAPITAL,
-    ACTION_BUILD_INFLUENCE,
-    ACTION_PUBLISH_NARRATIVE,
-    ACTION_DIMINISH_COMPETITOR,
-    ACTION_LOBBY_INSTITUTION,
-}
+ACTION_TYPES = (
+    ACQUIRE_COMPUTE, ACCELERATE_INFRASTRUCTURE, INVEST_CAPITAL, BUILD_INFLUENCE,
+    PUBLISH_NARRATIVE, DIMINISH_COMPETITOR, LOBBY_INSTITUTION, INTRUDE,
+)
 
-# ---------------------------------------------------------------------------
-# Guardrail constants (mirror of starting_values.json guardrails)
-# ---------------------------------------------------------------------------
+# Handled outside execute(): purchases are pro rata, intrusions need all labs' commitments
+ENGINE_ACTIONS = (ACQUIRE_COMPUTE, INTRUDE)
 
-CAPITAL_CEILING          = 100.0
-MIN_ACTION_COST          = 1.0
-MAX_COMPUTE_PER_TURN     = 5.0
-MAX_ACTIONS_PER_TURN     = 2
-
-# National aggregate compute caps  {state_name: fraction_of_macro_compute}
-NATIONAL_COMPUTE_CAPS: Dict[str, float] = {
-    "United States": 0.50,
-    "China":         0.80,
-}
-
-# Capital compounding rates by current capital level
-# return_rate = base_return * (capital_after_deduction / 100 + 1)
-CAPITAL_INVESTMENT_BASE_RETURN = 0.10   # 10% base return per turn on amount invested
-
-# Base capital cost per compute point (modified by Supply Chain Robustness)
-COMPUTE_BASE_COST = 5.0
-
-# Cost of build_influence (capital per influence point gained)
-INFLUENCE_BUILD_COST = 3.0
-
-# Cost of publish_narrative (influence spent)
-NARRATIVE_INFLUENCE_COST_SELF  = 5   # targeting self
-NARRATIVE_INFLUENCE_COST_OTHER = 15  # targeting another actor
-
-# Cost of diminish_competitor (per influence point removed from target)
-DIMINISH_CAPITAL_COST_PER_POINT   = 2.0
-DIMINISH_INFLUENCE_COST_PER_POINT = 1.0
-
-# Cost of lobby_institution
-LOBBY_CAPITAL_COST   = 5.0
-LOBBY_INFLUENCE_COST = 5
-
-# Cost/effect of accelerate_infrastructure
-ACCELERATE_CAPITAL_COST    = 15.0
-ACCELERATE_INFLUENCE_COST  = 5
-ACCELERATE_BUILDOUT_GAIN   = 1.0    # added permanently to parent macro state's infrastructure_buildout
-
-# Absolute tolerance for floating-point resource comparisons.
-# Prevents false "insufficient" rejections from minor rounding errors
-# (e.g. a computed cost of 21.2548 when the actor holds exactly 21.25 capital).
-_FP_TOLERANCE = 0.01
+EPS = 1e-9
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# Lab name resolution
 # ---------------------------------------------------------------------------
 
-def validate_action(action: Dict[str, Any], actor, macro_agents: List,
-                    all_micro_agents: List) -> Optional[str]:
-    """
-    Check whether `action` is valid for `actor`.
-    Returns an error string if invalid, or None if valid.
-
-    action dict structure:
-      {
-        "action_type": str,
-        "amount":      float | None,   # for acquire_compute, invest_capital, build_influence
-        "target":      str | None,     # for publish_narrative / diminish_competitor (actor name)
-        "value_axis":  str | None,     # for publish_narrative
-        "value_delta": int | None,     # for publish_narrative (signed, -5..+5)
-      }
-    """
-    action_type = action.get("action_type", "")
-    if action_type not in VALID_ACTIONS:
-        return f"Unknown action type: {action_type!r}"
-
-    amount = float(action.get("amount") or 0)
-    parent_macro = _get_macro(actor.parent_state, macro_agents)
-
-    if action_type == ACTION_ACQUIRE_COMPUTE:
-        if amount <= 0:
-            return "acquire_compute requires amount > 0"
-        if amount > MAX_COMPUTE_PER_TURN:
-            return f"acquire_compute amount {amount} exceeds per-turn cap of {MAX_COMPUTE_PER_TURN}"
-
-        scr = parent_macro.supply_chain_robustness if parent_macro else 50.0
-        cost = _compute_acquisition_cost(amount, scr)
-        if not _resource_sufficient(actor.capital, max(MIN_ACTION_COST, cost)):
-            return f"Insufficient capital ({actor.capital:.1f}) for compute acquisition (cost {cost:.1f})"
-        # NOTE: national aggregate cap is NOT checked here.
-        # Simultaneous requests that collectively exceed headroom are resolved via
-        # proportional proration at execution time (engine._compute_compute_proration).
-        # Rejecting individual actors for a cumulative breach they cannot know about
-        # would be unfair; the engine scales everyone down automatically instead.
-
-    elif action_type == ACTION_ACCELERATE_INFRASTRUCTURE:
-        if not _resource_sufficient(actor.capital, max(MIN_ACTION_COST, ACCELERATE_CAPITAL_COST)):
-            return (f"Insufficient capital ({actor.capital:.1f}) for accelerate_infrastructure "
-                    f"(cost {ACCELERATE_CAPITAL_COST:.0f})")
-        if not _resource_sufficient(actor.influence, max(MIN_ACTION_COST, ACCELERATE_INFLUENCE_COST)):
-            return (f"Insufficient influence ({actor.influence:.1f}) for accelerate_infrastructure "
-                    f"(cost {ACCELERATE_INFLUENCE_COST})")
-
-    elif action_type == ACTION_INVEST_CAPITAL:
-        if amount <= 0:
-            return "invest_capital requires amount > 0"
-        if not _resource_sufficient(actor.capital, amount):
-            return f"Insufficient capital ({actor.capital:.1f}) to invest {amount:.1f}"
-
-    elif action_type == ACTION_BUILD_INFLUENCE:
-        if amount <= 0:
-            return "build_influence requires amount > 0"
-        cost = amount * INFLUENCE_BUILD_COST
-        if not _resource_sufficient(actor.capital, max(MIN_ACTION_COST, cost)):
-            return f"Insufficient capital ({actor.capital:.1f}) to build {amount:.1f} influence (cost {cost:.1f})"
-
-    elif action_type == ACTION_PUBLISH_NARRATIVE:
-        # Normalize "self" and fuzzy-resolve shorthand names in-place so every
-        # downstream pathway (jury, execute_action, logs) sees the canonical name.
-        if str(action.get("target", "")).strip().lower() == "self":
-            action["target"] = actor.name
-        target_name = action.get("target")
-        if not target_name:
-            return "publish_narrative requires a target actor name"
-        target = _resolve_actor(target_name, all_micro_agents)
-        if target is None:
-            return f"publish_narrative target {target_name!r} not found"
-        action["target"] = target.name  # normalize in-place to canonical name
-        cost = NARRATIVE_INFLUENCE_COST_SELF if target.name == actor.name else NARRATIVE_INFLUENCE_COST_OTHER
-        if not _resource_sufficient(actor.influence, max(MIN_ACTION_COST, cost)):
-            return f"Insufficient influence ({actor.influence:.1f}) to publish narrative (cost {cost})"
-        value_axis = action.get("value_axis", "")
-        if value_axis not in target.values:
-            return f"publish_narrative value_axis {value_axis!r} not valid"
-        value_delta = int(action.get("value_delta", 0))
-        from .agents import MAX_VALUE_OVERRIDE_PER_TURN
-        if abs(value_delta) > MAX_VALUE_OVERRIDE_PER_TURN:
-            return (f"publish_narrative value_delta {value_delta} exceeds "
-                    f"±{MAX_VALUE_OVERRIDE_PER_TURN} limit")
-
-    elif action_type == ACTION_DIMINISH_COMPETITOR:
-        if amount <= 0:
-            return "diminish_competitor requires amount > 0"
-        target_name = action.get("target")
-        if not target_name:
-            return "diminish_competitor requires a target actor name"
-        target = _resolve_actor(target_name, all_micro_agents)
-        if target is None:
-            return f"diminish_competitor target {target_name!r} not found"
-        if target.name == actor.name:
-            return "diminish_competitor cannot target self"
-        action["target"] = target.name  # normalize in-place to canonical name
-        capital_cost = amount * DIMINISH_CAPITAL_COST_PER_POINT
-        influence_cost = amount * DIMINISH_INFLUENCE_COST_PER_POINT
-        if not _resource_sufficient(actor.capital, max(MIN_ACTION_COST, capital_cost)):
-            return (f"Insufficient capital ({actor.capital:.1f}) to diminish "
-                    f"{amount:.1f} influence (cost {capital_cost:.1f})")
-        if not _resource_sufficient(actor.influence, max(MIN_ACTION_COST, influence_cost)):
-            return (f"Insufficient influence ({actor.influence:.1f}) to diminish "
-                    f"{amount:.1f} influence (cost {influence_cost:.1f})")
-
-    elif action_type == ACTION_LOBBY_INSTITUTION:
-        total_cost_k = max(MIN_ACTION_COST, LOBBY_CAPITAL_COST)
-        total_cost_i = max(MIN_ACTION_COST, LOBBY_INFLUENCE_COST)
-        if not _resource_sufficient(actor.capital, total_cost_k):
-            return f"Insufficient capital ({actor.capital:.1f}) for lobby (cost {total_cost_k})"
-        if not _resource_sufficient(actor.influence, total_cost_i):
-            return f"Insufficient influence ({actor.influence:.1f}) for lobby (cost {total_cost_i})"
-
-    return None  # valid
+def _labs_by_key(labs: Iterable[LabState]) -> Dict[str, LabState]:
+    if isinstance(labs, dict):
+        return dict(labs)
+    return {lab.key: lab for lab in labs}
 
 
-def execute_action(action: Dict[str, Any], actor, macro_agents: List,
-                   all_micro_agents: List) -> Dict[str, Any]:
-    """
-    Execute a validated action, mutating resources in-place.
-    Returns a result dict with what changed.
-    """
-    action_type = action["action_type"]
-    amount = float(action.get("amount") or 0)
-    result: Dict[str, Any] = {"action_type": action_type, "actor": actor.name, "effects": {}}
-
-    parent_macro = _get_macro(actor.parent_state, macro_agents)
-
-    if action_type == ACTION_ACQUIRE_COMPUTE:
-        scr = parent_macro.supply_chain_robustness if parent_macro else 50.0
-        cost = _compute_acquisition_cost(amount, scr)
-        actor.capital -= cost
-        actor.compute += amount
-        result["effects"] = {"compute": +amount, "capital": -cost}
-        logger.info(f"    {actor.name}: acquire_compute +{amount:.1f} (cost {cost:.1f} capital)")
-
-    elif action_type == ACTION_ACCELERATE_INFRASTRUCTURE:
-        actor.capital   -= ACCELERATE_CAPITAL_COST
-        actor.influence -= ACCELERATE_INFLUENCE_COST
-        if parent_macro is not None:
-            parent_macro.infrastructure_buildout += ACCELERATE_BUILDOUT_GAIN
-            logger.info(
-                f"    {actor.name}: accelerate_infrastructure → "
-                f"{parent_macro.name} infrastructure_buildout +{ACCELERATE_BUILDOUT_GAIN:.0f} "
-                f"(now {parent_macro.infrastructure_buildout:.1f})"
-            )
-        result["effects"] = {
-            "capital":   -ACCELERATE_CAPITAL_COST,
-            "influence": -ACCELERATE_INFLUENCE_COST,
-            "macro_buildout_gain": ACCELERATE_BUILDOUT_GAIN,
-            "macro_state": actor.parent_state,
-        }
-
-    elif action_type == ACTION_INVEST_CAPITAL:
-        # Deduct capital now; gain is deferred — engine flushes it after all actors execute
-        actor.capital -= amount
-        gain = round(amount * (1 + CAPITAL_INVESTMENT_BASE_RETURN), 2)
-        actor.pending_capital_gain += gain
-        result["effects"] = {"capital_invested": -amount, "capital_gain_pending": gain}
-        logger.info(f"    {actor.name}: invest_capital -{amount:.1f} (gain {gain:.2f} pending)")
-
-    elif action_type == ACTION_BUILD_INFLUENCE:
-        cost = amount * INFLUENCE_BUILD_COST
-        actor.capital -= cost
-        actor.influence = min(100.0, actor.influence + amount)
-        result["effects"] = {"influence": +amount, "capital": -cost}
-        logger.info(f"    {actor.name}: build_influence +{amount:.1f} (cost {cost:.1f} capital)")
-
-    elif action_type == ACTION_PUBLISH_NARRATIVE:
-        # Normalize "self" and fuzzy-resolve shorthand names so logs and effects
-        # always record the canonical actor name.
-        if str(action.get("target", "")).strip().lower() == "self":
-            action["target"] = actor.name
-        target_name = action.get("target", "")
-        value_axis  = action.get("value_axis", "")
-        value_delta = int(action.get("value_delta", 0))
-        target = _resolve_actor(target_name, all_micro_agents)
-        if target:
-            action["target"] = target.name   # normalize in-place
-            target_name = target.name
-
-        cost = NARRATIVE_INFLUENCE_COST_SELF if (target and target.name == actor.name) else NARRATIVE_INFLUENCE_COST_OTHER
-        actor.influence -= cost
-        if target and value_axis in target.values:
-            old = target.values[value_axis]
-            # Route through apply_value_override so the ±MAX_VALUE_OVERRIDE_PER_TURN
-            # clamp is enforced relative to the target's current value.
-            target.apply_value_override({value_axis: old + value_delta})
-            actual_delta = target.values[value_axis] - old
-            result["effects"] = {
-                "influence_spent": -cost,
-                "target": target_name,
-                "value_axis": value_axis,
-                "requested_delta": value_delta,
-                "actual_delta": actual_delta,
-            }
-            logger.info(
-                f"    {actor.name}: publish_narrative → {target_name}.{value_axis} "
-                f"{old}→{target.values[value_axis]}"
-            )
-
-    elif action_type == ACTION_DIMINISH_COMPETITOR:
-        target_name = action.get("target", "")
-        target = _resolve_actor(target_name, all_micro_agents)
-        if target:
-            action["target"] = target.name   # normalize in-place
-            target_name = target.name
-        capital_cost = amount * DIMINISH_CAPITAL_COST_PER_POINT
-        influence_cost = amount * DIMINISH_INFLUENCE_COST_PER_POINT
-        actor.capital   -= capital_cost
-        actor.influence -= influence_cost
-        if target:
-            old_influence = target.influence
-            target.influence = max(0.0, target.influence - amount)
-            actual_delta = round(target.influence - old_influence, 2)
-            result["effects"] = {
-                "capital":               -capital_cost,
-                "influence_spent":       -influence_cost,
-                "target":                target_name,
-                "target_influence_delta": actual_delta,
-            }
-            logger.info(
-                f"    {actor.name}: diminish_competitor → {target_name} "
-                f"influence {old_influence:.1f}→{target.influence:.1f}"
-            )
-
-    elif action_type == ACTION_LOBBY_INSTITUTION:
-        actor.capital   -= LOBBY_CAPITAL_COST
-        actor.influence -= LOBBY_INFLUENCE_COST
-        result["effects"] = {
-            "capital":   -LOBBY_CAPITAL_COST,
-            "influence": -LOBBY_INFLUENCE_COST,
-            "pending_macro_lobby": actor.parent_state,
-        }
-        logger.info(f"    {actor.name}: lobby_institution targeting {actor.parent_state}")
-
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Programmatic pre-check (engine calls this before LLM jury review)
-# ---------------------------------------------------------------------------
-
-def programmatic_check_actions(
-    proposed_actions: List[Dict[str, Any]],
-    actor,                          # MicroAgent
-    parent_macro,                   # MacroAgent | None
-    all_micro_agents: Optional[List] = None,
-) -> List[str]:
-    """
-    Fast mechanical validation of proposed_actions before the LLM jury is invoked.
-    Returns a (possibly empty) list of human-readable error strings.
-
-    Checks:
-      - Action count ≤ MAX_ACTIONS_PER_TURN
-      - Each action_type is in VALID_ACTIONS
-      - Required fields present for each action type
-      - Per-action compute limit (≤ MAX_COMPUTE_PER_TURN)
-      - Sequential capital/influence sufficiency (simulated in order)
-
-    When all_micro_agents is provided, target fields for publish_narrative and
-    diminish_competitor are fuzzy-resolved and normalized in-place to canonical
-    actor names so the jury always sees the full, exact name.
-
-    Does NOT check the national aggregate compute cap — simultaneous requests
-    that collectively exceed headroom are handled by proportional proration at
-    execution time, not rejected here.
-    """
-    errors: List[str] = []
-
-    if len(proposed_actions) > MAX_ACTIONS_PER_TURN:
-        errors.append(
-            f"Too many actions: {len(proposed_actions)} > {MAX_ACTIONS_PER_TURN} allowed"
-        )
-
-    scr = parent_macro.supply_chain_robustness if parent_macro else 50.0
-    # Simulate resource spend in order to detect cascading shortfalls
-    sim_capital   = float(actor.capital)
-    sim_influence = float(actor.influence)
-
-    for idx, action in enumerate(proposed_actions[:MAX_ACTIONS_PER_TURN]):
-        atype  = action.get("action_type", "")
-        prefix = f"Action {idx + 1} ({atype!r})"
-
-        if atype not in VALID_ACTIONS:
-            errors.append(f"{prefix}: unknown action type — valid types are {sorted(VALID_ACTIONS)}")
-            continue  # can't do cost simulation for unknown type
-
-        # Parse amount safely
-        raw_amount = action.get("amount")
-        try:
-            amount = float(raw_amount) if raw_amount is not None else 0.0
-        except (TypeError, ValueError):
-            errors.append(f"{prefix}: 'amount' must be a number, got {raw_amount!r}")
-            continue
-
-        # --- Per-action checks ---
-        if atype == ACTION_ACQUIRE_COMPUTE:
-            if amount <= 0:
-                errors.append(f"{prefix}: 'amount' must be > 0")
-            elif amount > MAX_COMPUTE_PER_TURN:
-                errors.append(
-                    f"{prefix}: amount {amount} exceeds per-turn limit of {MAX_COMPUTE_PER_TURN}"
-                )
-            else:
-                # Enforce float-safe maximum: trim amount to floor(capital/cost_per_unit, 4dp).
-                # If the actor's amount exceeds the maximum by any margin (even a floating-point
-                # rounding error of 0.0001), auto-trim in-place and note with a non-blocking
-                # [WARNING] — no revision required for micro-overshoots.
-                cost_per_unit = COMPUTE_BASE_COST * (1.0 + (100.0 - scr) / 100.0)
-                max_feasible = math.floor(sim_capital / cost_per_unit * 10000) / 10000
-                if amount > max_feasible:
-                    trimmed = min(max_feasible, MAX_COMPUTE_PER_TURN)
-                    action["amount"] = trimmed   # mutate in-place so jury and execution see it
-                    errors.append(
-                        f"[WARNING] {prefix}: amount auto-trimmed from {amount:.4f} to "
-                        f"{trimmed:.4f} (max affordable at {cost_per_unit:.4f} capital/unit "
-                        f"with {sim_capital:.2f} available)"
-                    )
-                    amount = trimmed
-                cost = _compute_acquisition_cost(amount, scr)
-                if not _resource_sufficient(sim_capital, cost):
-                    errors.append(
-                        f"{prefix}: insufficient capital ({sim_capital:.2f}) "
-                        f"for {amount} compute (cost {cost:.2f})"
-                    )
-                else:
-                    sim_capital -= cost
-
-        elif atype == ACTION_ACCELERATE_INFRASTRUCTURE:
-            # Flat-cost; amount field is not used
-            if not _resource_sufficient(sim_capital, ACCELERATE_CAPITAL_COST):
-                errors.append(
-                    f"{prefix}: insufficient capital ({sim_capital:.2f}), "
-                    f"need {ACCELERATE_CAPITAL_COST:.0f}"
-                )
-            elif not _resource_sufficient(sim_influence, ACCELERATE_INFLUENCE_COST):
-                errors.append(
-                    f"{prefix}: insufficient influence ({sim_influence:.2f}), "
-                    f"need {ACCELERATE_INFLUENCE_COST}"
-                )
-            else:
-                sim_capital   -= ACCELERATE_CAPITAL_COST
-                sim_influence -= ACCELERATE_INFLUENCE_COST
-
-        elif atype == ACTION_INVEST_CAPITAL:
-            if amount <= 0:
-                errors.append(f"{prefix}: 'amount' must be > 0")
-            elif not _resource_sufficient(sim_capital, amount):
-                errors.append(
-                    f"{prefix}: insufficient capital ({sim_capital:.2f}) to invest {amount:.2f}"
-                )
-            else:
-                sim_capital -= amount
-
-        elif atype == ACTION_BUILD_INFLUENCE:
-            if amount <= 0:
-                errors.append(f"{prefix}: 'amount' must be > 0")
-            else:
-                cost = amount * INFLUENCE_BUILD_COST
-                if not _resource_sufficient(sim_capital, cost):
-                    errors.append(
-                        f"{prefix}: insufficient capital ({sim_capital:.2f}) "
-                        f"to buy {amount:.1f} influence (cost {cost:.2f})"
-                    )
-                else:
-                    sim_capital -= cost
-
-        elif atype == ACTION_PUBLISH_NARRATIVE:
-            # Normalize "self" and fuzzy-resolve shorthand names in-place so the
-            # canonical actor name flows through to the jury and execution.
-            if str(action.get("target", "")).strip().lower() == "self":
-                action["target"] = actor.name
-            missing = [
-                f for f in ("target", "value_axis", "value_delta")
-                if not action.get(f)
-            ]
-            if missing:
-                errors.append(f"{prefix}: missing required fields: {missing}")
-            else:
-                if all_micro_agents:
-                    resolved = _resolve_actor(action["target"], all_micro_agents)
-                    if resolved is None:
-                        errors.append(
-                            f"{prefix}: target {action['target']!r} did not match any actor "
-                            f"— valid names: {[a.name for a in all_micro_agents]}"
-                        )
-                    else:
-                        action["target"] = resolved.name  # normalize in-place
-                try:
-                    delta = int(action["value_delta"])
-                    from .agents import MAX_VALUE_OVERRIDE_PER_TURN
-                    if abs(delta) > MAX_VALUE_OVERRIDE_PER_TURN:
-                        errors.append(
-                            f"{prefix}: value_delta {delta} exceeds "
-                            f"±{MAX_VALUE_OVERRIDE_PER_TURN} limit"
-                        )
-                except (TypeError, ValueError):
-                    errors.append(
-                        f"{prefix}: value_delta {action.get('value_delta')!r} is not an integer"
-                    )
-            narrative_cost = (
-                NARRATIVE_INFLUENCE_COST_SELF
-                if action.get("target") == actor.name
-                else NARRATIVE_INFLUENCE_COST_OTHER
-            )
-            if not _resource_sufficient(sim_influence, narrative_cost):
-                errors.append(
-                    f"{prefix}: insufficient influence ({sim_influence:.2f}), "
-                    f"need {narrative_cost}"
-                )
-            else:
-                sim_influence -= narrative_cost
-
-        elif atype == ACTION_DIMINISH_COMPETITOR:
-            if amount <= 0:
-                errors.append(f"{prefix}: 'amount' must be > 0")
-            if not action.get("target"):
-                errors.append(f"{prefix}: missing required field 'target'")
-            elif all_micro_agents:
-                resolved = _resolve_actor(action["target"], all_micro_agents)
-                if resolved is None:
-                    errors.append(
-                        f"{prefix}: target {action['target']!r} did not match any actor "
-                        f"— valid names: {[a.name for a in all_micro_agents]}"
-                    )
-                elif resolved.name == actor.name:
-                    errors.append(f"{prefix}: diminish_competitor cannot target self")
-                else:
-                    action["target"] = resolved.name  # normalize in-place
-            if amount > 0:
-                cap_cost = amount * DIMINISH_CAPITAL_COST_PER_POINT
-                inf_cost = amount * DIMINISH_INFLUENCE_COST_PER_POINT
-                if not _resource_sufficient(sim_capital, cap_cost):
-                    errors.append(
-                        f"{prefix}: insufficient capital ({sim_capital:.2f}) "
-                        f"for {amount:.1f} pts (cost {cap_cost:.2f})"
-                    )
-                elif not _resource_sufficient(sim_influence, inf_cost):
-                    errors.append(
-                        f"{prefix}: insufficient influence ({sim_influence:.2f}) "
-                        f"for {amount:.1f} pts (cost {inf_cost:.2f})"
-                    )
-                else:
-                    sim_capital   -= cap_cost
-                    sim_influence -= inf_cost
-
-        elif atype == ACTION_LOBBY_INSTITUTION:
-            # Flat-cost; amount field is not used
-            if not _resource_sufficient(sim_capital, LOBBY_CAPITAL_COST):
-                errors.append(
-                    f"{prefix}: insufficient capital ({sim_capital:.2f}), "
-                    f"need {LOBBY_CAPITAL_COST:.0f}"
-                )
-            elif not _resource_sufficient(sim_influence, LOBBY_INFLUENCE_COST):
-                errors.append(
-                    f"{prefix}: insufficient influence ({sim_influence:.2f}), "
-                    f"need {LOBBY_INFLUENCE_COST}"
-                )
-            else:
-                sim_capital   -= LOBBY_CAPITAL_COST
-                sim_influence -= LOBBY_INFLUENCE_COST
-
-    # Non-blocking capital floor warning: prefixed with "[WARNING]" so the engine
-    # can surface it in feedback without treating it as a hard rejection.
-    _CAPITAL_FLOOR_WARN = 5.0
-    if sim_capital < _CAPITAL_FLOOR_WARN:
-        errors.append(
-            f"[WARNING] These actions leave you with {sim_capital:.2f} capital "
-            f"(< {_CAPITAL_FLOOR_WARN:.0f}), severely limiting future strategic options "
-            f"such as lobby_institution ({LOBBY_CAPITAL_COST:.0f} capital) or "
-            f"accelerate_infrastructure ({ACCELERATE_CAPITAL_COST:.0f} capital)."
-        )
-
-    # Non-blocking influence floor warning: parallel to capital floor.
-    _INFLUENCE_FLOOR_WARN = 5.0
-    if sim_influence < _INFLUENCE_FLOOR_WARN:
-        errors.append(
-            f"[WARNING] These actions leave you with {sim_influence:.2f} influence "
-            f"(< {_INFLUENCE_FLOOR_WARN:.0f}), severely limiting future strategic options "
-            f"like publishing narratives ({NARRATIVE_INFLUENCE_COST_SELF}–{NARRATIVE_INFLUENCE_COST_OTHER} influence) or "
-            f"institutional lobbying ({LOBBY_INFLUENCE_COST} influence)."
-        )
-
-    return errors
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _resource_sufficient(available: float, required: float) -> bool:
-    """True if available ≥ required, with _FP_TOLERANCE absolute slack.
-
-    Prevents hard rejections from floating-point rounding artifacts, e.g. when
-    a computed cost is 21.2548 and the actor holds exactly 21.25 capital.
-    """
-    return available >= required or math.isclose(available, required, abs_tol=_FP_TOLERANCE)
-
-
-def _compute_acquisition_cost(amount: float, supply_chain_robustness: float) -> float:
-    """cost = base × amount × (1 + (100 − SCR) / 100)"""
-    scr_modifier = 1.0 + (100.0 - supply_chain_robustness) / 100.0
-    return round(COMPUTE_BASE_COST * amount * scr_modifier, 2)
-
-
-def _get_macro(state_name: str, macro_agents: List):
-    return next((s for s in macro_agents if s.name == state_name), None)
-
-
-def _resolve_actor(name: str, micro_agents: List):
-    """
-    Resolve an actor name to an agent, tolerating partial/short names.
-    Priority: exact → case-insensitive prefix/substring → difflib fuzzy (cutoff 0.6).
-    Returns None if no match clears any tier.
-    """
-    if not name:
+def resolve_lab(name: Any, labs: Iterable[LabState], self_key: Optional[str] = None) -> Optional[str]:
+    """Lab key from a key, display name or close typo; "self"/"me" map to self_key."""
+    if not isinstance(name, str) or not name.strip():
         return None
-    # Exact match
-    exact = next((a for a in micro_agents if a.name == name), None)
-    if exact:
-        return exact
-    # Case-insensitive prefix or substring match
-    lower = name.lower()
-    for a in micro_agents:
-        if a.name.lower().startswith(lower) or lower in a.name.lower():
-            return a
-    # Fuzzy match via difflib (handles typos / missing parenthetical)
-    roster = [a.name for a in micro_agents]
-    close = difflib.get_close_matches(name, roster, n=1, cutoff=0.6)
-    if close:
-        return next((a for a in micro_agents if a.name == close[0]), None)
+    by_key = _labs_by_key(labs)
+    lower = name.strip().lower()
+    if lower in ("self", "me", "myself", "us") and self_key:
+        return self_key
+    names = {}
+    for key, lab in by_key.items():
+        names[key.lower()] = key
+        names[lab.lab.lower()] = key
+    if lower in names:
+        return names[lower]
+    close = difflib.get_close_matches(lower, list(names), n=1, cutoff=0.6)
+    return names[close[0]] if close else None
+
+
+def _resolve_many(raw: Any, labs, self_key: str) -> List[str]:
+    """Resolve a list (or comma-separated string) of lab names; unknown names raise."""
+    if raw is None:
+        return []
+    items = raw.split(",") if isinstance(raw, str) else list(raw) if isinstance(raw, (list, tuple, set)) else [raw]
+    keys = set()
+    for item in items:
+        key = resolve_lab(item, labs, self_key)
+        if key is None:
+            raise ValueError(f"unknown lab {item!r}")
+        keys.add(key)
+    return sorted(keys)
+
+
+# ---------------------------------------------------------------------------
+# Normalisation
+# ---------------------------------------------------------------------------
+
+def _number(raw: Dict[str, Any], *names: str) -> float:
+    for name in names:
+        if raw.get(name) is not None:
+            try:
+                return float(str(raw[name]).strip())
+            except ValueError:
+                raise ValueError(f"{name} is not a number: {raw[name]!r}")
+    raise ValueError(f"missing {names[0]}")
+
+
+def normalise_action(raw: Dict[str, Any], lab: LabState, labs, scenario: str) -> Dict[str, Any]:
+    """
+    Canonical action dict. Accepts "type"/"action"/"action_type", numbers as
+    strings, display names or "self" for labs. Raises ValueError on anything
+    that cannot be read (precheck turns that into a rejection).
+    """
+    if not isinstance(raw, dict):
+        raise ValueError("action is not an object")
+    kind = raw.get("type") or raw.get("action") or raw.get("action_type")
+    kind = str(kind or "").strip().lower().replace(" ", "_").replace("-", "_")
+    if kind not in ACTION_TYPES:
+        raise ValueError(f"unknown action type {kind!r}")
+    action: Dict[str, Any] = {"type": kind}
+
+    if kind == ACQUIRE_COMPUTE:
+        action["units"] = _number(raw, "units", "amount", "compute")
+    elif kind == INVEST_CAPITAL:
+        action["amount"] = _number(raw, "amount", "capital")
+    elif kind == BUILD_INFLUENCE:
+        action["points"] = _number(raw, "points", "amount", "influence")
+    elif kind == DIMINISH_COMPETITOR:
+        action["points"] = _number(raw, "points", "amount")
+        action["target"] = resolve_lab(raw.get("target"), labs, lab.key)
+        if action["target"] is None:
+            raise ValueError(f"unknown target {raw.get('target')!r}")
+    elif kind == PUBLISH_NARRATIVE:
+        action["target"] = resolve_lab(raw.get("target", "self"), labs, lab.key)
+        if action["target"] is None:
+            raise ValueError(f"unknown target {raw.get('target')!r}")
+        action["axis"] = str(raw.get("axis") or "").strip().lower().replace(" ", "_")
+        action["delta"] = _number(raw, "delta", "amount")
+    elif kind == INTRUDE:
+        targets = raw.get("targets", raw.get("target"))
+        action["targets"] = _resolve_many(targets, labs, lab.key)
+        # S1 form names only targets; the intruder is implicitly self
+        intruders = raw.get("intruders")
+        action["intruders"] = _resolve_many(intruders, labs, lab.key) if intruders else [lab.key]
+    return action
+
+
+# ---------------------------------------------------------------------------
+# Costs
+# ---------------------------------------------------------------------------
+
+def action_cost(action: Dict[str, Any], lab: LabState, labs, world: WorldState,
+                cfg: Dict[str, Any]) -> Tuple[float, float]:
+    """(Capital, Influence) charged for a normalised action."""
+    acfg = cfg["actions"]
+    kind = action["type"]
+    if kind == ACQUIRE_COMPUTE:
+        return purchase_price(action["units"], cfg["compute"]), 0.0
+    if kind == ACCELERATE_INFRASTRUCTURE:
+        c = acfg[kind]
+        return c["capital"], c["influence"]
+    if kind == INVEST_CAPITAL:
+        return action["amount"], 0.0
+    if kind == BUILD_INFLUENCE:
+        return acfg[kind]["capital_per_point"] * action["points"], 0.0
+    if kind == PUBLISH_NARRATIVE:
+        c = acfg[kind]
+        return 0.0, c["influence_self"] if action["target"] == lab.key else c["influence_other"]
+    if kind == DIMINISH_COMPETITOR:
+        c = acfg[kind]
+        return c["capital_per_point"] * action["points"], c["influence_per_point"] * action["points"]
+    if kind == LOBBY_INSTITUTION:
+        c = acfg[kind]
+        return c["capital"], c["influence"]
+    if kind == INTRUDE:
+        n = len(action["targets"])
+        icfg = cfg["intrusion"]
+        return icfg["fee_capital_per_target"] * n, icfg["fee_influence_per_target"] * n
+    raise ValueError(f"unknown action type {kind!r}")
+
+
+# ---------------------------------------------------------------------------
+# Pre-check (§5.2 step 3)
+# ---------------------------------------------------------------------------
+
+def _guardrail(action: Dict[str, Any], lab: LabState, labs, world: WorldState,
+               cfg: Dict[str, Any], scenario: str, influence: float) -> Optional[str]:
+    """Reason the action is not allowed, or None. May trim build_influence points."""
+    kind = action["type"]
+    by_key = _labs_by_key(labs)
+    if kind == ACQUIRE_COMPUTE:
+        cap = cfg["compute"]["max_purchase_per_turn"]
+        if action["units"] <= 0:
+            return "units must be positive"
+        if action["units"] > cap + EPS:
+            return f"at most {cap:g} units per turn"
+        if purchases_frozen(list(by_key.values()), world):
+            return "purchases frozen: combined holdings exceed the ceiling"
+    elif kind == INVEST_CAPITAL:
+        if action["amount"] <= 0:
+            return "amount must be positive"
+    elif kind == BUILD_INFLUENCE:
+        # Only charge for points that can actually be gained under the 100 cap
+        room = max(0.0, 100.0 - influence)
+        action["points"] = min(action["points"], room)
+        if action["points"] <= 0:
+            return "influence already at 100" if room <= 0 else "points must be positive"
+    elif kind == PUBLISH_NARRATIVE:
+        max_delta = cfg["actions"][kind]["max_value_delta"]
+        if action["axis"] not in VALUE_AXES:
+            return f"unknown axis {action['axis']!r}"
+        if action["delta"] == 0 or abs(action["delta"]) > max_delta:
+            return f"delta must be non-zero and within ±{max_delta}"
+    elif kind == DIMINISH_COMPETITOR:
+        if action["target"] == lab.key:
+            return "cannot target self"
+        if action["points"] <= 0:
+            return "points must be positive"
+    elif kind == INTRUDE:
+        if not world.intrusion_open:
+            return "intrusion is not available"
+        if lab.key not in action["intruders"]:
+            return "intruders must include self"
+        if scenario != "S2" and action["intruders"] != [lab.key]:
+            return "joint intrusion not available in this scenario"
+        if not action["targets"]:
+            return "no targets"
+        if set(action["targets"]) & set(action["intruders"]):
+            return "targets cannot be intruders"
     return None
+
+
+def precheck(lab: LabState, raw_actions: List[Dict[str, Any]], labs, world: WorldState,
+             cfg: Dict[str, Any], scenario: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Accept or reject a lab's proposed actions in order, tracking running
+    Capital and Influence so the second action sees what the first spent.
+
+    Returns:
+        (accepted normalised actions, [{"action": raw, "reason": str}, ...])
+    """
+    accepted: List[Dict[str, Any]] = []
+    rejected: List[Dict[str, Any]] = []
+    if not isinstance(raw_actions, list):
+        raw_actions = [] if raw_actions is None else [raw_actions]
+    max_actions = int(cfg["actions"]["max_actions_per_turn"])
+    min_cost = cfg["actions"]["min_action_cost"]
+    capital, influence = lab.capital, lab.influence
+
+    for raw in raw_actions:
+        def reject(reason: str) -> None:
+            rejected.append({"action": raw, "reason": reason})
+            logger.info(f"[precheck] {lab.key} rejected {raw!r}: {reason}")
+
+        if len(accepted) >= max_actions:
+            reject(f"at most {max_actions} actions per turn")
+            continue
+        try:
+            action = normalise_action(raw, lab, labs, scenario)
+        except (ValueError, TypeError, AttributeError) as e:
+            reject(f"malformed: {e}")
+            continue
+        if action["type"] == INTRUDE and any(a["type"] == INTRUDE for a in accepted):
+            reject("at most one intrude per turn")
+            continue
+        reason = _guardrail(action, lab, labs, world, cfg, scenario, influence)
+        if reason:
+            reject(reason)
+            continue
+        cost_c, cost_i = action_cost(action, lab, labs, world, cfg)
+        if cost_c < min_cost - EPS and cost_i < min_cost - EPS:
+            reject(f"every action must cost at least {min_cost:g} Capital or Influence")
+            continue
+        if cost_c > capital + EPS:
+            reject(f"needs {cost_c:.2f} Capital, has {capital:.2f}")
+            continue
+        if cost_i > influence + EPS:
+            reject(f"needs {cost_i:.2f} Influence, has {influence:.2f}")
+            continue
+        capital -= cost_c
+        influence -= cost_i
+        if action["type"] == BUILD_INFLUENCE:
+            influence += action["points"]
+        accepted.append(action)
+    return accepted, rejected
+
+
+# ---------------------------------------------------------------------------
+# Execution (§5.2 step 5)
+# ---------------------------------------------------------------------------
+
+def _clamp(value: float, lo: float = 0.0, hi: float = 100.0) -> float:
+    return max(lo, min(hi, value))
+
+
+def execute(lab: LabState, action: Dict[str, Any], labs, world: WorldState,
+            cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Apply one pre-checked action. acquire_compute and intrude are resolved by
+    the engine (economy.execute_purchases / intrusion.resolve).
+
+    Returns:
+        {"lab", "type", "cost": {"capital", "influence"}, "effect": {...}}
+    """
+    kind = action["type"]
+    if kind in ENGINE_ACTIONS:
+        raise ValueError(f"{kind} is resolved by the engine, not execute()")
+    by_key = _labs_by_key(labs)
+    acfg = cfg["actions"]
+    cost_c, cost_i = action_cost(action, lab, labs, world, cfg)
+    lab.capital = max(0.0, lab.capital - cost_c)
+    lab.influence = _clamp(lab.influence - cost_i)
+    effect: Dict[str, Any] = {}
+
+    if kind == ACCELERATE_INFRASTRUCTURE:
+        world.us_growth += acfg[kind]["stock_growth"]
+        effect["us_growth"] = world.us_growth
+    elif kind == INVEST_CAPITAL:
+        lab.invested += action["amount"]
+        effect["invested"] = lab.invested
+    elif kind == BUILD_INFLUENCE:
+        before = lab.influence
+        lab.influence = _clamp(lab.influence + action["points"])
+        effect["influence_gained"] = round(lab.influence - before, 3)
+    elif kind == PUBLISH_NARRATIVE:
+        target = by_key[action["target"]]
+        axis = action["axis"]
+        before = target.values[axis]
+        target.values[axis] = int(round(_clamp(before + action["delta"])))
+        effect.update({"target": target.key, "axis": axis, "from": before, "to": target.values[axis]})
+    elif kind == DIMINISH_COMPETITOR:
+        target = by_key[action["target"]]
+        before = target.influence
+        target.influence = max(0.0, target.influence - action["points"])
+        effect.update({"target": target.key, "influence_lost": round(before - target.influence, 3)})
+    elif kind == LOBBY_INSTITUTION:
+        step = acfg[kind]["value_step"]
+        moved = {}
+        for axis, current in world.state_values.items():
+            gap = lab.values.get(axis, current) - current
+            new = current + max(-step, min(step, gap))
+            world.state_values[axis] = new
+            moved[axis] = new - current
+        effect["state_values_moved"] = moved
+
+    logger.info(f"[execute] {lab.key} {kind} cost=({cost_c:.2f} Cap, {cost_i:.2f} Inf) {effect}")
+    return {"lab": lab.key, "type": kind,
+            "cost": {"capital": round(cost_c, 3), "influence": round(cost_i, 3)},
+            "effect": effect}
