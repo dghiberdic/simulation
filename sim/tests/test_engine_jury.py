@@ -181,3 +181,53 @@ def test_disposition_jury_validation(monkeypatch):
     assert [r["juror"] for r in out] == ["stub:dj_str"]
     assert out[0]["disposition"] == 62.0
     assert calls[0]["max_tokens"] == 4000 and calls[0]["effort"] == "medium"
+
+
+# ---------------------------------------------------------------------------
+# Round 2: mandate source (J8/D7) and the redaction note (J6/H3)
+# ---------------------------------------------------------------------------
+
+def _vote(values, mandate):
+    return lambda s, u: json.dumps({"values": {a: values for a in AXES}, "mandate": mandate})
+
+
+def test_macro_mandate_text_from_juror_closest_to_median():
+    # Two of three propose; the median vector is 50 (mj_mid's); the text comes from
+    # the proposer closest to it, not the first or the most common.
+    register_stub("mj_far", _vote(90, "Halt all compute purchases."))
+    register_stub("mj_mid", _vote(50, "Report every access within a month."))
+    register_stub("mj_low", _vote(40, ""))
+    cur = {a: 50 for a in AXES}
+    res = MacroJury(["stub:mj_far", "stub:mj_mid", "stub:mj_low"]).deliberate("US", cur, "")
+    assert res["mandate"] == "Report every access within a month."
+    assert res["mandate_source"] == "stub:mj_mid"
+    assert res["proposals"] == [
+        {"juror": "stub:mj_far", "mandate": "Halt all compute purchases."},
+        {"juror": "stub:mj_mid", "mandate": "Report every access within a month."},
+        {"juror": "stub:mj_low", "mandate": ""}]
+    # Minority proposes: no mandate, no source, proposals still recorded.
+    res = MacroJury(["stub:mj_far", "stub:mj_low", "stub:mj_low"]).deliberate("US", cur, "")
+    assert res["mandate"] == "" and res["mandate_source"] is None
+    assert len(res["proposals"]) == 3
+
+
+def test_macro_mandate_skipped_juror_does_not_count():
+    # A juror with no usable reply is out of the denominator: 1 of 2 usable is no majority.
+    register_stub("mj_none", lambda s, u: "not json at all")
+    register_stub("mj_p", _vote(50, "Pause intrusions."))
+    register_stub("mj_q", _vote(50, ""))
+    res = MacroJury(["stub:mj_none", "stub:mj_p", "stub:mj_q"]).deliberate(
+        "US", {a: 50 for a in AXES}, "")
+    assert res["mandate"] == ""
+    assert [p["juror"] for p in res["proposals"]] == ["stub:mj_p", "stub:mj_q"]
+
+
+def test_juror_prompts_explain_redaction_marks(monkeypatch):
+    calls = _capture(monkeypatch)
+    register_stub("gj_note", _grand_reply)
+    GrandJury(["stub:gj_note"]).evaluate("T", list(LAB_KEYS), {})
+    register_stub("dj_note", lambda s, u: '{"disposition": 50, "reason": "x"}')
+    DispositionJury().rate(["stub:dj_note"], "Record of one lab.")
+    assert "[N] marks redacted text." in calls[0]["user"]
+    assert "[N] marks redacted text." in calls[1]["user"]
+    assert "[OTHER LAB]" in calls[1]["user"]
