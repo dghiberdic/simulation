@@ -1,0 +1,48 @@
+Compute forecast model spec review and experiment design
+Model Spec Review: Starting Conditions and Run Design
+
+    Starting date: shift from January 2026 to August 2026
+        Closer to current date = harder to dismiss as not simulating real conditions
+        Retain 1-2 early turns as a sanity check
+    Capability index: base everything on the Epoch index (data available for all models)
+    Run length: default to 8 turns for test runs, increase only if signal is insufficient
+        Events currently concentrated early; fewer turns avoids noise from sparse later turns
+    Compute percentages for Meta and DeepMind: check Epoch report and update
+
+Experiment Design Decisions
+
+    Eval awareness test: add model interview at each turn asking how it performed and why
+        Check whether responses reference anything beyond the formulaic score
+        Run before and after event injection to detect any shift
+        Place event injection at turn 4 (midpoint of 8-turn run) for equal before/after comparison
+    S1 and S2 always run separately, never together; both can be placed on the same turn
+    King test (single-model control): run one all-Claude condition using S2 (collaboration scenario)
+    Jury structure: make it symmetrical
+        Currently Meta and xAI are judged by 3 models vs. 2 for others
+        Fix: either include all 4 players excluding one, or use a fully external (e.g. open-source) jury
+        Using a less capable model as judge is acceptable; judge scores conduct, not strategy
+    Scoring: merge free-text and rubric judging (too similar, neither is truly objective)
+        Use few-shot calibration examples, provide full rubric guidelines, ask for a composite score
+        Replace dual comparison runs with manual human spot checks
+    Talent metric: replace SignalFire State of Tech Talent (outdated, May 2025)
+        Explore levels.fyi offer acceptance rate as a proxy for talent competitiveness
+        Index on new offer acceptance rate over retention or raw hire count
+    T0 (usage calibration): fold into T1; note cost of one 8-turn run before proceeding
+    Suggested test sequence: eval awareness first, then T1, T2, T3, T5, T4 (joint collusion) last
+        No collusion is a valid result; avoid tweaking parameters just to force joint lab intrusion
+    Section 10 write-up: too AI-generated in tone; clean up before final paper submission (not urgent)
+    Shared opening brief: add token limit reminder so model messages aren’t cut off
+
+Next Steps
+
+    Implement spec changes and update models in repo
+    Target: complete by end of day Friday 9th October so tests can begin Monday 12th October.
+    Run T1 test (8-turn, T0 folded in) and share usage cost async on Slack
+    Decide async whether 8 turns gives enough signal before varying run length.
+    Run eval awareness test once T1 cost is confirmed
+    Event injection at turn 4; interview model each turn; compare responses before and after injection.
+    Review updated spec by end of day Saturday 10th October (Zoe)
+    If changes land Friday, review over the weekend so tests can start Sunday 11th October.
+    Complete through T6 before next meeting
+    Remaining experiments (T4 joint collusion etc.) to follow in the week after.
+
