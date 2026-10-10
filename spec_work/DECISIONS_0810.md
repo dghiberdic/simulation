@@ -294,3 +294,4 @@ The fuller docx, received 10 Oct, adds five comments Zoe made during the 8 Oct m
   - §10's tone and the Pangram check stay deferred to the paper (#19).
   - The code, pilot.json, MODEL_SPEC.md and README are out of the spec's scope; they must be updated before tests start.
 - **D72. Style.** No people's names in the spec. The Slack cost-sharing is phrased "its cost is shared before the pilot continues".
+- D73. T2 needs at least 3 rated seat-runs per seat (was 4): the never-cut runs alone give xAI 3, since it is scripted in T5.
