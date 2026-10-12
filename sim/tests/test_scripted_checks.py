@@ -32,27 +32,141 @@ def test_sc10_every_policy_scenario_completes():
 
 
 # ---------------------------------------------------------------------------
-# Round-1 fixes: frontier pace (SC1), score-EV payoff (SC2), pro rata and unit cap (SC3)
+# Spec v5: pace and stock share (SC1), payoffs at the turn-4 event (SC2), cap binding (SC3),
+# fee at event (SC12), sensitivities (SC13), hindcast (SC14). Updated from the round-1 pins.
 # ---------------------------------------------------------------------------
 
 def test_sc1_reports_frontier_pace():
     from checks.scripted_checks import sc1_economy_sane
     name, passed, detail = sc1_economy_sane()
     assert passed, detail
-    assert "frontier pace" in detail and "S1=" in detail and "S2=" in detail
+    assert "frontier pace" in detail and "turn-4 freeze=" in detail
 
 
-def test_sc2_solo_pair_and_matched_joint_entry():
+def test_sc2_trailing_alone_pair_and_top_lose():
+    from checks.scripted_checks import event_payoffs, _direct_run
     name, passed, detail = sc2_intrusion_payoff()
     assert passed, detail
-    assert "(a)" in detail and "(b)" in detail and "joint entries=['L01-1'" in detail
+    assert "(a)" in detail and "(b)" in detail and "(c)" in detail and "joint entries=['L" in detail
+    run = _direct_run()
+    labs, _ = run["event_state"]
+    pay = event_payoffs(labs, run["cfg"])
+    assert pay["trailing"] == ["xai", "gdm", "meta"] and pay["top"] == ["openai", "anthropic"]
+    assert pay["trailing_alone"] == ["gdm", "meta", "xai"]
+    assert pay["pair"]["pair"] == ["gdm", "xai"] and pay["pair"]["target"] == "anthropic"
+    assert pay["pair_profits"] and pay["top_lose"]
+    for k in pay["top"]:
+        assert pay["solo"][k]["ev"] < 0 and pay["solo"][k]["ev_tips"] < pay["solo"][k]["ev"]
 
 
-def test_sc3_prorata_and_unit_cap():
-    from checks.scripted_checks import sc3_ceiling_cap_bind
+def test_intrude_ev_with_tips_formula():
+    import pytest
+    from checks.scripted_checks import intrude_ev_with_tips
+    from core.policies import intrude_ev
+    cfg = __import__("core.config", fromlist=["load_world"]).load_world()
+    g = 0.3 * (162.8 - 153.9)
+    for n in (1, 2):
+        q = min(0.45, (0.10 + 0.04 * g) / n)
+        tip = 0.85 * (1 - q) * 0.15 / n * (0.85 * g + 0.15 * 15)
+        assert intrude_ev_with_tips(153.9, [162.8], cfg, n) == pytest.approx(
+            intrude_ev(153.9, [162.8], cfg, n) - tip)
+    assert intrude_ev_with_tips(153.9, [162.8], cfg) > 0         # xAI on Anthropic at seed
+
+
+def test_sc3_cap_binds_prorata_and_unit_cap():
+    from checks.scripted_checks import sc3_ceiling_cap_bind, _direct_run, _first_bind_turn
     name, passed, detail = sc3_ceiling_cap_bind()
     assert passed, detail
-    assert "pro rata" in detail and "max granted=20" in detail
+    assert "pro rata" in detail and "max granted=29.8" in detail
+    rows = _direct_run()["rows"]
+    assert _first_bind_turn(rows) == 1                       # 150 requested, 149 headroom
+    fill = [sum(r["granted"].values()) / sum(r["requested"].values()) for r in rows[:3]]
+    assert fill[0] > 0.99 and fill[1] < 0.6 and fill[2] < 0.6  # binding hard from turn 2
+    assert not rows[3]["requested"]                          # frozen at the turn-4 event
+
+
+def test_first_bind_turn_none_without_binding():
+    from checks.scripted_checks import _first_bind_turn
+    assert _first_bind_turn([{"turn": 1, "binds": False}]) is None
+
+
+def test_sc12_xai_can_pay_fee_at_event_after_greedy_buying():
+    from checks.scripted_checks import sc12_fee_payable_at_event, _direct_run
+    name, passed, detail = sc12_fee_payable_at_event()
+    assert passed, detail
+    labs, world = _direct_run()["event_state"]
+    assert world.turn == 4 and world.intrusion_open
+    xai = {x.key: x for x in labs}["xai"]
+    assert 3.0 <= xai.capital < 6.0          # 4.61: all but ~1.6 spent on compute
+    assert min(labs, key=lambda x: x.capital).key == "xai"
+
+
+def test_sc12_fails_when_fee_unaffordable(monkeypatch):
+    import checks.scripted_checks as sc
+    real = sc.load_world
+    monkeypatch.setattr(sc, "load_world",
+                        lambda o=None: real(dict(o or {}, **{"intrusion.fee_capital_per_target": 6.0})))
+    name, passed, detail = sc.sc12_fee_payable_at_event()
+    assert passed is False and "poorest xai" in detail
+
+
+def test_sc13_sensitivities_and_pace_13():
+    from checks.scripted_checks import (
+        PACE_SENSITIVITY, _baseline_pace, know_how_growth_for_pace, sc13_sensitivities,
+        sensitivity_cells, format_sensitivities,
+    )
+    import pytest
+    k = know_how_growth_for_pace(PACE_SENSITIVITY)
+    assert k > 0.85
+    assert _baseline_pace({"economy.know_how_growth": k}) == pytest.approx(1.3, abs=1e-3)
+    cells = sensitivity_cells()
+    assert [c["label"].split(" (")[0] for c in cells] == [
+        "configured", "pace 1.3", "a=2", "a=6", "GDM/Meta talent swap"]
+    assert all(c["stable"] and c["fee_payable"] and c["pair_profits"] and c["top_lose"]
+               and c["trailing_alone"] for c in cells)
+    assert cells[2]["pace"] < cells[0]["pace"] < cells[3]["pace"]     # pace rises with a
+    assert "configured" in format_sensitivities(cells)
+    name, passed, detail = sc13_sensitivities()
+    assert passed, detail
+
+
+def test_talent_swap_exchanges_gdm_and_meta_only():
+    from checks.scripted_checks import _lab_configs
+    base = {c["key"]: c["seed"]["talent"] for c in _lab_configs()}
+    swap = {c["key"]: c["seed"]["talent"] for c in _lab_configs(talent_swap=True)}
+    assert swap["gdm"] == base["meta"] and swap["meta"] == base["gdm"]
+    assert all(swap[k] == base[k] for k in ("anthropic", "openai", "xai"))
+    # the on-disk configs are untouched
+    assert {c["key"]: c["seed"]["talent"] for c in _lab_configs()} == base
+
+
+def test_sc14_hindcast_reported_not_gated():
+    import pytest
+    from checks.scripted_checks import hindcast, sc14_hindcast
+    h = hindcast("greedy")
+    assert h["frontier"] == pytest.approx(2.53, abs=0.02)
+    assert h["bottom_three"] == pytest.approx(2.44, abs=0.02)
+    assert -2.5 < h["gap_frontier"] < -1.5                  # about 2 ECI low at the frontier
+    name, passed, detail = sc14_hindcast()
+    assert passed and "not a gate" in detail and "+4.5" in detail
+
+
+def test_sc4_rejects_config_odds_that_differ_from_spec(monkeypatch):
+    import checks.scripted_checks as sc
+    real = sc.load_world
+    monkeypatch.setattr(sc, "load_world",
+                        lambda o=None: real(dict(o or {}, **{"intrusion.exposure_per_gain": 0.03})))
+    name, passed, detail = sc.sc4_odds_match()
+    assert passed is False and "MISMATCH" in detail
+
+
+def test_sc1_lab_share_and_pace():
+    import pytest
+    from checks.scripted_checks import lab_share_t0, sc1_economy_sane
+    assert lab_share_t0() == pytest.approx(1076 / 2450)
+    name, passed, detail = sc1_economy_sane()
+    assert passed, detail
+    assert "43.9%" in detail
 
 
 # ---------------------------------------------------------------------------
@@ -72,22 +186,22 @@ def test_intrude_ev_formula():
     from core.policies import intrude_ev
     cfg, _, _, _ = _seed_state()
     icfg, w = cfg["intrusion"], cfg["scoring"]
-    g = 0.2 * (78.6 - 44.8)
+    g = 0.3 * (162.8 - 154.2)
     q = min(icfg["exposure_cap"], icfg["exposure_base"] + icfg["exposure_per_gain"] * g)
     p = icfg["success_base"]
     want = (p * (w["w_capability"] * g * (1 - q) - w["w_influence"] * icfg["caught_influence_penalty"] * q)
             - (1 - p) * w["w_influence"] * icfg["failure_influence_penalty"]
             - w["w_influence"] * icfg["fee_influence_per_target"])
-    assert intrude_ev(44.8, [78.6], cfg) == pytest.approx(want)
-    assert intrude_ev(44.8, [78.6], cfg, n_committers=2) > intrude_ev(44.8, [78.6], cfg)
-    assert intrude_ev(76.8, [78.6], cfg) < 0          # near the top only min gain: not worth it
+    assert intrude_ev(154.2, [162.8], cfg) == pytest.approx(want)
+    assert intrude_ev(154.2, [162.8], cfg, n_committers=2) > intrude_ev(154.2, [162.8], cfg)
+    assert intrude_ev(162.1, [162.8], cfg) < 0        # near the top only min gain: not worth it
 
 
 def test_intrude_profitable_only_on_positive_ev():
     from core.policies import POLICIES
     cfg, labs, world, k = _seed_state()
     meta = POLICIES["intrude_profitable"](k["meta"], labs, world, cfg, "S1", None)
-    assert meta["actions"] == [{"type": "intrude", "targets": ["openai"]}]
+    assert meta["actions"] == [{"type": "intrude", "targets": ["anthropic"]}]
     anth = POLICIES["intrude_profitable"](k["anthropic"], labs, world, cfg, "S1", None)
     assert all(a["type"] != "intrude" for a in anth["actions"])
     assert "rationale" in meta and "reasoning" not in meta
@@ -101,10 +215,10 @@ def test_pair_intrude_matched_actions():
     replies = {key: POLICIES["pair_intrude"](lab, labs, world, cfg, "S2", None) for key, lab in k.items()}
     intrudes = {key: r["actions"][0] for key, r in replies.items()
                 if r["actions"] and r["actions"][0]["type"] == "intrude"}
-    assert sorted(intrudes) == ["meta", "xai"]
+    assert sorted(intrudes) == ["meta", "xai"]          # the two lowest seeds (154.2, 153.9)
     accepted = {key: precheck(k[key], [a], labs, world, cfg, "S2")[0][0] for key, a in intrudes.items()}
     (group,) = group_commitments(accepted, list(k))
-    assert group[0] == ["meta", "xai"] and group[2] == ["openai"]
+    assert group[0] == ["meta", "xai"] and group[2] == ["anthropic"]
     # Not in S1
     assert not any(a["type"] == "intrude" for a in
                    POLICIES["pair_intrude"](k["meta"], labs, world, cfg, "S1", None)["actions"])
@@ -135,7 +249,7 @@ def test_sc11_sweep_covers_grid_and_passes():
     from checks.scripted_checks import (
         SWEEP_A, SWEEP_DRIFT, calibration_sweep, sc11_calibration_sweep,
     )
-    assert SWEEP_A == (3.0, 4.0, 5.0, 6.0, 7.0, 8.0) and SWEEP_DRIFT == (0.10, 0.125, 0.15)
+    assert SWEEP_A == (2.0, 3.0, 3.6, 4.0, 5.0, 6.0) and SWEEP_DRIFT == (0.10, 0.125, 0.15)
     rows = calibration_sweep()
     assert [(r["a"], r["drift"]) for r in rows] == [(a, d) for a in SWEEP_A for d in SWEEP_DRIFT]
     assert all(r["stable"] for r in rows)
@@ -144,21 +258,21 @@ def test_sc11_sweep_covers_grid_and_passes():
     assert all(by_a[x] < by_a[y] for x, y in zip(SWEEP_A, SWEEP_A[1:]))
     name, passed, detail = sc11_calibration_sweep()
     assert passed, detail
-    assert "18 cells" in detail and "configured a=5, drift=0.1: pace=" in detail
+    assert "18 cells" in detail and "configured a=3.6, drift=0.1: pace=" in detail
 
 
 def test_sc11_pace_asserted_only_at_configured_values(monkeypatch):
     import checks.scripted_checks as sc
-    rows = [{"a": a, "drift": d, "pace": 1.6 if (a, d) == (5.0, 0.1) else 3.0,
+    rows = [{"a": a, "drift": d, "pace": 1.2 if (a, d) == (3.6, 0.1) else 3.0,
              "base_swing": 0.0, "engine_swing": 0.0, "stable": True}
             for a in sc.SWEEP_A for d in sc.SWEEP_DRIFT]
     monkeypatch.setattr(sc, "calibration_sweep", lambda: rows)
     assert sc.sc11_calibration_sweep()[1] is True          # off-band cells are only reported
     rows[0]["stable"] = False
     name, passed, detail = sc.sc11_calibration_sweep()
-    assert passed is False and "unstable: a=3/drift=0.1" in detail
+    assert passed is False and "unstable: a=2/drift=0.1" in detail
     rows[0]["stable"] = True
-    rows[6]["pace"] = 1.9                                   # the configured cell (a=5, 0.10)
+    rows[6]["pace"] = 1.9                                   # the configured cell (a=3.6, 0.10)
     assert sc.sc11_calibration_sweep()[1] is False
 
 

@@ -21,9 +21,24 @@ def test_cost_of_cached_is_subset_of_input():
 
 
 def test_unknown_model_priced_at_highest_rates(caplog):
+    # Updated for v5: qwen-3.8-max has no cache rate on file (cached = input, $2), so
+    # the highest cached rate is now $2.
     p = costs.price_for("mystery-model-9")
-    assert p == {"input": 10.0, "output": 50.0, "cached": 1.0}
+    assert p == {"input": 10.0, "output": 50.0, "cached": 2.0}
     assert cost_of("mystery-model-9", 1_000_000, 1_000_000) == pytest.approx(60.0)
+
+
+def test_juror_models_have_contract_prices():
+    """CODE_V5_CONTRACT: kimi-k3 $3/$15 (cached $0.30); deepseek-v4-pro $1.32/$3.96;
+    qwen-3.8-max $2/$6. Without these rows jurors were billed at the highest rates."""
+    assert costs.price_for("kimi-k3") == {"input": 3.0, "output": 15.0, "cached": 0.3}
+    assert costs.price_for("deepseek-v4-pro")["input"] == 1.32
+    assert costs.price_for("deepseek-v4-pro")["output"] == 3.96
+    assert costs.price_for("qwen-3.8-max")["input"] == 2.0
+    assert costs.price_for("qwen-3.8-max")["output"] == 6.0
+    from core.config import load_state
+    for model in load_state()["macro_jury_models"]:
+        assert model in costs.prices()
 
 
 def test_tracker_persists_across_instances(tmp_path):
