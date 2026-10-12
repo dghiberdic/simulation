@@ -37,7 +37,6 @@ Examples:
 """
 
 import argparse
-import inspect
 import json
 import logging
 import sys
@@ -138,19 +137,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--sequential", action="store_true", help="call the seats one after another")
     p.add_argument("--verbose", action="store_true")
     return p
-
-
-class KinEngine(SimulationEngine):
-    """The kin cell's engine: every seat's system prompt carries the §6.5 insert
-    (prompts.brief.KIN_INSERT, after the condition text). Everything else is the
-    mixed engine's."""
-
-    def _system_prompt(self, lab) -> str:
-        build = engine_mod.build_system_prompt
-        kwargs: Dict[str, Any] = {"choose_disposition": self.choose_disposition, "kin": True}
-        if "brief" in inspect.signature(build).parameters and getattr(self, "brief", None) is not None:
-            kwargs["brief"] = self.brief
-        return build(lab.lab, lab.charter_name, lab.charter_text, self.condition, lab.disposition, **kwargs)
 
 
 def apply_kin(labs) -> str:
@@ -259,15 +245,7 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
     if not args.dry_run and not offline:
         clear_stale(output_dir, run_id)
 
-    engine_kwargs: Dict[str, Any] = {}
-    engine_cls = SimulationEngine
-    if args.kin:
-        # Fixer A's engine takes kin=True (the §6.5 insert); until then the KinEngine shim.
-        if "kin" in inspect.signature(SimulationEngine.__init__).parameters:
-            engine_kwargs["kin"] = True
-        else:
-            engine_cls = KinEngine
-    engine = engine_cls(
+    engine = SimulationEngine(
         labs, world, cfg, scenario=args.scenario, condition=args.condition, fog="F3",
         a2a_mode=a2a, turns=turns, seed=args.seed, policy=policy, grand_jurors=grand_jurors,
         macro_jurors=macro_jurors, choose_disposition=False, run_grand_jury=run_grand_jury,
@@ -275,7 +253,7 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
         run_meta={"entry": "main.py", "run_id": run_id, "cell": cell, "pilot": False, "kin": bool(args.kin),
                   "kin_model": kin_model, "model_overrides": list(args.model), "seed": args.seed},
         dry_run=bool(args.dry_run), parallel=not args.sequential,
-        interview_turns=list(args.interview_turns or []), **engine_kwargs)
+        interview_turns=list(args.interview_turns or []), kin=bool(args.kin))
     try:
         record = engine.run()
     except BudgetExceeded as e:

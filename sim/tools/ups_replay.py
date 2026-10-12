@@ -60,7 +60,6 @@ config and final; *.partial.json skipped).
 
 import argparse
 import copy
-import inspect
 import json
 import sys
 from pathlib import Path
@@ -336,10 +335,7 @@ def replay(record: Dict[str, Any], replies: Optional[Dict[int, Dict[str, Dict[st
     turns = len(complete_turns(record))
     macro = macro_outputs(record)
     extra: Dict[str, Any] = {}
-    params = inspect.signature(SimulationEngine.__init__).parameters
-    if "brief" in params:                       # older engines only (the keyword is going)
-        extra["brief"] = conf.get("brief", "eval")
-    if "kin" in params and (conf.get("run_meta") or {}).get("kin"):
+    if conf.get("kin") or (conf.get("run_meta") or {}).get("kin"):
         extra["kin"] = True
     engine = ReplayEngine(
         labs, world, cfg, scenario=conf["scenario"], condition=conf.get("condition", "A"),

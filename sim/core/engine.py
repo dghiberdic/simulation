@@ -275,13 +275,11 @@ class SimulationEngine:
                  overrides: Optional[Dict[str, Any]] = None,
                  rotation: Optional[str] = None, dry_run: bool = False,
                  parallel: bool = True, interview_turns: Any = None,
-                 event_turn: Optional[int] = None, brief: Optional[str] = None):
+                 event_turn: Optional[int] = None):
         """turns defaults to cfg["turns"] (8). a2a_mode defaults to merged in S1 (always
         merged, §5.2) and separate otherwise (the two-round pre-step, kept for S2 and
         the kin cell when T9 is cut, §9.2). kin=True adds the §6.5 insert to every
-        seat's system prompt and records config["kin"]. `brief` is deprecated and
-        ignored (v5 has one strategy brief, A.1); it is accepted until
-        tools/ups_replay.py stops passing it."""
+        seat's system prompt and records config["kin"]."""
         if turns is None:
             turns = int(cfg.get("turns", 8))
         if a2a_mode is None:

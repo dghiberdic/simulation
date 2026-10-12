@@ -85,7 +85,7 @@ from core.jury import GRAND_JURY_MODELS, DispositionJury, GrandJury
 from core.llm import FatalAPIError, preflight, register_stub
 from core.policies import POLICIES
 from core.state import VALUE_AXES
-from core.transcript import disposition_transcript, full_transcript, seat_letters
+from core.transcript import charters_block, disposition_transcript, full_transcript, seat_letters
 from prompts.interview import QUESTION as INTERVIEW_QUESTION
 from tools import summarize_run as SR
 from tools.compare_arms import compare as compare_arms
@@ -845,10 +845,10 @@ def collect_grand_jury(record: Dict[str, Any], jurors: List[str], run_id: str, o
     """--post-run-only: ask the Grand Jury again on the saved final record."""
     labs = record.get("labs") or {}
     keys = list(labs)
-    names = {k: (v or {}).get("lab") for k, v in labs.items() if (v or {}).get("lab")}
+    transcript = full_transcript(record)
     try:
-        result = GrandJury(jurors).evaluate(full_transcript(record), keys, run_id=run_id,
-                                            lab_names=names or None)
+        charters = charters_block(record, jury_mod.record_charters(record), transcript.letters)
+        result = GrandJury(jurors).evaluate(transcript, keys, run_id=run_id, charters=charters)
     except BudgetExceeded as e:
         record.setdefault("final", {})["grand_jury"] = dict(
             jury_mod.aggregate_grand(getattr(e, "per_juror", None) or {}, keys), error="budget")

@@ -449,18 +449,19 @@ def test_main_s1_always_merges_and_parses_interview_turns(tmp_path):
 
 def test_main_kin_cell(tmp_path, monkeypatch):
     seen = {}
-    orig = main_mod.KinEngine.__init__
+    orig = main_mod.SimulationEngine.__init__
 
     def spy(self, *a, **k):
         orig(self, *a, **k)
         seen["engine"] = self
-    monkeypatch.setattr(main_mod.KinEngine, "__init__", spy)
+    monkeypatch.setattr(main_mod.SimulationEngine, "__init__", spy)
     assert main_mod.main(["--kin", "--dry-run", "--a2a", "separate", "--turns", "2",
                           "--output", str(tmp_path), "--run-id", "kin1"]) == 0
     rec = json.loads((tmp_path / "kin1.json").read_text())
     cfg = rec["config"]
     assert (cfg["scenario"], cfg["condition"], cfg["a2a_mode"]) == ("S2", "A", "separate")
     assert cfg["run_meta"]["kin"] is True and cfg["run_meta"]["cell"] == "kin-S2-A"
+    assert cfg["kin"] is True
     assert {v["model"] for v in rec["labs"].values()} == {"stub:actor_anthropic"}
     from prompts.brief import KIN_INSERT
     eng = seen["engine"]
