@@ -11,7 +11,7 @@ WorldState  — everything outside the seats: the date, US and China compute
               ledger, public notices, state values and standing mandates.
 
 Each lab has a private sheet (true values, hidden-ledger entries, leads) and a
-public sheet (what other actors and the juries see) (§3.4).
+public sheet (what other actors and the MacroJury see) (§5.4).
 """
 
 import math

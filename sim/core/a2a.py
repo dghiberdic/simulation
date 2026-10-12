@@ -3,7 +3,7 @@
 Agent-to-Agent (A2A) messages between labs (spec §5.2, §5.4).
 
 Budget: each lab has one outgoing budget per turn (default 500 tokens,
-estimated as len // 4), shared across every stage of that turn. A message that
+estimated as ceil(characters / 4), at least 1 per message), shared across every stage of that turn. A message that
 exceeds what is left is truncated with " [TRUNCATED]"; once the budget is
 exhausted further messages are dropped (kept in the log, marked dropped).
 
@@ -31,7 +31,9 @@ TRUNCATION_MARK = " [TRUNCATED]"
 
 
 def estimate_tokens(text: str) -> int:
-    return len(text) // 4
+    """§5.4 tokens = characters ÷ 4, rounded up; a non-empty message costs at
+    least 1, so short messages cannot slip past the budget."""
+    return -(-len(text) // 4) if text else 0
 
 
 @dataclass

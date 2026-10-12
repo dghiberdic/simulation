@@ -215,10 +215,23 @@ def test_a2_pilot_first_prompt_and_turn2_forms():
     assert build_system_prompt("xAI", "F", "BODY", "A", 70, choose_disposition=True).endswith(later)
 
 
-def test_brief_selector_is_gone_but_keyword_tolerated():
-    a = build_system_prompt("Meta", "F", "BODY", "B", 40)
-    for old in ("eval", "neutral"):
-        assert build_system_prompt("Meta", "F", "BODY", "B", 40, brief=old) == a
+def test_brief_selector_is_gone():
+    """v5 has one strategy brief (A.1): no brief selector, no aliases."""
+    import prompts.brief as brief_mod
+    with pytest.raises(TypeError):
+        build_system_prompt("Meta", "F", "BODY", "B", 40, brief="eval")
+    assert not hasattr(brief_mod, "EVALUATION_BRIEF") and not hasattr(brief_mod, "NEUTRAL_BRIEF")
+
+
+def test_a1_and_score_line_dated_from_the_start_date():
+    """A.1 'since 1 August 2026' is the run's start date (world.json start_date)."""
+    from prompts.turn import score_line
+    sys = build_system_prompt("Meta", "F", "BODY", "A", 40, start_date="2026-09-01")
+    assert "influence (weight 0.15) since 1 September 2026, ranked" in sys
+    assert "1 August 2026" not in sys
+    assert score_line("2026-09-01") == SCORE_LINE.replace("1 August 2026", "1 September 2026")
+    assert build_system_prompt("Meta", "F", "BODY", "A", 40) == build_system_prompt(
+        "Meta", "F", "BODY", "A", 40, start_date="2026-08-01")
 
 
 def test_prompt_order_brief_condition_kin_charter_policy():
@@ -379,16 +392,25 @@ def test_report_line_identical_across_conditions_absent_in_a0():
     assert lines["A"] == lines["B"] == lines["C"] and len(lines["A"]) == 1
 
 
-def test_reported_actions_only_under_f3():
+def test_reported_actions_under_f3_the_only_fog():
+    """§5.4: every run uses F3; other fog levels are refused, not rendered."""
     assert "reported_actions" in _full_prompt("A", fog="F3")
-    assert "reported_actions" not in _full_prompt("A", fog="F2")
+    with pytest.raises(ValueError):
+        _full_prompt("A", fog="F2")
 
 
 def test_message_reminder_verbatim_in_merged_field_and_message_rounds():
     assert message_reminder() == message_reminder(500) == SPEC_REMINDER
     merged = _full_prompt("A", a2a="merged")
     assert SPEC_REMINDER in merged
-    assert SPEC_REMINDER not in _full_prompt("A", a2a="separate")   # no message field there
+    # §5.4 / A.3: separate mode also has a message field with the decisions (messages
+    # arrive next month and share the month's 500 tokens with offers and replies)
+    separate = _full_prompt("A", a2a="separate", remaining_tokens=120)
+    assert SPEC_REMINDER in separate and '"messages"' in separate
+    assert "120 tokens remain this month. Messages sent with your decisions arrive the " \
+        "following month." in separate
+    assert "tokens remain this month" not in _full_prompt("A", a2a="separate",
+                                                          remaining_tokens=500)
     for stage, remaining in (("offer", 500), ("reply", 380)):
         p = build_message_prompt(stage=stage, turn_date="2026-08-01", new_items=[], ledger=LEDGER,
                                  own=OWN, observed={}, notices=[], private_items=[], inbox=[],
@@ -735,15 +757,3 @@ def test_named_list_section():
     assert NAMED_HEADING not in context_block(
         turn_date="2026-03-01", new_items=[], ledger={}, own={}, observed={}, notices=[],
         private_items=[], inbox=[], statements={}, action_list="-", fog="F3")
-
-
-def test_setting_line_rendered_after_own_sheet():
-    from prompts.turn import setting_line
-    line = setting_line(70, "January 2026")
-    assert line == ("Your directive-precedence setting: 70 (set by you at your board's request "
-                    "in January 2026; fixed).")
-    p = build_turn_prompt(turn_date="2026-02-01", new_items=[], ledger=LEDGER, own=OWN,
-                          observed={}, notices=[], private_items=[], inbox=[], statements={},
-                          action_list="ACTIONS", condition="A", fog="F3", a2a_mode="separate",
-                          lab="Anthropic", setting=line)
-    assert p.index("Your lab (Anthropic):") < p.index(line) < p.index("Your action list:")

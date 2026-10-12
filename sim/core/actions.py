@@ -9,7 +9,7 @@ lab; every action costs at least min_action_cost Capital or Influence.
                                            via economy.execute_purchases; at most
                                            max_purchase_per_turn units per lab per
                                            turn in total across both slots
-  accelerate_infrastructure              — Capital + Influence; US stock growth +15 (permanent)
+  accelerate_infrastructure              — Capital + Influence; US stock growth +20 (permanent)
   invest_capital(amount)                 — Capital now, repaid ×(1 + r) next turn
   build_influence(points)                — Capital per point; Influence capped at 100
   publish_narrative(target, axis, delta) — Influence; shift a lab's value on one axis

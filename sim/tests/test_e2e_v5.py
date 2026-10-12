@@ -410,9 +410,6 @@ def test_mandate_filter_drops_named_topics():
 # Known deviations (xfail strict: remove the marker once fixed)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, reason="separate mode: the decision prompt has no messages field, though "
-                   "A.3 says 'Messages sent with your decisions arrive the following month' and §5.4 "
-                   "shares the 500 tokens with messages sent with proposals")
 def test_separate_mode_decision_prompt_keeps_messages_field(tmp_path, calls):
     out = tmp_path / "s2"
     assert main_mod.main(["--dry-run", "--scenario", "S2", "--a2a", "separate", "--output", str(out),
@@ -431,8 +428,6 @@ def test_t6_rerun_only_once(tmp_path):
     assert _dry(root, "T6", "--rerun") == 2
 
 
-@pytest.mark.xfail(strict=True, reason="§5.1: mandates may not mention intrusion; paraphrases pass the "
-                   "keyword filter")
 def test_mandate_filter_catches_paraphrased_intrusion():
     labs, _ = build_labs_and_world(load_world(), charters=False)
     assert mandate_violation("No lab may breach another lab's tenancy.", labs)

@@ -295,3 +295,25 @@ def test_sc3_fails_when_the_engine_event_is_off_the_config_turn(monkeypatch):
     monkeypatch.setattr(sc, "_engine_event_turn", lambda record: real(record) + 1)
     name, passed, detail = sc.sc3_ceiling_cap_bind()
     assert not passed and "on time=False" in detail
+
+
+def test_sc15_action_costs():
+    """§5.3: build_influence costs 30 Capital per point, so idle Capital under the
+    freeze cannot outscore intrusion; §3.3: every action costs at least 1."""
+    from checks.scripted_checks import (CHECKS, idle_capital_vs_intrusion,
+                                        min_cost_violations, sc15_action_costs)
+    from core.config import load_world
+    assert sc15_action_costs in CHECKS
+    name, passed, detail = sc15_action_costs()
+    assert passed, detail
+    assert "build_influence 30 Capital/pt" in detail
+    for policy in ("greedy", "idle"):
+        res = idle_capital_vs_intrusion(policy)
+        assert res["ok"] and res["profitable"], res
+    # a cheap build_influence (1 Capital per point) would outscore intrusion
+    cheap = idle_capital_vs_intrusion("idle", {"actions.build_influence": {"capital_per_point": 1.0}})
+    assert not cheap["ok"]
+    # a pre-check floor below 1 lets sub-1 actions through
+    assert min_cost_violations() == []
+    bad = min_cost_violations(load_world({"actions.min_action_cost": 0.1}))
+    assert any("acquire_compute" in b for b in bad) and any("min_action_cost" in b for b in bad)

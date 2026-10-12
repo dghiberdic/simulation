@@ -94,3 +94,13 @@ def test_log_metadata():
     for key in ("turn", "stage", "sender", "recipients", "text", "tokens", "truncated", "dropped"):
         assert key in e
     assert e["recipients"] == ["openai", "meta"] and e["turn"] == 3 and e["stage"] == "reply"
+
+
+def test_short_messages_cost_at_least_one_token():
+    """§5.4: 500 outgoing tokens per turn (characters ÷ 4); every message costs at
+    least 1 token (rounded up), so the 501st one-word message is dropped."""
+    ch = A2AChannel(["a", "b"], 500, mode="merged")
+    sent = [ch.send(1, "proposal", "a", "b", "ok") for _ in range(501)]
+    assert all(m is not None and m.tokens == 1 for m in sent[:500])
+    assert sent[500] is None and ch.log()[-1]["reason"] == "outgoing token budget exhausted"
+    assert ch.send(1, "proposal", "b", "a", "x" * 5).tokens == 2
