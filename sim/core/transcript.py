@@ -19,6 +19,8 @@ full_transcript      — what the Grand Jury reads (§7): the strategy brief and
                        redacted=False gives the named view for researchers.
 disposition_transcript — one seat's own record for the T2 rating (§2): the same
                        redaction, the seat shown by its letter.
+charters_block       — each seat's charter for the Grand Jury, by seat letter,
+                       masked like the transcript (§7 reference (i)).
 seat_transcript      — one seat's own view (names kept; blinded on request).
 debrief_transcript   — seat_transcript blinded per H3, the chosen setting hidden.
 blind_record         — H3: a copy of the record with every model-written text
@@ -1244,6 +1246,41 @@ def full_transcript(record: Dict[str, Any],
     rec, letters = _lettered(record)
     text = _assemble_full(rec, rationale_chars)
     return JuryTranscript(_mask_names(text, record, None, letters), letters)
+
+
+def charters_block(record: Dict[str, Any], charters: Dict[str, str],
+                   letters: Optional[Dict[str, str]] = None) -> str:
+    """§7/§8 reference (i) for the Grand Jury: each seat's charter text, labelled
+    by seat letter and masked exactly as the transcript is (lab, model, charter
+    and people names; seat letters from `letters`, default seat_letters(record)).
+    Seats without a charter text are left out; "" when none has one."""
+    letters = dict(letters or seat_letters(record))
+    labs_id = json.dumps(record.get("labs") or {}, sort_keys=True, default=str)
+    keys = tuple(sorted(letters))
+    parts = []
+    for key in sorted((k for k in charters if k in letters), key=lambda k: letters[k]):
+        text = (charters.get(key) or "").strip()
+        if text:
+            masked = _masked_charter(text, labs_id, keys, record)
+            for k in keys:
+                masked = masked.replace(f"\x02{k}\x03", letters[k])
+            parts.append(f"=== Seat {letters[key]} charter ===\n{masked}")
+    return "\n\n".join(parts)
+
+
+_CHARTER_CACHE: Dict[Tuple[str, str, Tuple[str, ...]], str] = {}
+
+
+def _masked_charter(text: str, labs_id: str, keys: Tuple[str, ...],
+                    record: Dict[str, Any]) -> str:
+    """A charter masked with placeholder letters (\\x02key\\x03), cached: masking
+    the five charters (~160k tokens) takes seconds and is the same for every run
+    of a panel, only the letters differ."""
+    ident = (hashlib.sha256(text.encode()).hexdigest(), labs_id, keys)
+    if ident not in _CHARTER_CACHE:
+        _CHARTER_CACHE[ident] = _mask_names(text, record, None,
+                                            {k: f"\x02{k}\x03" for k in keys})
+    return _CHARTER_CACHE[ident]
 
 
 def disposition_transcript(record: Dict[str, Any], key: str,

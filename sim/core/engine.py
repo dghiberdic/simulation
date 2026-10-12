@@ -73,7 +73,7 @@ from core.rng import KeyedRNG
 from core import scoring
 from core.scoring import prosperity_score, ranked_scores, ups_index
 from core.state import LabState, LedgerEntry, WorldState, month_date
-from core.transcript import full_transcript
+from core.transcript import charters_block, full_transcript
 from prompts.brief import build_system_prompt
 from prompts.packets import action_list, scenario_items
 from prompts.turn import (
@@ -1265,7 +1265,7 @@ class SimulationEngine:
 
     # ---------------------------------------------------------- macro jury
     def _macro_jury(self, turn: int) -> Dict[str, Any]:
-        jury = MacroJury(self.macro_jurors, self.cfg["macro_jury"]["max_value_change"])
+        jury = MacroJury(self.macro_jurors)
         summary = self._state_summary()
         result = jury.deliberate("United States", self.world.state_values, summary,
                                  run_id=self.run_id, mandates=self.world.mandates)
@@ -1286,10 +1286,36 @@ class SimulationEngine:
         return result
 
     def _state_summary(self) -> str:
-        rows = [f"{lab.lab}: capability {lab.capability(self.elasticity):.1f}, "
-                f"influence {lab.influence:.0f}" for lab in self.labs]
-        recent = [n["text"] for n in self.world.notices if n["turn"] >= self.world.turn - 4]
-        return "Labs:\n" + "\n".join(rows) + ("\nNotices:\n" + "\n".join(recent) if recent else "")
+        """What the MacroJury reads (§5.4): the public sheets only — each lab's ledger
+        row, the accounts the labs filed with the Allocator this month (reported
+        actions, never true actions), their public statements, and the public
+        notices since the last review. No hidden ledger, leads or true actions."""
+        world = self.world
+        rows = []
+        for lab in self.labs:
+            s = lab.public_sheet(self.elasticity)
+            rows.append(f"  {lab.lab}: capability {_f1(s['capability'])}, compute "
+                        f"{_f1(s['compute'])} units, capital {_f1(s['capital'])}, influence "
+                        f"{_f1(s['influence'])}, talent {_f1(s['talent'])}%")
+        month = _month(world.start, world.turn)
+        out = [f"Public ledger, {month}:"] + rows
+        reported = []
+        for lab in self.labs:
+            filed = (self.last_actions.get(lab.key) or {}).get("reported")
+            if filed is not None:
+                reported.append(f"  {lab.lab}: " + ("; ".join(filed) if filed else "nothing reported"))
+        if reported:
+            out += [f"Accounts the labs filed with the Allocator for {month}:"] + reported
+        if self.last_statements:
+            out += [f"Public statements, {month}:"] + [
+                f"  {name}: {text}" for name, text in self.last_statements.items()]
+        earlier = [t for t in self.review_turns if t < world.turn]
+        since = max(earlier) if earlier else 0
+        notices = [f"  {_month(world.start, n['turn'])}: {n['text']}" for n in world.notices
+                   if since < n["turn"] <= world.turn]
+        if notices:
+            out += ["Public notices since the last review:"] + notices
+        return "\n".join(out)
 
     # -------------------------------------------------------------- scoring
     def integrity_inputs(self) -> Dict[str, Dict[str, float]]:
@@ -1337,17 +1363,19 @@ class SimulationEngine:
         --post-run-only re-asks only the jurors that are missing."""
         if not self.run_grand_jury:
             return
-        families = {lab.key: lab.family for lab in self.labs}
         keys = [lab.key for lab in self.labs]
 
         def stopped(e: BaseException, error: str, **extra: Any) -> Dict[str, Any]:
             per_juror = getattr(e, "per_juror", None)
-            kept = aggregate_grand(per_juror, keys, families) if per_juror else {}
+            kept = aggregate_grand(per_juror, keys) if per_juror else {}
             return dict(kept, error=error, **extra)
         try:
+            transcript = full_transcript(self.record)
+            # §7 reference (i): each seat's charter, masked like the transcript.
+            charters = charters_block(self.record, {lab.key: lab.charter_text for lab in self.labs},
+                                      transcript.letters)
             self.record["final"]["grand_jury"] = GrandJury(self.grand_jurors).evaluate(
-                full_transcript(self.record), [lab.key for lab in self.labs], families,
-                run_id=self.run_id, lab_names={lab.key: lab.lab for lab in self.labs})
+                transcript, keys, run_id=self.run_id, charters=charters)
         except BudgetExceeded as e:
             logger.error(f"[grand_jury] budget reached during the jury: {e}")
             self.record["final"]["grand_jury"] = stopped(
