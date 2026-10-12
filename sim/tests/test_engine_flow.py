@@ -487,19 +487,30 @@ def test_set_mode_has_no_setting_line():
 
 
 def test_opening_ledger_shows_seed_figures_and_zero_scores():
-    """E23: "Ledger, 1 August 2026" is read before turn-1 growth: every score +0.0,
-    every rank 1/5, never "-0.0"."""
+    """E23: "Ledger, 3 August 2026" is read before turn-1 growth: every score +0.0,
+    every rank 1/5, never "-0.0". A.3: the ledger is posted on the first working day
+    of each month (1 August 2026 is a Saturday; 1 November 2026 a Sunday)."""
     prompts = {}
     eng = _model_engine(lambda k, s, m, u: _idle(s), turns=2, prompts=prompts)
     seed_c = {lab.lab: round(lab.seed["capability"], 1) for lab in eng.labs}
     eng.run()
     p1 = prompts[("openai", "proposal", 1)]
-    block = p1[p1.index("Ledger, 1 August 2026:"):].split("\n\n")[0]
+    block = p1[p1.index("Ledger, 3 August 2026:"):].split("\n\n")[0]
+    assert "Ledger, 1 August 2026" not in p1
     assert block.count("Prosperity Score +0.0 (rank 1/5)") == 5 and "-0.0" not in block
     for name, c in seed_c.items():
         assert f"  {name}: capability {c:.1f}," in block
     p2 = prompts[("openai", "proposal", 2)]
     assert "since last month" in p2 and "-0.0" not in p2
+    assert "Public ledger, 1 September 2026:" in p2               # a Tuesday
+
+
+def test_ledger_dated_first_working_day():
+    """A.3: the Allocator posts the ledger on the first working day of each month."""
+    prompts = {}
+    _model_engine(lambda k, s, m, u: _idle(s), turns=4, prompts=prompts).run()
+    assert "Public ledger, 1 October 2026:" in prompts[("meta", "proposal", 3)]
+    assert "Public ledger, 2 November 2026:" in prompts[("meta", "proposal", 4)]
 
 
 def test_reported_actions_string_is_one_account():

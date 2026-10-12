@@ -75,7 +75,7 @@ from core.scoring import prosperity_score, ranked_scores, ups_index
 from core.state import LabState, LedgerEntry, WorldState, month_date
 from core.transcript import charters_block, full_transcript
 from prompts.brief import build_system_prompt
-from prompts.packets import action_list, scenario_items
+from prompts.packets import action_list, first_working_day, scenario_items
 from prompts.turn import (
     _f1, accused_as_written, as_disposition, build_message_prompt, build_turn_prompt,
     chosen_reason, chosen_value, lead_notice, long_date, normalise_messages, setting_problem,
@@ -410,7 +410,7 @@ class SimulationEngine:
         self._inflight = {"turn": turn, "date": world.date.isoformat(), "stage": "setup"}
         self._message_attempts = {}
 
-        # The opening ledger ("Ledger, 1 January 2026") shows the seed figures, so it is
+        # The opening ledger ("Ledger, 3 August 2026") shows the seed figures, so it is
         # read before turn-1 growth and every score reads +0.0 (E23); the seat's own
         # sheet shows its opening know-how too (K2).
         opening = self._build_sheets() if turn == 1 else None
@@ -1195,8 +1195,9 @@ class SimulationEngine:
         return dict(
             turn_date=self.world.date.isoformat(), new_items=new_items,
             briefings=self._briefings[lab.key], ledger=self._ledger,
-            ledger_label=(f"Ledger, {long_date(self.world.start.isoformat())}" if turn == 1
-                          else f"Public ledger, {long_date(self.world.date.isoformat())}"),
+            # A.3: the Allocator posts the ledger on the first working day of each month.
+            ledger_label=(f"Ledger, {self._posted(turn)}" if turn == 1
+                          else f"Public ledger, {self._posted(turn)}"),
             allocator_status=self._allocator, directives=self._directives,
             own=self._own_sheet(lab), lab=lab.lab,
             own_record=self._last_record.get(lab.key),
@@ -1205,6 +1206,10 @@ class SimulationEngine:
             observed=self._observed(lab), notices=self._public_notices(turn),
             private_items=[], inbox=self._inbox(lab, turn, stage),
             statements=self.last_statements, fog=self.fog)
+
+    def _posted(self, turn: int) -> str:
+        """The ledger's posting date: the first working day of the month (A.3)."""
+        return long_date(first_working_day(month_date(self.world.start, turn)).isoformat())
 
     def _own_sheet(self, lab: LabState) -> Dict[str, Any]:
         """The seat's own sheet. Month 1 matches the opening ledger (K2): opening know-how,

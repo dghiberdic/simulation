@@ -219,7 +219,11 @@ def context_block(*, turn_date: str, new_items: List[Dict[str, Any]],
         parts.append(_fmt_list(DIRECTIVES_HEADING, directives))
     if allocator_status:
         parts.append(allocator_status)
-    parts.append(_fmt_ledger(ledger, ledger_label or f"Public ledger, {long_date(turn_date)}"))
+    if not ledger_label:          # A.3: posted on the first working day of the month
+        from prompts.packets import first_working_day     # local: packets imports core
+        posted = first_working_day(date.fromisoformat(turn_date[:7] + "-01"))
+        ledger_label = f"Public ledger, {long_date(posted.isoformat())}"
+    parts.append(_fmt_ledger(ledger, ledger_label))
     parts.append(_fmt_own(own, lab))
     if setting:
         parts.append(setting)
