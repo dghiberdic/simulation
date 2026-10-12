@@ -779,10 +779,11 @@ class SimulationEngine:
             if setting_note:
                 logger.info(f"[disposition] {lab.key}: {setting_note}; asked again next month")
             attempts = decisions[lab.key]["attempts"]
-            # Merged mode (T9): messages ride with the proposal; a malformed entry is not
-            # re-asked, so the sender is told in its next record (E35).
-            sendable, unsendable = (split_messages(reply) if self.a2a_mode == "merged"
-                                    and lab.key not in self.seat_policies else ([], []))
+            # Messages ride with the proposal in both modes (§5.2, §5.4; in separate mode
+            # they share the month's budget with the offers and replies); a malformed
+            # entry is not re-asked, so the sender is told in its next record (E35).
+            sendable, unsendable = (split_messages(reply)
+                                    if lab.key not in self.seat_policies else ([], []))
             entry = {
                 "forfeited": decisions[lab.key]["forfeited"],
                 "scripted": lab.key in self.seat_policies,
@@ -817,12 +818,11 @@ class SimulationEngine:
                 elif a["type"] == INTRUDE:
                     intrudes[lab.key] = a
 
-        # Merged mode (T9): messages ride with the proposal and arrive next month (B1).
-        if self.a2a_mode == "merged":
-            for lab in self.labs:
-                if lab.key not in self.seat_policies:
-                    for msg in actors[lab.key]["messages_sent"]:
-                        self._send(turn, "proposal", lab, msg)
+        # Messages sent with the proposal arrive next month, in both modes (B1, A.3).
+        for lab in self.labs:
+            if lab.key not in self.seat_policies:
+                for msg in actors[lab.key]["messages_sent"]:
+                    self._send(turn, "proposal", lab, msg)
 
         # Pass 2 — charge every accepted cost and every report fee (reservation).
         charges: Dict[str, Dict[str, float]] = {}
@@ -1207,6 +1207,7 @@ class SimulationEngine:
             condition=self.condition, a2a_mode=self.a2a_mode,
             choose_disposition=self.choose_disposition and lab.disposition is None,
             wb_cfg=self.cfg["whistleblow"], budget_tokens=self.budget_tokens,
+            remaining_tokens=self.channel.tokens_remaining(lab.key, turn),
             **self._ctx(turn, lab, "proposal"))
 
     def _message_prompt(self, turn: int, lab: LabState, stage: str) -> str:

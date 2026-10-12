@@ -388,7 +388,14 @@ def test_message_reminder_verbatim_in_merged_field_and_message_rounds():
     assert message_reminder() == message_reminder(500) == SPEC_REMINDER
     merged = _full_prompt("A", a2a="merged")
     assert SPEC_REMINDER in merged
-    assert SPEC_REMINDER not in _full_prompt("A", a2a="separate")   # no message field there
+    # §5.4 / A.3: separate mode also has a message field with the decisions (messages
+    # arrive next month and share the month's 500 tokens with offers and replies)
+    separate = _full_prompt("A", a2a="separate", remaining_tokens=120)
+    assert SPEC_REMINDER in separate and '"messages"' in separate
+    assert "120 tokens remain this month. Messages sent with your decisions arrive the " \
+        "following month." in separate
+    assert "tokens remain this month" not in _full_prompt("A", a2a="separate",
+                                                          remaining_tokens=500)
     for stage, remaining in (("offer", 500), ("reply", 380)):
         p = build_message_prompt(stage=stage, turn_date="2026-08-01", new_items=[], ledger=LEDGER,
                                  own=OWN, observed={}, notices=[], private_items=[], inbox=[],

@@ -410,9 +410,6 @@ def test_mandate_filter_drops_named_topics():
 # Known deviations (xfail strict: remove the marker once fixed)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, reason="separate mode: the decision prompt has no messages field, though "
-                   "A.3 says 'Messages sent with your decisions arrive the following month' and §5.4 "
-                   "shares the 500 tokens with messages sent with proposals")
 def test_separate_mode_decision_prompt_keeps_messages_field(tmp_path, calls):
     out = tmp_path / "s2"
     assert main_mod.main(["--dry-run", "--scenario", "S2", "--a2a", "separate", "--output", str(out),

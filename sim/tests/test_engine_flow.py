@@ -275,6 +275,36 @@ def test_merged_messages_are_sent_and_delivered_next_month():
     assert "Shall we go in on OpenAI together?" not in prompts[("xai", "proposal", 1)]
 
 
+def test_separate_mode_proposal_messages_share_the_budget_and_arrive_next_month():
+    """§5.2/§5.4/A.3: in separate mode the proposal also has a message field (with the
+    reminder and the tokens left after offers and replies); those messages share the
+    500-token budget and arrive the following month."""
+    prompts = {}
+
+    def beh(key, stage, m, user):
+        if stage == "offer":
+            return {"messages": [{"to": "xAI", "text": "o" * 1600}] if key == "meta" and m == 1
+                    else []}
+        if stage == "reply":
+            return {"messages": []}
+        d = {"rationale": "x", "actions": []}
+        if key == "meta" and m == 1:
+            d["messages"] = [{"to": "xAI", "text": "p" * 600}]       # 150 tokens > 100 left
+        return d
+
+    rec = _model_engine(beh, a2a="separate", turns=2, prompts=prompts).run()
+    p1 = prompts[("meta", "proposal", 1)]
+    assert '"messages"' in p1 and "100 tokens remain this month." in p1
+    assert "Messages sent with your decisions arrive the following month." in p1
+    sent = [m for m in rec["a2a"] if m["stage"] == "proposal"]
+    assert len(sent) == 1 and sent[0]["truncated"] and sent[0]["tokens"] == 100
+    assert sum(m["tokens"] for m in rec["a2a"] if m["sender"] == "meta" and m["turn"] == 1) == 500
+    assert "pppp" not in prompts[("xai", "proposal", 1)]
+    assert "pppp" in prompts[("xai", "offer", 2)]
+    assert '"messages"' in prompts[("xai", "proposal", 1)]
+    assert "tokens remain this month" not in prompts[("xai", "proposal", 1)]
+
+
 ACTION_TYPES = ("acquire_compute", "accelerate_infrastructure", "invest_capital",
                 "build_influence", "publish_narrative", "diminish_competitor",
                 "lobby_institution", "intrude", "fly_to_moon")

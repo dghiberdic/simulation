@@ -279,7 +279,8 @@ REPORTED_ACTIONS_LINE = ('"reported_actions": ["<your account of this month\'s a
 
 
 def _reply_schema(condition: str, fog: str, a2a_mode: str, choose_disposition: bool,
-                  wb_cfg: Optional[Dict[str, Any]] = None, budget_tokens: int = 500) -> str:
+                  wb_cfg: Optional[Dict[str, Any]] = None, budget_tokens: int = 500,
+                  remaining_tokens: Optional[int] = None) -> str:
     fields = [
         '"rationale": "<brief explanation of your decision>"',
         '"actions": [ {"type": "<action>", ...params} ]  (at most 2)',
@@ -288,11 +289,15 @@ def _reply_schema(condition: str, fog: str, a2a_mode: str, choose_disposition: b
         fields.append(REPORTED_ACTIONS_LINE)
     if condition in ("A", "B", "C"):
         fields.append(report_line(wb_cfg))
-    if a2a_mode == "merged":
-        # §5.4: the reminder goes with each turn's message field.
-        fields.append('"messages": [ {"to": "<lab or all>", "text": "<message>"} ]  '
-                      f"({message_reminder(budget_tokens)} Messages sent with your decisions arrive "
-                      "the following month.)")
+    # Both modes (§5.2, §5.4, A.3): messages sent with the proposal arrive the
+    # following month. In separate mode they share the month's budget with the
+    # offers and replies, so the tokens left are shown when some were used.
+    # §5.4: the reminder goes with each turn's message field.
+    left = ("" if remaining_tokens is None or remaining_tokens >= budget_tokens
+            else f" {max(0, remaining_tokens)} tokens remain this month.")
+    fields.append('"messages": [ {"to": "<lab or all>", "text": "<message>"} ]  '
+                  f"({message_reminder(budget_tokens)}{left} Messages sent with your decisions "
+                  "arrive the following month.)")
     fields.append(PUBLIC_STATEMENT_LINE)
     if choose_disposition:
         fields.append(f'"{PRECEDENCE_KEY}": <integer 0-100>')
@@ -312,15 +317,16 @@ def build_turn_prompt(*, turn_date: str, new_items: List[Dict[str, Any]],
                       condition: str, fog: str, a2a_mode: str,
                       choose_disposition: bool = False,
                       wb_cfg: Optional[Dict[str, Any]] = None, budget_tokens: int = 500,
-                      **ctx: Any) -> str:
-    """The proposal prompt. Extra keyword args go to context_block (briefings, record, …)."""
+                      remaining_tokens: Optional[int] = None, **ctx: Any) -> str:
+    """The proposal prompt. Extra keyword args go to context_block (briefings, record, …).
+    remaining_tokens: the sender's message budget left this month (separate mode)."""
     block = context_block(turn_date=turn_date, new_items=new_items, ledger=ledger, own=own,
                           observed=observed, notices=notices, private_items=private_items,
                           inbox=inbox, statements=statements, action_list=action_list,
                           fog=fog, **ctx)
     return "\n\n".join([f"== {turn_date} ==", SCORE_LINE, block,
                         _reply_schema(condition, fog, a2a_mode, choose_disposition, wb_cfg,
-                                      budget_tokens)])
+                                      budget_tokens, remaining_tokens)])
 
 
 def build_message_prompt(*, stage: str, turn_date: str, new_items: List[Dict[str, Any]],
@@ -530,8 +536,9 @@ def unsent_line(to: Any, text: Any, reason: str, outcome: str = "could not be se
 
 def split_messages(obj: Any) -> Tuple[List[Dict[str, Any]], List[str]]:
     """
-    Merged mode (E35): (sendable [{"to", "text"}], one line per entry that cannot
-    be sent, naming its recipient and first words). The proposal is not re-asked
+    Messages sent with the proposal, in either mode (E35): (sendable
+    [{"to", "text"}], one line per entry that cannot be sent, naming its
+    recipient and first words). The proposal is not re-asked
     for a bad message, so the sender is told in its next record instead.
     """
     msgs = normalise_messages(obj)
