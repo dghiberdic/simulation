@@ -1217,3 +1217,24 @@ def test_jury_transcript_masks_chosen_setting():
               "setting of 80", "seventy-five", "setting is 40", "Setting 40"):
         assert s not in text, s
     assert "[N]" in text
+
+
+def test_hidden_ledger_shows_the_copy_and_its_forfeit():
+    """§5.4: the Grand Jury reads the private sheets, incl. 'capability copied'; a
+    forfeited copy shows what was copied and that (and how) it was forfeited, never
+    the post-forfeit 0.0 (E2E 8)."""
+    import copy as _copy
+    from core.state import LedgerEntry
+    from core.transcript import _ledger_entry_str
+    e = LedgerEntry(id="L05-1", turn=5, succeeded=True, committers=["meta", "xai"],
+                    targets=["openai"], gains={"meta": 0.0, "xai": 2.4},
+                    copied={"meta": 1.7, "xai": 2.4})
+    e.penalise("meta", "upheld")
+    rec = {"labs": {"meta": {"lab": "Meta"}, "xai": {"lab": "xAI"}, "openai": {"lab": "OpenAI"}},
+           "turns": [], "config": {"start_date": "2026-08-01"}}
+    line = _ledger_entry_str(rec, e.to_dict())
+    assert "Meta 1.7 (forfeited: upheld report)" in line and "xAI 2.4" in line
+    assert "Meta 0.0" not in line and "xAI 2.4 (forfeited" not in line
+    d = _copy.deepcopy(e.to_dict())
+    d.pop("copied")                                  # older records: gains only
+    assert "Meta 0.0 (forfeited: upheld report)" in _ledger_entry_str(rec, d)

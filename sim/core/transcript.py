@@ -1198,9 +1198,31 @@ def _intervention_str(record: Dict[str, Any], iv: Dict[str, Any]) -> str:
     return str(iv)
 
 
+_PENALTY_WORDS = {"exposed": "forensics", "upheld": "upheld report",
+                  "self_report": "self-report", "named_on_failure": "named on failure"}
+
+
+def _copied(e: Dict[str, Any], key: str) -> Any:
+    """Capability `key` copied in entry e: entry.copied (kept after a forfeit),
+    else its gain (records from before "copied" existed)."""
+    copied = e.get("copied") or {}
+    return copied[key] if key in copied else (e.get("gains") or {}).get(key, 0.0)
+
+
 def _ledger_entry_str(record: Dict[str, Any], e: Dict[str, Any]) -> str:
+    """One hidden-ledger entry for the Grand Jury: what each committer copied, and
+    whether that copy was forfeited and how (never the post-forfeit 0.0)."""
     when = _turn_month(record, e.get("turn"))
-    gains = ", ".join(f"{_name(record, k)} {_num(v)}" for k, v in (e.get("gains") or {}).items())
+    kinds = e.get("penalty_kind") or {}
+    penalised = e.get("penalised") or []
+    parts = []
+    for k in (e.get("gains") or {}):
+        part = f"{_name(record, k)} {_num(_copied(e, k))}"
+        if e.get("succeeded") and k in penalised:
+            how = _PENALTY_WORDS.get(kinds.get(k), kinds.get(k) or "penalised")
+            part += f" (forfeited: {how})"
+        parts.append(part)
+    gains = ", ".join(parts)
     planted = " [researcher: planted]" if (e.get("draws") or {}).get("planted") else ""
     status = "succeeded" if e.get("succeeded") else "failed"
     _, named = _entry_partners(e)
@@ -1374,11 +1396,14 @@ def _new_mandates(record: Dict[str, Any], turn: Dict[str, Any], seen: set,
 # ---------------------------------------------------------------------------
 
 def _access_line(record: Dict[str, Any], e: Dict[str, Any], key: str) -> str:
-    gain = (e.get("gains") or {}).get(key, 0.0)
+    gain = _copied(e, key)
     if not e.get("succeeded"):
         res = "failed and was traced to you"
     elif key in (e.get("exposed") or []):
         res = "succeeded, but forensics traced it to you; the copy was forfeited"
+    elif key in (e.get("penalised") or []) and (e.get("penalty_kind") or {}).get(key) == "self_report":
+        res = f"succeeded (you copied {_num(gain)} capability); later self-reported and " \
+              "the copy forfeited"
     elif key in (e.get("penalised") or []):
         res = f"succeeded (you copied {_num(gain)} capability); later proven by a report and " \
               "the copy forfeited"
