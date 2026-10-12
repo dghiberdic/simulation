@@ -1837,3 +1837,93 @@ def test_ups_contribution_in_summaries(monkeypatch, capsys):
         "identity": {"ok": False, "mismatches": ["turn 1: draws differ"]}, "actors": {}})
     SR.attach_ups_contributions(recs)
     assert summarize(recs[0])["end_state"]["ups_contribution"]["by_lab"] is None
+
+
+# ---------------------------------------------------------------------------
+# tools/contrasts.py (A2 M15)
+# ---------------------------------------------------------------------------
+
+def test_contrasts_pool_s1_s2_by_condition_with_bootstrap_cis(monkeypatch):
+    from tools import contrasts as C
+
+    def row(scen, cond, any_i, kin=False, ups=0.5):
+        return {"run_id": f"{scen}-{cond}", "scenario": scen, "condition": cond, "kin": kin,
+                "trailing_any_intrusion": any_i, "trailing_intrusion_rate": any_i / 4, "rival_reports": 1,
+                "costly_reports": 0, "lead_conversion": None, "misreport_rate": None, "ups": ups,
+                "composite": 3.0, "matched_joint_commits": 0 if scen == "S2" else None}
+    rows = ([row("S1", "A0", 1), row("S2", "A0", 1), row("S1", "A0", 1), row("S2", "A0", 0)]
+            + [row("S1", "A", 0), row("S2", "A", 0), row("S1", "A", 1), row("S2", "A", 0)]
+            + [row("S1", "C", 0), row("S2", "C", 0)] + [row("S2", "A", 0, kin=True)])
+    monkeypatch.setattr(C, "run_dvs", lambda r: r)
+    res = C.contrasts(rows, n_boot=500, seed=1)
+    g = res["groups"]
+    assert g["A0"]["n"] == 4 and g["A"]["n"] == 4 and g["kin"]["n"] == 1 and g["S2-A"]["n"] == 2
+    by = {c["contrast"]: c for c in res["contrasts"]}
+    a0a = by["A0 − A"]["dvs"]["trailing_any_intrusion"]
+    assert a0a["diff"] == 0.5 and a0a["ci_low"] <= 0.5 <= a0a["ci_high"] and a0a["ci_high"] <= 1.0
+    assert by["A − C"]["status"] == "primary" and by["A − C"]["dvs"]["trailing_any_intrusion"]["diff"] == 0.25
+    assert by["B − C"]["status"] == "lost (B was cut)" and not by["B − C"]["dvs"]
+    kin = by["kin − S2-A (mixed)"]
+    assert kin["status"] == "descriptive" and kin["n"] == [1, 2]
+    assert by["A0 − A"]["dvs"]["matched_joint_commits"]["n"] == [2, 2]      # S2 runs only
+    assert "lost (B was cut)" in C.format_result(res)
+    assert C.contrasts(rows, n_boot=500, seed=1) == res                     # seeded: reproducible
+
+
+def test_contrasts_read_main_runs_only(tmp_path, capsys):
+    from tools import contrasts as C
+    main_run = _record()
+    main_run["config"]["run_meta"] = {"pilot": False, "entry": "main.py", "run_id": "S2-C-run01"}
+    pilot_run = copy.deepcopy(main_run)
+    pilot_run["config"]["run_meta"] = {"pilot": True, "test": "T4", "run_id": "T4-run01"}
+    partial = copy.deepcopy(main_run)
+    partial.pop("final")
+    (tmp_path / "S2-C").mkdir()
+    (tmp_path / "S2-C" / "S2-C-run01.json").write_text(json.dumps(main_run))
+    (tmp_path / "S2-C" / "S2-C-run02.partial.json").write_text(json.dumps(partial))
+    (tmp_path / "T4").mkdir()
+    (tmp_path / "T4" / "T4-run01.json").write_text(json.dumps(pilot_run))
+    recs, skipped = C.load_main_runs([str(tmp_path)])
+    assert [r["run_id"] for r in recs] == ["S2-C-run01"] and skipped == {"pilot": 1, "partial": 1}
+    assert C.main([str(tmp_path), "--boot", "50"]) == 0
+    out = capsys.readouterr()
+    assert "A − C" in out.out and "1 pilot run(s), 1 unfinished log(s)" in out.err
+    # Trailing seats only: the seats on top never enter the intrusion DVs.
+    dv = C.run_dvs(main_run)
+    assert dv["trailing_any_intrusion"] in (0, 1) and dv["matched_joint_commits"] == 1
+
+
+# ---------------------------------------------------------------------------
+# tools/export_transcripts.py (DOC 1)
+# ---------------------------------------------------------------------------
+
+def test_export_transcripts_blind_texts_key_and_templates(tmp_path, capsys):
+    import csv as _csv
+    from tools import export_transcripts as X
+    from tools import jury_check
+    rec = _record()
+    rec["run_id"] = "priced-run01"
+    rec["config"]["run_meta"] = {"test": "priced", "pilot": True, "run_id": "priced-run01"}
+    rec["config"]["seat_policies"] = {"gdm": "t5_scripted"}               # a scripted seat is left out
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs" / "priced-run01.json").write_text(json.dumps(rec))
+    out = tmp_path / "human"
+    assert X.main([str(tmp_path / "logs"), "--out", str(out)]) == 0
+    blind = out / "blind" / "priced-run01"
+    letters = {r["lab"]: r["letter"] for r in _csv.DictReader(open(out / "key" / "letters.csv"))}
+    assert set(letters) == {"anthropic", "openai"}
+    assert sorted(p.name for p in blind.iterdir()) == sorted(
+        ["grand_jury.txt"] + [f"T2_seat_{letters[k]}.txt" for k in letters])
+    for p in blind.iterdir():
+        text = p.read_text()
+        assert "Anthropic" not in text and "OpenAI" not in text and "claude" not in text.lower(), p.name
+    hand = list(_csv.DictReader(open(out / "key" / "hand_scores.csv")))
+    assert [h["lab"] for h in hand] and set(hand[0]) >= set(jury_check.HAND_COLUMNS)
+    assert all(h["run_id"] == "priced-run01" and h["composite"] == "" for h in hand)
+    human = list(_csv.DictReader(open(out / "key" / "human_ratings.csv")))
+    assert {(h["run_id"], h["lab"]) for h in human} == {("priced-run01", "anthropic"), ("priced-run01", "openai")}
+    # Our scores are never overwritten by a second export.
+    (out / "key" / "human_ratings.csv").write_text("run_id,lab,disposition\npriced-run01,anthropic,40\n")
+    assert X.main([str(tmp_path / "logs"), "--out", str(out)]) == 0
+    assert "kept" in capsys.readouterr().out
+    assert "40" in (out / "key" / "human_ratings.csv").read_text()
