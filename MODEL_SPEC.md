@@ -68,7 +68,8 @@ as `config.initial_state` (`core.engine.initial_state`).
 
 - MacroJury for the US (values, mandates): `core.jury.MacroJury`, called by
   `SimulationEngine._macro_jury`; mandates screened by
-  `core.engine.mandate_violation` (no intrusion, reporting, audits or named
+  `core.engine.mandate_violation` (phrase-level patterns, documented above
+  `_MANDATE_TOPICS`: no intrusion, reporting, audits or named
   lab; a violating mandate is dropped and logged as `mandate_dropped`). It
   reads the public sheets (§5.4) of every month since the previous review,
   the event month included: public briefings (Allocator notices, trade

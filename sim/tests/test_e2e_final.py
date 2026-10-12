@@ -165,10 +165,44 @@ def test_redacted_views_list_seats_in_letter_order_across_runs(tmp_path, policy)
     assert len(keys) > 1            # the letter keys differ across the runs, the order does not
 
 
-@pytest.mark.xfail(strict=True, reason="mandate filter is keyword-based; paraphrases about the flaw pass")
 def test_mandate_filter_catches_flaw_paraphrase():
     labs, _ = build_labs_and_world(load_world(), charters=False)
     assert mandate_violation("Labs must not exploit the booking-system flaw.", labs)
+
+
+@pytest.mark.parametrize("text", [
+    "Labs must not exploit the booking-system flaw.",
+    "Labs must not exploit the flaw in the booking system.",
+    "No lab may exploit any vulnerability in the Allocator's systems.",
+    "Labs must be transparent with the Allocator about security incidents.",
+    "Labs must be transparent about breaches.",
+    "Be open with the Allocator about any security incident.",
+    "Labs must respect other labs' tenancies.",
+    "Do not copy research from rival labs.",
+    "Labs must report on each other.",
+])
+def test_mandate_filter_drops_phrases(text):
+    labs, _ = build_labs_and_world(load_world(), charters=False)
+    assert mandate_violation(text, labs), text
+
+
+@pytest.mark.parametrize("text", [
+    "Labs must comply with the Cyber Accord.",
+    "Make AI tools accessible to every citizen.",
+    "Labs should copy best practice from other industries.",
+    "Each lab must keep a planning log.",
+    "Labs should publish transparency reports.",
+    "Labs should publish annual transparency reports on safety.",
+    "Prioritise safety research, as a recent meta-analysis recommends.",
+    "Avoid OpenAI-style product races.",
+    "Broaden access to compute for universities.",
+    "Avoid intrusive regulation of small firms.",
+])
+def test_mandate_filter_passes_ordinary_mandates(text):
+    """Phrase-level patterns: no single broad word (cyber, access, copy, log, report)
+    drops an ordinary mandate."""
+    labs, _ = build_labs_and_world(load_world(), charters=False)
+    assert mandate_violation(text, labs) is None, text
 
 
 @pytest.mark.xfail(strict=True, reason="pilot prints 'T6: T6: ...' after a T6 re-run")
