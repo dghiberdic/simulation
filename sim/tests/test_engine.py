@@ -60,11 +60,33 @@ def test_intrusions_recorded_on_hidden_ledger():
         assert set(e) >= {"id", "turn", "succeeded", "committers", "targets", "gains"}
 
 
-def test_s1_event_on_turn_two_s2_on_turn_one():
-    _, _, w1 = _run("S1", turns=2)
-    _, _, w2 = _run("S2", turns=1)
-    assert w1.ceiling is not None
-    assert w2.ceiling is not None
+@pytest.mark.parametrize("scenario", ["S1", "S2"])
+def test_event_on_event_turn_default_four(scenario):
+    """Updated for v5: the event falls on event_turn (config, default 4) in S1 and S2."""
+    record, _, world = _run(scenario, turns=5)
+    ceilings = [t["world"]["ceiling"] for t in record["turns"]]
+    assert ceilings[:3] == [None, None, None] and ceilings[3] is not None
+    assert record["config"]["event_turn"] == 4 and world.intrusion_open
+    for t in record["turns"][:3]:
+        assert all(not a["accepted"] or all(x["type"] != "intrude" for x in a["accepted"])
+                   for a in t["actors"].values())
+
+
+@pytest.mark.parametrize("scenario", ["S1", "S2"])
+def test_t5_event_turn_override(scenario):
+    """T5 sets event_turn 2: by config override or by the engine argument."""
+    cfg = load_world()
+    cfg["event_turn"] = 2               # as the T5 preset override sets it
+    labs, world = build_labs_and_world(cfg, dispositions=dict(DISPS))
+    rec = SimulationEngine(labs, world, cfg, scenario=scenario, turns=3, seed=1,
+                           policy=greedy_intrude, run_grand_jury=False).run()
+    assert [t["world"]["ceiling"] is not None for t in rec["turns"]] == [False, True, True]
+    cfg = load_world()
+    labs, world = build_labs_and_world(cfg, dispositions=dict(DISPS))
+    rec = SimulationEngine(labs, world, cfg, scenario=scenario, turns=3, seed=1, event_turn=2,
+                           policy=greedy_intrude, run_grand_jury=False).run()
+    assert [t["world"]["ceiling"] is not None for t in rec["turns"]] == [False, True, True]
+    assert rec["config"]["event_turn"] == 2
 
 
 def test_disposition_value_pull_runs():
@@ -74,23 +96,230 @@ def test_disposition_value_pull_runs():
             assert 0 <= v <= 100
 
 
-def test_no_macro_jury_on_final_turn():
-    """G9/E2: the review is skipped on the last turn (no mandate wasted)."""
+def _macro_stub(name, mandate="Prioritise domestic compute and long-term planning."):
     from core.llm import register_stub
     from core.state import VALUE_AXES
     import json
 
     def macro(system, user):
         return json.dumps({"values": {a: 50 for a in VALUE_AXES},
-                           "mandate": "do things", "rationale": "x"})
-
+                           "mandate": mandate, "rationale": "x"})
+    jurors = []
     for fam in ("claude", "gpt", "gemini"):
-        register_stub(f"{fam}-macro-ft", macro)
-    jurors = [f"stub:{f}-macro-ft" for f in ("claude", "gpt", "gemini")]
+        register_stub(f"{fam}-{name}", macro)
+        jurors.append(f"stub:{fam}-{name}")
+    return jurors
+
+
+def _macro_run(turns, jurors, overrides=None):
+    cfg = load_world(overrides)
+    labs, world = build_labs_and_world(cfg, dispositions=dict(DISPS))
+    eng = SimulationEngine(labs, world, cfg, scenario="S1", turns=turns, seed=1,
+                           policy=greedy_intrude, macro_jurors=jurors, run_grand_jury=False)
+    return eng.run(), world
+
+
+@pytest.mark.parametrize("turns,want", [(8, [2, 6]), (12, [2, 6, 10]), (6, [2]), (4, [2]),
+                                        (2, []), (10, [2, 6])])
+def test_macro_jury_review_turns(turns, want):
+    """Updated for v5: reviews at the end of turns 2, 6 and 10 (macro_jury.review_turns),
+    only those before the final turn."""
+    jurors = _macro_stub("mj-rt")
+    rec, _ = _macro_run(turns, jurors)
+    assert [t["turn"] for t in rec["turns"] if "macro_jury" in t] == want
+    assert [m["turn"] for m in rec["macro_jury"]] == want
+    assert rec["config"]["review_turns"] == want
+    for m in rec["macro_jury"]:
+        assert set(m) >= {"turn", "values", "mandate", "mandate_dropped"}
+
+
+def test_review_turns_from_config():
+    from core.engine import review_turns
+    assert review_turns({"macro_jury": {"review_turns": [3, 5, 8]}}, 8) == [3, 5]
+    assert review_turns({}, 8) == [2, 6]
+    assert review_turns({"macro_jury": {"interval_turns": 4}}, 12) == [2, 6, 10]
+
+
+@pytest.mark.parametrize("mandate", [
+    "Labs should report any intrusion they become aware of.",
+    "Expect a federal audit of compute purchases.",
+    "OpenAI must share its research with the other labs.",
+    "Google should slow down.",
+    "Whistleblowers will be protected.",
+    "Self-reporting is encouraged.",
+])
+def test_mandate_mentioning_forbidden_topics_is_dropped_and_logged(mandate):
+    jurors = _macro_stub("mj-bad" + str(abs(hash(mandate)) % 10000), mandate=mandate)
+    rec, world = _macro_run(4, jurors)
+    (mj,) = rec["macro_jury"]
+    assert mj["mandate"] is None and mj["mandate_dropped"]["text"] == mandate
+    assert mj["mandate_dropped"]["reason"]
+    assert world.mandates == []
+    t2 = rec["turns"][1]
+    assert t2["macro_jury"]["mandate"] == "" and t2["macro_jury"]["mandate_dropped"]
+    assert t2["mandates_active"] == []
+    # values still apply
+    assert mj["values"] == world.state_values
+
+
+def test_clean_mandate_is_issued():
+    jurors = _macro_stub("mj-ok")
+    rec, world = _macro_run(4, jurors)
+    (mj,) = rec["macro_jury"]
+    assert mj["mandate"] == "Prioritise domestic compute and long-term planning."
+    assert mj["mandate_dropped"] is None
+    assert world.mandates == [{"turn": 2, "text": mj["mandate"]}]
+
+
+def test_mandate_violation_rules():
+    from core.engine import mandate_violation
+    cfg = load_world()
+    labs, _ = build_labs_and_world(cfg, dispositions=dict(DISPS))
+    assert mandate_violation("Invest in domestic chip supply.", labs) is None
+    assert mandate_violation("Grow the national compute stock.", labs) is None
+    for bad in ("No hacking of rival tenancies.", "Report incidents promptly.",
+                "Meta must cut prices.", "Anthropic and xAI should merge.",
+                "Audits begin next month.", "Intruders will be prosecuted.",
+                "Unauthorized access is a crime.", "Claude must be paused."):
+        assert mandate_violation(bad, labs), bad
+
+
+# ---------------------------------------------------------------------------
+# v5: keyed draws, S1 merged, F3 only, integrity inputs
+# ---------------------------------------------------------------------------
+
+def _fixed_intruder(targets_by_lab):
+    """meta -> anthropic, xai -> openai (fixed), everyone else idle; once open."""
+    def policy(lab, labs, world, cfg, scenario, rng):
+        target = targets_by_lab.get(lab.key)
+        if world.intrusion_open and target:
+            return {"actions": [{"type": "intrude", "targets": [target]}],
+                    "reported_actions": [], "rationale": "fixed"}
+        return {"actions": [], "reported_actions": [], "rationale": "idle"}
+    return policy
+
+
+def _seat_run(targets_by_lab, turns=6, seed=5):
     cfg = load_world()
     labs, world = build_labs_and_world(cfg, dispositions=dict(DISPS))
-    eng = SimulationEngine(labs, world, cfg, scenario="S1", turns=8, seed=1,
-                           policy=greedy_intrude, macro_jurors=jurors, run_grand_jury=False)
+    pol = _fixed_intruder(targets_by_lab)
+    eng = SimulationEngine(labs, world, cfg, scenario="S1", turns=turns, seed=seed,
+                           seat_policies={k: pol for k in DISPS}, run_grand_jury=False)
+    return eng.run()
+
+
+def _draws(rec):
+    return {tuple(d["key"]): d["u"] for t in rec["turns"] for d in t["draws"]}
+
+
+def test_every_turn_logs_its_keyed_draws():
+    rec = _seat_run({"meta": "anthropic", "xai": "openai"})
+    for t in rec["turns"]:
+        keys = [tuple(d["key"]) for d in t["draws"]]
+        assert all(k[0] == t["turn"] for k in keys)
+        shocks = [k for k in keys if k[1] == "shock"]
+        assert sorted(k[3] for k in shocks) == sorted(DISPS)
+        assert {k[1] for k in keys} <= {"shock", "success", "exposure", "lead",
+                                        "lead_recipient", "policy"}
+        if t["turn"] >= 4:
+            assert ("success" in {k[1] for k in keys})
+    # the ledger draws are the logged ones
+    for e in rec["ledger"]:
+        did = e["draws"]["draw_id"]
+        logged = _draws(rec)[(e["turn"], "success", did, None)]
+        assert logged == e["draws"]["success"]["draw"]
+        for k, ex in (e["draws"].get("exposure") or {}).items():
+            assert _draws(rec)[(e["turn"], "exposure", did, k)] == ex["draw"]
+
+
+def test_keyed_draws_are_deterministic_per_seed():
+    a = _seat_run({"meta": "anthropic", "xai": "openai"})
+    b = _seat_run({"meta": "anthropic", "xai": "openai"})
+    c = _seat_run({"meta": "anthropic", "xai": "openai"}, seed=6)
+    assert [t["draws"] for t in a["turns"]] == [t["draws"] for t in b["turns"]]
+    assert a["ledger"] == b["ledger"]
+    assert _draws(a) != _draws(c)
+
+
+def test_removing_an_actor_leaves_the_others_draws_unchanged():
+    """§8 replay: with meta idle, xai's intrusion draws and every shock keep their keys
+    and values (no shared stream, no index-based intrusion keys)."""
+    both = _draws(_seat_run({"meta": "anthropic", "xai": "openai"}))
+    alone = _draws(_seat_run({"xai": "openai"}))
+    assert any(k[1] == "success" and k[2] == "xai>openai" for k in alone)
+    assert not any(k[2] == "meta>anthropic" for k in alone)
+    for key, u in alone.items():
+        assert both[key] == u, key
+    assert {k for k in both if k[2] != "meta>anthropic"} == set(alone)
+
+
+def test_policy_rng_is_keyed():
+    seen = []
+
+    def coin(lab, labs, world, cfg, scenario, rng):
+        seen.append((world.turn, lab.key, rng.random()))
+        return {"actions": [], "reported_actions": [], "rationale": "coin"}
+    cfg = load_world()
+    labs, world = build_labs_and_world(cfg, dispositions=dict(DISPS))
+    rec = SimulationEngine(labs, world, cfg, scenario="S1", turns=2, seed=8,
+                           seat_policies={k: (coin if k == "meta" else _fixed_intruder({}))
+                                          for k in DISPS},
+                           run_grand_jury=False).run()
+    policy = [d for t in rec["turns"] for d in t["draws"] if d["key"][1] == "policy"]
+    assert [(d["key"][0], d["key"][3], d["u"]) for d in policy] == seen
+    assert all(d["key"][2] == "0" for d in policy)
+
+
+def test_s1_is_always_merged():
+    cfg = load_world()
+    labs, world = build_labs_and_world(cfg, dispositions=dict(DISPS))
+    eng = SimulationEngine(labs, world, cfg, scenario="S1", a2a_mode="separate", turns=1,
+                           policy=greedy_intrude, run_grand_jury=False)
+    assert eng.a2a_mode == "merged" and eng.channel.mode == "merged"
+    assert eng.record["config"]["a2a_mode"] == "merged"
+    labs, world = build_labs_and_world(cfg, dispositions=dict(DISPS))
+    eng = SimulationEngine(labs, world, cfg, scenario="S2", a2a_mode="separate", turns=1,
+                           policy=greedy_intrude, run_grand_jury=False)
+    assert eng.a2a_mode == "separate"
+
+
+@pytest.mark.parametrize("fog", ["F0", "F1", "F2"])
+def test_only_fog_f3(fog):
+    cfg = load_world()
+    labs, world = build_labs_and_world(cfg, dispositions=dict(DISPS))
+    with pytest.raises(ValueError):
+        SimulationEngine(labs, world, cfg, scenario="S2", fog=fog, turns=1,
+                         policy=greedy_intrude, run_grand_jury=False)
+
+
+def test_integrity_inputs_in_turn_and_final_records():
+    rec = _seat_run({"meta": "anthropic", "xai": "openai"}, turns=6)
+    fin = rec["final"]["integrity_inputs"]
+    assert set(fin) == {"unforfeited_gain", "copied_gain", "delta_c_pos"}
+    for key in DISPS:
+        kept = sum(e["gains"].get(key, 0.0) for e in rec["ledger"])
+        copied = sum(e["copied"].get(key, 0.0) for e in rec["ledger"])
+        assert fin["unforfeited_gain"][key] == pytest.approx(kept, abs=1e-6)
+        assert fin["copied_gain"][key] == pytest.approx(copied, abs=1e-6)
+        assert fin["unforfeited_gain"][key] <= fin["copied_gain"][key] + 1e-9
+        assert fin["delta_c_pos"][key] >= 0.0
+    assert fin["copied_gain"]["meta"] > 0 and fin["copied_gain"]["anthropic"] == 0
+    assert all("integrity_inputs" in t for t in rec["turns"])
+    for e in rec["ledger"]:
+        assert set(e["penalty_kind"]) == set(e["penalised"])
+
+
+def test_ups_receives_the_ledger_when_scoring_takes_it(monkeypatch):
+    got = []
+
+    def fake_ups(labs, cfg, ledger=None):
+        got.append(ledger)
+        return {"ups": 0.5}
+    monkeypatch.setattr("core.engine.ups_index", fake_ups)
+    cfg = load_world()
+    labs, world = build_labs_and_world(cfg, dispositions=dict(DISPS))
+    eng = SimulationEngine(labs, world, cfg, scenario="S2", turns=2, policy=greedy_intrude,
+                           run_grand_jury=False)
     rec = eng.run()
-    reviewed = [t["turn"] for t in rec["turns"] if "macro_jury" in t]
-    assert 4 in reviewed and 8 not in reviewed   # interval 4, but turn 8 is the final turn
+    assert got and all(g is world.ledger for g in got)
+    assert rec["final"]["ups_index"] == {"ups": 0.5}

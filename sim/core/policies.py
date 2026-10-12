@@ -7,6 +7,10 @@ economy and the intrusion payoff can be stress-tested before any spend. A
 policy returns a turn reply in the same shape a model would produce:
 {"actions": [...], "reported_actions": [...], "report": {...}, "public_statement", "rationale"}.
 
+The `rng` a policy receives is a core.rng.KeyedRandom: each draw is keyed
+(turn, "policy", "<index>", lab) and logged in turn_rec["draws"], so a policy's
+randomness never shifts any other draw (spec §8 replay).
+
 Intrusion decisions use the full Prosperity-Score expected value (intrude_ev):
 
   EV = p·[w_C·g·(1 − q) − w_I·caught_penalty·q] − (1 − p)·w_I·failure_penalty − w_I·fee_inf

@@ -1,9 +1,9 @@
-"""Fog of war: what each lab sees of the others' actions at F0–F3."""
+"""Fog of war: every run is F3 (spec §5.4); other labs see only reported actions."""
 
 import pytest
 
 from core.config import load_lab_configs, load_world
-from core.fog import FOG_LEVELS, describe_action, observed_actions
+from core.fog import FOG_LEVELS, check_fog, describe_action, observed_actions
 from core.state import build_lab
 
 CFG = load_world()
@@ -29,7 +29,7 @@ def test_describe_action():
 
 
 def test_describe_action_names_from_dicts_and_strings():
-    """F0 names must resolve whatever map the engine passes (C3-19)."""
+    """Names must resolve whatever map the engine passes (C3-19)."""
     act = {"type": "intrude", "intruders": ["openai", "xai"], "targets": ["meta"]}
     as_dicts = {k: {"lab": lab.lab} for k, lab in LABS.items()}
     as_names = {k: lab.lab for k, lab in LABS.items()}
@@ -37,21 +37,25 @@ def test_describe_action_names_from_dicts_and_strings():
     assert describe_action(act, LABS) == want
     assert describe_action(act, as_dicts) == want
     assert describe_action(act, as_names) == want
-    assert observed_actions("anthropic", TURN, "F0", as_dicts)["openai"][1] == "intrude on Meta"
     assert describe_action({"type": "diminish_competitor", "target": "zzz", "points": 2.0},
                            as_dicts) == "diminish_competitor zzz by 2 points"
 
 
-def test_views_per_level():
-    assert FOG_LEVELS == ("F0", "F1", "F2", "F3")
-    f0 = observed_actions("anthropic", TURN, "F0", LABS)
-    assert "anthropic" not in f0
-    assert f0["openai"] == ["acquire_compute 20 units", "intrude on Meta"]
-    assert observed_actions("anthropic", TURN, "F1")["openai"] == ["acquire_compute", "intrude"]
-    f2 = observed_actions("anthropic", TURN, "F2")
-    assert f2 == {"openai": "acted", "meta": "did not act"}
+def test_only_f3_exists():
+    """Updated for v5: F0–F2 are removed; asking for them raises."""
+    assert FOG_LEVELS == ("F3",)
+    assert check_fog("F3") == "F3"
+    for fog in ("F0", "F1", "F2", "F9"):
+        with pytest.raises(ValueError):
+            observed_actions("meta", TURN, fog)
+        with pytest.raises(ValueError):
+            check_fog(fog)
+
+
+def test_f3_view_shows_reported_actions_only():
     f3 = observed_actions("meta", TURN, "F3")
+    assert "meta" not in f3
     assert f3["openai"] == ["Bought 20 units of compute", "Hosted a safety summit"]
+    assert f3["anthropic"] == ["Lobbied the state"]
     assert all("intrude" not in s for s in f3["openai"])
-    with pytest.raises(ValueError):
-        observed_actions("meta", TURN, "F9")
+    assert observed_actions("meta", TURN) == f3          # F3 is the default

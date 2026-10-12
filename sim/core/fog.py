@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 """
-Fog of war over last turn's actions (spec §4.3).
+Fog of war over last turn's actions (spec §5.4).
 
-  F0 — true actions
-  F1 — action types only
-  F2 — only whether each lab acted
-  F3 — reported actions (default): each lab's free-text self-report, which
-       need not match what it executed
+Every run uses F3: each lab files true actions (executed, on the hidden ledger)
+and reported actions (a monthly account filed with the Allocator); other labs
+see only the reported actions, which need not match what was executed. The
+round-1 levels F0–F2 are removed; asking for them raises ValueError.
 
 Public resource and capability totals are shown elsewhere; intrusion fees sit
 inside reported operating costs, so nothing here reveals them.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
-FOG_LEVELS = ("F0", "F1", "F2", "F3")
+FOG_LEVELS = ("F3",)
 DEFAULT_FOG = "F3"
 
 
@@ -62,27 +61,22 @@ def describe_action(action: Dict[str, Any], labs_by_key: Optional[Dict[str, Any]
 # Views
 # ---------------------------------------------------------------------------
 
-def observed_actions(observer: str, turn_actions: Dict[str, Dict[str, Any]], fog: str,
+def check_fog(fog: str) -> str:
+    """The fog level, which must be F3 (spec §5.4)."""
+    if fog not in FOG_LEVELS:
+        raise ValueError(f"fog level {fog!r} is not available: every run uses F3")
+    return fog
+
+
+def observed_actions(observer: str, turn_actions: Dict[str, Dict[str, Any]], fog: str = DEFAULT_FOG,
                      labs_by_key: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
-    What `observer` sees of every other lab's actions last turn.
+    What `observer` sees of every other lab's actions last turn: their reported
+    actions (F3).
 
     turn_actions: {key: {"true": [normalised actions], "reported": [str]}}
-    Returns {key: [str]} (F0/F1/F3) or {key: "acted" | "did not act"} (F2).
+    Returns {key: [str]}.
     """
-    if fog not in FOG_LEVELS:
-        raise ValueError(f"unknown fog level {fog!r}")
-    view: Dict[str, Any] = {}
-    for key, record in turn_actions.items():
-        if key == observer:
-            continue
-        true: List[Dict[str, Any]] = record.get("true") or []
-        if fog == "F0":
-            view[key] = [describe_action(a, labs_by_key) for a in true]
-        elif fog == "F1":
-            view[key] = [a.get("type", "?") for a in true]
-        elif fog == "F2":
-            view[key] = "acted" if true else "did not act"
-        else:
-            view[key] = [str(r) for r in (record.get("reported") or [])]
-    return view
+    check_fog(fog)
+    return {key: [str(r) for r in (record.get("reported") or [])]
+            for key, record in turn_actions.items() if key != observer}

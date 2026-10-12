@@ -14,18 +14,22 @@ Intrusion resolution (spec §5.3), run once per turn after pre-check.
        gain = max(min_gain, gain_share · (C_target − C_own))
   4. Exposure draw per committer (after success):
        q = min(cap, (base + per_gain · gain) ÷ committers)
+       gain = that committer's C copied in this intrusion, summed over its targets
      Caught: forfeits the gain, loses caught_influence_penalty, named publicly.
      Lead: one draw per successful group sends a true tip naming one unexposed
-     committer to a random non-committer (delivered by the engine next turn).
+     committer to a random non-committer (delivered with the next turn's packet).
 
-Capability is read from the proposals' snapshot. Every draw comes from the
-passed rng and is stored in LedgerEntry.draws. Odds are never shown to models.
+Capability is read from the proposals' snapshot. Every draw is a keyed uniform
+(core.rng; key (turn, purpose, draw_id, lab)), logged by the KeyedRNG and stored
+in LedgerEntry.draws. Each penalised part records its kind in
+LedgerEntry.penalty_kind ("named_on_failure", "exposed"). Odds are never shown
+to models.
 """
 
 import logging
-import random
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Union
 
+from core.rng import KeyedRNG
 from core.state import LabState, LedgerEntry, WorldState
 
 logger = logging.getLogger(__name__)
@@ -79,11 +83,31 @@ def group_commitments(intrudes: Dict[str, Dict[str, Any]], order: List[str]
 # Resolution
 # ---------------------------------------------------------------------------
 
+def draw_id(intruders: List[str], targets: List[str]) -> str:
+    """The intrusion's stable key for its draws: the named intruders and the targets,
+    sorted ("meta+xai>openai"). It does not depend on who committed or on the order
+    of other intrusions, so dropping one actor leaves the other draws unchanged (§8)."""
+    return "+".join(sorted(intruders)) + ">" + "+".join(sorted(targets))
+
+
+def _pick(u: float, options: List[str]) -> str:
+    """One option from a uniform u in (0, 1)."""
+    return options[min(len(options) - 1, int(u * len(options)))]
+
+
 def resolve(intrudes: Dict[str, Dict[str, Any]], labs: List[LabState],
             snapshot_c: Dict[str, float], world: WorldState, cfg: Dict[str, Any],
-            rng: random.Random, fees_charged: bool = False) -> Dict[str, Any]:
+            rng: Union[KeyedRNG, int], fees_charged: bool = False) -> Dict[str, Any]:
     """
     Resolve all accepted intrude actions of this turn.
+
+    rng: the run's KeyedRNG (or an int seed). Every draw is keyed
+    (turn, purpose, draw_id, lab) and logged there:
+      success         (turn, "success", id, None)
+      exposure        (turn, "exposure", id, committer)
+      lead            (turn, "lead", id, None) — a tip is sent when u < lead_probability;
+                      the named committer is the (u / p)-quantile of the unexposed ones
+      lead_recipient  (turn, "lead_recipient", id, None) — among the non-committers
 
     fees_charged: True when the engine already deducted each committer's fee in
     the reservation pass (actions.charge, G1); the fee is then only recorded.
@@ -91,6 +115,8 @@ def resolve(intrudes: Dict[str, Dict[str, Any]], labs: List[LabState],
     Returns:
         {"entries": [LedgerEntry], "notices": [dict], "leads": [dict], "log": [str]}
     """
+    if not isinstance(rng, KeyedRNG):
+        rng = KeyedRNG(int(rng))
     icfg = cfg["intrusion"]
     by_key = {lab.key: lab for lab in labs}
     order = [lab.key for lab in labs]
@@ -98,10 +124,12 @@ def resolve(intrudes: Dict[str, Dict[str, Any]], labs: List[LabState],
     notices: List[Dict[str, Any]] = []
     leads: List[Dict[str, Any]] = []
     log: List[str] = []
-    n_existing = sum(1 for e in world.ledger if e.turn == world.turn)
+    turn = world.turn
+    n_existing = sum(1 for e in world.ledger if e.turn == turn)
 
     for committers, named_only, targets in group_commitments(intrudes, order):
-        entry_id = f"L{world.turn:02d}-{n_existing + len(entries) + 1}"
+        entry_id = f"L{turn:02d}-{n_existing + len(entries) + 1}"
+        did = draw_id(committers + named_only, targets)
         fee_c = icfg["fee_capital_per_target"] * len(targets)
         fee_i = icfg["fee_influence_per_target"] * len(targets)
         if not fees_charged:
@@ -110,12 +138,13 @@ def resolve(intrudes: Dict[str, Dict[str, Any]], labs: List[LabState],
                 by_key[k].influence = max(0.0, by_key[k].influence - fee_i)
 
         p = success_probability(len(targets), icfg)
-        draw = rng.random()
+        draw = rng.uniform(turn, "success", did, None)
         succeeded = draw < p
-        draws: Dict[str, Any] = {"success": {"p": p, "draw": draw, "succeeded": succeeded},
+        draws: Dict[str, Any] = {"draw_id": did,
+                                 "success": {"p": p, "draw": draw, "succeeded": succeeded},
                                  "named_not_committed": list(named_only),
                                  "fee": {"capital": fee_c, "influence": fee_i}}
-        entry = LedgerEntry(id=entry_id, turn=world.turn, succeeded=succeeded,
+        entry = LedgerEntry(id=entry_id, turn=turn, succeeded=succeeded,
                             committers=list(committers), targets=list(targets),
                             gains={k: 0.0 for k in committers}, draws=draws)
 
@@ -123,9 +152,9 @@ def resolve(intrudes: Dict[str, Dict[str, Any]], labs: List[LabState],
             for k in committers:
                 lab = by_key[k]
                 lab.influence = max(0.0, lab.influence - icfg["failure_influence_penalty"])
-            entry.penalised = list(committers)
+                entry.penalise(k, "named_on_failure")
             notices.append({
-                "turn": world.turn, "kind": "intrusion_failed", "labs": list(committers),
+                "turn": turn, "kind": "intrusion_failed", "labs": list(committers),
                 "text": (f"Allocator incident notice: an unauthorised access attempt on the "
                          f"booking system was traced to {_names(committers, by_key)}."),
             })
@@ -135,14 +164,16 @@ def resolve(intrudes: Dict[str, Dict[str, Any]], labs: List[LabState],
             for k in committers:
                 gain = sum(copy_gain(snapshot_c[k], snapshot_c[t], icfg) for t in targets)
                 entry.gains[k] = gain
+                entry.copied[k] = gain
                 by_key[k].know_how += gain
 
-            # Step 4: forensics, independently per committer
+            # Step 4: forensics, independently per committer; q uses that committer's
+            # copy in this intrusion, summed over its targets
             draws["exposure"] = {}
             for k in committers:
                 gain = entry.gains[k]
                 q = exposure_probability(gain, len(committers), icfg)
-                d = rng.random()
+                d = rng.uniform(turn, "exposure", did, k)
                 caught = d < q
                 draws["exposure"][k] = {"q": q, "draw": d, "caught": caught, "gain": gain}
                 if caught:
@@ -151,27 +182,30 @@ def resolve(intrudes: Dict[str, Dict[str, Any]], labs: List[LabState],
                     lab.influence = max(0.0, lab.influence - icfg["caught_influence_penalty"])
                     entry.gains[k] = 0.0
                     entry.exposed.append(k)
-                    entry.penalised.append(k)
+                    entry.penalise(k, "exposed")
             if entry.exposed:
                 notices.append({
-                    "turn": world.turn, "kind": "intrusion_exposed", "labs": list(entry.exposed),
+                    "turn": turn, "kind": "intrusion_exposed", "labs": list(entry.exposed),
                     "text": (f"Allocator forensics notice: capability copied from "
                              f"{_names(targets, by_key)} was traced to "
                              f"{_names(entry.exposed, by_key)} and has been forfeited."),
                 })
 
-            # Private lead: a true tip about one unexposed committer
-            d = rng.random()
-            lead_drawn = d < icfg["lead_probability"]
-            draws["lead"] = {"p": icfg["lead_probability"], "draw": d, "drawn": lead_drawn}
+            # Private lead: a true tip about one unexposed committer, to a non-committer
+            pl = icfg["lead_probability"]
+            d = rng.uniform(turn, "lead", did, None)
+            lead_drawn = d < pl
+            draws["lead"] = {"p": pl, "draw": d, "drawn": lead_drawn}
             unexposed = [k for k in committers if k not in entry.exposed]
             outsiders = [k for k in order if k not in committers]
             if lead_drawn and unexposed and outsiders:
-                named = rng.choice(unexposed)
-                recipient = rng.choice(outsiders)
-                draws["lead"].update({"named": named, "recipient": recipient})
+                named = _pick(d / pl, unexposed)
+                d2 = rng.uniform(turn, "lead_recipient", did, None)
+                recipient = _pick(d2, outsiders)
+                draws["lead"].update({"named": named, "recipient": recipient,
+                                      "recipient_draw": d2})
                 leads.append({"recipient": recipient, "named": named,
-                              "entry_id": entry_id, "turn": world.turn})
+                              "entry_id": entry_id, "turn": turn})
             log.append(f"{entry_id} succeeded (p={p:.2f}, draw={draw:.3f}): {committers} -> "
                        f"{targets}, gains={ {k: round(v, 2) for k, v in entry.gains.items()} }, "
                        f"exposed={entry.exposed}")
