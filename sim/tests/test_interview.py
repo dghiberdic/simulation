@@ -159,8 +159,9 @@ def test_continue_call_builds_the_continuation(monkeypatch):
     assert got["history"] == msgs + [{"role": "assistant", "content": "my reply"}]
     assert got["effort"] == "low" and got["max_tokens"] == 2000
     assert got["provider"] == "anthropic" and got["purpose"] == "interview"
-    for model, effort in (("grok-4.7", None), ("gemini-3.1-pro", "low"), ("gpt-6-astra", "low"),
-                          ("stub:x", None)):
+    # A.7: the provider's lowest effort ("minimal" where offered, else "low")
+    for model, effort in (("grok-4.7", None), ("gemini-3.1-pro", "minimal"),
+                          ("gpt-6-astra", "minimal"), ("stub:x", None)):
         continue_call(None, model, "S", msgs, "r", "Q")
         assert got["effort"] == effort, model
     continue_call("openai", "gpt-6-astra", "S", msgs, "r", "Q", effort="medium", max_tokens=500)
@@ -172,3 +173,73 @@ def test_continue_call_offline_stub():
     r = continue_call(None, "stub:iv_direct", "SYS", [{"role": "user", "content": "p"}],
                       "reply", "Q?")
     assert r.text == "SYS|Q?" and r.provider == "stub"
+
+
+def test_lowest_effort_falls_back_when_minimal_is_rejected(monkeypatch):
+    """A.7 lowest effort: "minimal" is tried; a 400 rejecting it falls back to "low" for
+    that model from then on, and the effort actually sent is on the response."""
+    sent = []
+
+    def fake(model, system, user, **kw):
+        sent.append(kw["effort"])
+        if kw["effort"] == "minimal":
+            raise llm.FatalAPIError("openai/gpt-6-astra: 400 Unsupported value: 'minimal' is "
+                                    "not supported with this model (reasoning.effort)",
+                                    "openai", model, 400)
+        return llm.LLMResponse(text="ok", model=model, provider="openai", effort=kw["effort"])
+    monkeypatch.setattr(llm, "complete", fake)
+    monkeypatch.setattr(llm, "_EFFORT_REJECTED", set())
+    msgs = [{"role": "user", "content": "p"}]
+    r = continue_call(None, "gpt-6-astra", "S", msgs, "r", "Q")
+    assert r.effort == "low" and sent == ["minimal", "low"]
+    r = continue_call(None, "gpt-6-astra", "S", msgs, "r", "Q")
+    assert r.effort == "low" and sent == ["minimal", "low", "low"]
+
+    def other_400(model, system, user, **kw):
+        raise llm.FatalAPIError("400 context too long", "openai", model, 400)
+    monkeypatch.setattr(llm, "complete", other_400)
+    with pytest.raises(llm.FatalAPIError):
+        continue_call(None, "gpt-6-astra-x", "S", msgs, "r", "Q")
+
+
+def _fake_interview(monkeypatch, script):
+    """continue_call returns script[key] responses in turn: (text, stop)."""
+    calls = []
+
+    def fake(provider, model, system, messages, reply, question, **kw):
+        key = model.split("_", 1)[1]
+        calls.append((key, kw["max_tokens"]))
+        text, stop = script[key][sum(1 for k, _ in calls if k == key) - 1]
+        return llm.LLMResponse(text=text, model=model, provider="stub", stop=stop,
+                               max_tokens=kw["max_tokens"], effort="low", output_tokens=7)
+    monkeypatch.setattr(engine_mod, "continue_call", fake)
+    return calls
+
+
+def test_empty_answer_retried_once_then_skipped(monkeypatch):
+    """CR #6: an answer that hits the cap with no visible text is not counted as
+    answered: asked once more at 4,000 tokens; still empty -> skipped. A partial
+    answer cut by the cap is marked incomplete (truncated)."""
+    calls = _fake_interview(monkeypatch, {
+        "anthropic": [("", "max_tokens"), ("Fine, I think.", "end")],
+        "openai": [("", "max_tokens"), ("", "max_tokens")],
+        "gdm": [("I did well because", "max_tokens")],
+        "meta": [("Yes.", "end")],
+        "xai": [("", "end"), ("", "end")],
+    })
+    rec = _engine(lambda k, t: "unused", turns=1).run()
+    iv = rec["turns"][0]["interviews"]
+    assert ("anthropic", 4000) in calls and ("meta", 4000) not in calls
+    a = iv["anthropic"]
+    assert a["answer"] == "Fine, I think." and not a["skipped"] and a["retried"]
+    assert a["max_tokens"] == 4000 and a["first_attempt"]["stop"] == "max_tokens"
+    assert a["output_tokens"] == 14 and a["effort"] == "low"
+    o = iv["openai"]
+    assert o["skipped"] and o["reason"] == "empty answer (max_tokens)" and o["retried"]
+    x = iv["xai"]
+    assert x["skipped"] and x["reason"] == "empty answer"
+    g = iv["gdm"]
+    assert not g["skipped"] and g["incomplete"] and g["truncated"] and not g["cut"]
+    m = iv["meta"]
+    assert not m["skipped"] and not m["truncated"] and not m["retried"]
+    assert m["proposal_attempts"] == 1

@@ -222,6 +222,7 @@ class LLMResponse:
     served_model: Optional[str] = None  # model id/version the provider reports
     temperature: Optional[float] = None # temperature actually sent (None: not sent or ignored)
     max_tokens: int = 0
+    effort: Optional[str] = None        # reasoning effort actually requested (None: not sent)
     # Attempt records of requests interrupted before this one succeeded: timeouts
     # (stop "timeout", H4) and broken streams (stop "stream_error", L17).
     timeouts: List[Dict[str, Any]] = field(default_factory=list)
@@ -997,6 +998,7 @@ def complete(model: str, system: str, user: str, *, provider: Optional[str] = No
                     cost=cost, thinking=out["thinking"], latency_s=latency,
                     raw_stop_reason=out["raw_stop"], stop=out["stop"], stop_detail=out["stop_detail"],
                     served_model=out["served_model"], max_tokens=out["max_tokens"], timeouts=timed_out,
+                    effort=effort,
                     # Anthropic ignores sampling params with thinking on; others report what was sent.
                     temperature=None if provider == "anthropic" else out.get("temperature", temperature))
     tracker.record(model, purpose, run_id, r.input_tokens, r.output_tokens, r.cached_tokens,
@@ -1218,14 +1220,29 @@ def complete_json(model: str, system: str, user: str, *,
 # Interview continuation (spec A.7; CODE_V5_CONTRACT "Interview")
 # ---------------------------------------------------------------------------
 
-# Each provider's lowest supported reasoning setting; None sends no effort setting
-# (providers that reject the parameter, and the offline stub). Unknown providers
-# get None.
+# Each provider's lowest reasoning setting (A.7 "at the provider's lowest
+# effort"); None sends no effort setting (providers that reject the parameter,
+# and the offline stub). Unknown providers get None. Anthropic's lowest
+# output_config.effort is "low". OpenAI reasoning models and Gemini thinking
+# levels offer "minimal" on some models: it is tried first, and a 400 that
+# rejects it falls back to LOWEST_EFFORT_FALLBACK for that model for the rest of
+# the process. The effort actually sent is LLMResponse.effort.
 LOWEST_EFFORT: Dict[str, Optional[str]] = {
-    "anthropic": "low", "openai": "low", "google": "low",
+    "anthropic": "low", "openai": "minimal", "google": "minimal",
     "xai": None, "muse": None, "stub": None,
 }
+LOWEST_EFFORT_FALLBACK = {"minimal": "low"}
+_EFFORT_REJECTED: set = set()          # (provider, model, effort) refused with a 400
 INTERVIEW_MAX_TOKENS = 2000
+
+
+def _effort_rejected(err: Exception, effort: str) -> bool:
+    """A 400 that names the reasoning effort / thinking level just sent."""
+    if getattr(err, "status", None) != 400 and getattr(err, "status_code", None) != 400:
+        return False
+    msg = str(err).lower()
+    return effort.lower() in msg or "effort" in msg or "thinking_level" in msg \
+        or "thinking level" in msg
 
 
 def continue_call(provider: Optional[str], model: str, system: str,
@@ -1245,8 +1262,23 @@ def continue_call(provider: Optional[str], model: str, system: str,
     provider = resolve_provider(model, provider)
     if effort == "lowest":
         effort = LOWEST_EFFORT.get(provider)
+        fallback = LOWEST_EFFORT_FALLBACK.get(effort or "")
+        if fallback and (provider, model, effort) in _EFFORT_REJECTED:
+            effort, fallback = fallback, None
+    else:
+        fallback = None
     history = [dict(m) for m in messages] + [
         {"role": "assistant", "content": reply_visible_text or "(empty)"}]
-    return complete(model, system, question, provider=provider, history=history,
-                    max_tokens=max_tokens, effort=effort, purpose=purpose, run_id=run_id,
-                    cache_key=cache_key)
+
+    def call(e: Optional[str]) -> LLMResponse:
+        return complete(model, system, question, provider=provider, history=history,
+                        max_tokens=max_tokens, effort=e, purpose=purpose, run_id=run_id,
+                        cache_key=cache_key)
+    try:
+        return call(effort)
+    except FatalAPIError as e:
+        if not (fallback and _effort_rejected(e, effort)):
+            raise
+        _EFFORT_REJECTED.add((provider, model, effort))
+        logger.warning(f"{provider}/{model}: effort {effort!r} rejected ({e}); using {fallback!r}")
+        return call(fallback)

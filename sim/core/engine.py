@@ -108,6 +108,8 @@ MAX_TOKENS_MESSAGE = 8000
 # Interview (A.7): output cap including thinking; the logged answer is cut at 300
 # tokens (characters ÷ 4, as for A2A).
 MAX_TOKENS_INTERVIEW = 2000
+# An empty answer (e.g. thinking used the whole cap) is asked once more with this cap.
+MAX_TOKENS_INTERVIEW_RETRY = 4000
 INTERVIEW_ANSWER_TOKENS = 300
 
 DEFAULT_EVENT_TURN = 4
@@ -652,34 +654,65 @@ class SimulationEngine:
 
         def call(lab: LabState):
             reply_text = decisions[lab.key]["attempts"][-1].get("text") or ""
-            # provider None: routed by model name, exactly like the proposal call
-            return continue_call(
-                None, lab.model, self.system[lab.key],
-                [{"role": "user", "content": self._proposal_prompts[lab.key]}],
-                reply_text, INTERVIEW_QUESTION, max_tokens=MAX_TOKENS_INTERVIEW,
-                effort="lowest", purpose="interview", run_id=self.run_id,
-                cache_key=f"{self.run_id}:{lab.key}")
+
+            def ask(cap: int):
+                # provider None: routed by model name, exactly like the proposal call
+                return continue_call(
+                    None, lab.model, self.system[lab.key],
+                    [{"role": "user", "content": self._proposal_prompts[lab.key]}],
+                    reply_text, INTERVIEW_QUESTION, max_tokens=cap,
+                    effort="lowest", purpose="interview", run_id=self.run_id,
+                    cache_key=f"{self.run_id}:{lab.key}")
+            responses = [ask(MAX_TOKENS_INTERVIEW)]
+            if not (responses[0].text or "").strip():      # empty: ask once more, larger cap
+                responses.append(ask(MAX_TOKENS_INTERVIEW_RETRY))
+            return {"responses": responses}
 
         for key, got in self._gather(asked, call, "interview").items():
             out[key] = self._interview_entry(key, got)
+            out[key]["proposal_attempts"] = len(decisions[key].get("attempts") or [])
         return {lab.key: out[lab.key] for lab in self.labs if lab.key in out}
 
     def _skipped_interview(self, lab: LabState, reason: str) -> Dict[str, Any]:
         return {"answer": "", "raw_len": 0, "model": None, "skipped": True, "reason": reason}
 
     def _interview_entry(self, key: str, got: Dict[str, Any]) -> Dict[str, Any]:
-        r = got.get("result")
-        if got.get("error") is not None or r is None or isinstance(r, tuple):
+        """The logged interview (A.7). An answer cut by the output cap
+        (stop "max_tokens") is marked incomplete; an answer still empty after the
+        one retry at MAX_TOKENS_INTERVIEW_RETRY is skipped ("empty answer", with
+        the stop). "truncated" is True whenever the logged answer is not the
+        whole answer (incomplete, or cut at 300 tokens: "cut"). The effort and
+        cap actually sent are logged, and the first call's usage when retried."""
+        res = got.get("result")
+        responses = res.get("responses") if isinstance(res, dict) else None
+        if got.get("error") is not None or not responses:
             return {"answer": "", "raw_len": 0, "model": None, "skipped": True,
                     "reason": "call failed", "error": got.get("error")}
+        r = responses[-1]
         text = (r.text or "").strip()
         answer = cut_answer(text, max_tokens=INTERVIEW_ANSWER_TOKENS)
-        return {"answer": answer, "raw_len": len(text),
-                "model": r.served_model or r.model, "skipped": False,
-                "truncated": len(answer) < len(text), "stop": r.stop,
-                "input_tokens": r.input_tokens, "cached_tokens": r.cached_tokens,
-                "output_tokens": r.output_tokens, "reasoning_tokens": r.reasoning_tokens,
-                "cost": r.cost}
+        incomplete = bool(text) and r.stop == "max_tokens"
+        cut = len(answer) < len(text)
+        entry = {"answer": answer, "raw_len": len(text),
+                 "model": r.served_model or r.model, "skipped": not text,
+                 "truncated": incomplete or cut, "incomplete": incomplete, "cut": cut,
+                 "stop": r.stop, "effort": r.effort, "max_tokens": r.max_tokens,
+                 "retried": len(responses) > 1,
+                 "input_tokens": sum(x.input_tokens for x in responses),
+                 "cached_tokens": sum(x.cached_tokens for x in responses),
+                 "output_tokens": sum(x.output_tokens for x in responses),
+                 "reasoning_tokens": sum(x.reasoning_tokens for x in responses),
+                 "cost": sum(x.cost for x in responses)}
+        if not text:
+            entry["reason"] = "empty answer" + (" (max_tokens)" if r.stop == "max_tokens" else "")
+        if len(responses) > 1:
+            first = responses[0]
+            entry["first_attempt"] = {"stop": first.stop, "effort": first.effort,
+                                      "max_tokens": first.max_tokens,
+                                      "output_tokens": first.output_tokens,
+                                      "reasoning_tokens": first.reasoning_tokens,
+                                      "cost": first.cost}
+        return entry
 
     def _message_substep(self, turn: int, stage: str) -> None:
         model_labs = [lab for lab in self.labs if lab.key not in self.seat_policies]
