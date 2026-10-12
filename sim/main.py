@@ -22,9 +22,13 @@ and halt at --budget dollars of measured spend on the shared ledger. --dry-run
 plays every seat and juror with offline stubs ($0); --policy plays a scripted
 policy with no model or jury at all.
 
-The log goes to data/runs/<run_id>/<run_id>.json (default run id
-"<cell>-YYYYmmdd-HHMMSS"), with <run_id>.partial.json after every turn. Exit
-codes: 0 done, 1 budget guard, 2 refused, aborted or crashed.
+The log goes to data/runs/<run_id>/<run_id>.json (dry runs: data/runs/dry/<run_id>;
+default run id "<cell>-YYYYmmdd-HHMMSS"), with <run_id>.partial.json after every
+turn. A finished run is never paid for twice: calling again with the same run
+id and output keeps a complete record as it is (exit 0), and when its Grand
+Jury verdict is missing (a budget stop during the jury) asks only the Grand
+Jury. Exit codes: 0 done, 1 budget guard (when it trips during the Grand Jury
+the finished record is kept), 2 refused, aborted or crashed.
 
 Examples:
   python main.py --scenario S1 --condition A --dry-run
@@ -34,6 +38,7 @@ Examples:
 
 import argparse
 import inspect
+import json
 import logging
 import sys
 import time
@@ -57,6 +62,7 @@ RUNS_DIR = SIM_DIR / "data" / "runs"
 LAB_KEYS = ("anthropic", "openai", "gdm", "meta", "xai")
 KIN_SEAT = "anthropic"                 # §6.5: Claude plays every seat in the kin cell
 KIN_SCENARIO, KIN_CONDITION = "S2", "A"
+EXIT_JURY_MISSING = 1                  # a budget stop; the run itself is finished and saved
 
 
 def cell_name(scenario: str, condition: str, kin: bool = False) -> str:
@@ -200,7 +206,7 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
     a2a = "merged" if args.scenario == "S1" else args.a2a          # S1 always merges (§5.2)
     cell = cell_name(args.scenario, args.condition, args.kin)
     run_id = args.run_id or default_run_id(cell)
-    output_dir = Path(args.output) if args.output else RUNS_DIR / run_id
+    output_dir = Path(args.output) if args.output else run_dir(run_id, bool(args.dry_run))
 
     dispositions, why = resolve_dispositions(args)
     if why:
@@ -208,9 +214,10 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
         return 2, None
     labs, world = build_labs_and_world(cfg, dispositions=dispositions, charters=args.policy is None)
     kin_model = apply_kin(labs) if args.kin else None
-    for pair in args.model:
-        key, _, model = pair.partition("=")
-        next(lab for lab in labs if lab.key == key).model = model
+    why = apply_model_overrides(labs, args.model)
+    if why:
+        print(why)
+        return 2, None
 
     configure(spend_file=Path(args.spend_file) if args.spend_file else None,
               budget=None if args.dry_run else args.budget)
@@ -234,9 +241,32 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
             return 2, None
         if args.budget is None:
             logger.warning("[budget] real run without --budget: no spend guard; pass --budget USD")
+
+    # A finished run under this id is never paid for again (CR #4): a complete record
+    # is kept as it is, and one whose Grand Jury is missing has only the jury asked.
+    expect = {"scenario": args.scenario, "condition": args.condition, "a2a_mode": a2a, "turns": turns,
+              "seed": args.seed}
+    existing, conflict = finished_record(output_dir, run_id, expect, bool(args.dry_run))
+    if conflict:
+        print(f"Refusing: {output_dir / (run_id + '.json')} holds a finished run of another set-up "
+              f"({conflict}); pass another --run-id or --output (a finished run is never deleted).")
+        return 2, None
+    if existing is not None:
+        if run_grand_jury and not grand_jury_usable(existing):
+            return ask_grand_jury_only(existing, run_id, output_dir, grand_jurors)
+        print(f"{run_id}: already finished ({output_dir / (run_id + '.json')}); not run again")
+        return 0, existing
+    if not args.dry_run and not offline:
         clear_stale(output_dir, run_id)
 
-    engine_cls = KinEngine if args.kin else SimulationEngine
+    engine_kwargs: Dict[str, Any] = {}
+    engine_cls = SimulationEngine
+    if args.kin:
+        # Fixer A's engine takes kin=True (the §6.5 insert); until then the KinEngine shim.
+        if "kin" in inspect.signature(SimulationEngine.__init__).parameters:
+            engine_kwargs["kin"] = True
+        else:
+            engine_cls = KinEngine
     engine = engine_cls(
         labs, world, cfg, scenario=args.scenario, condition=args.condition, fog="F3",
         a2a_mode=a2a, turns=turns, seed=args.seed, policy=policy, grand_jurors=grand_jurors,
@@ -245,10 +275,16 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
         run_meta={"entry": "main.py", "run_id": run_id, "cell": cell, "pilot": False, "kin": bool(args.kin),
                   "kin_model": kin_model, "model_overrides": list(args.model), "seed": args.seed},
         dry_run=bool(args.dry_run), parallel=not args.sequential,
-        interview_turns=list(args.interview_turns or []))
+        interview_turns=list(args.interview_turns or []), **engine_kwargs)
     try:
         record = engine.run()
     except BudgetExceeded as e:
+        saved = _read_record(output_dir / f"{run_id}.json")
+        if saved is not None and (saved.get("final") or {}).get("scores"):
+            print(f"Halted on the budget guard during the Grand Jury: {e}\nThe run is finished and saved "
+                  f"({output_dir / (run_id + '.json')}); only its Grand Jury verdict is missing. Re-running "
+                  "this run id asks the Grand Jury only.")
+            return EXIT_JURY_MISSING, saved
         print(f"Halted on the budget guard: {e}\nPartial record in {output_dir}")
         return 1, None
     except (RunAborted, FatalAPIError) as e:
@@ -266,10 +302,90 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
     return 0, record
 
 
+def run_dir(run_id: str, dry_run: bool) -> Path:
+    """Default log directory: data/runs/<run_id> (dry runs: data/runs/dry/<run_id>, H7)."""
+    return (RUNS_DIR / "dry" / run_id) if dry_run else (RUNS_DIR / run_id)
+
+
+def apply_model_overrides(labs, overrides: List[str]) -> str:
+    """--model KEY=MODEL: set the seat's model and the provider preflight checks; an
+    unknown key, an empty model or a model with no known provider is refused ("" if fine)."""
+    from core.llm import resolve_provider
+    by_key = {lab.key: lab for lab in labs}
+    for pair in overrides or []:
+        key, sep, model = pair.partition("=")
+        key, model = key.strip(), model.strip()
+        if not sep or key not in by_key or not model:
+            return (f"Refusing: bad --model {pair!r}; use KEY=MODEL with KEY one of {', '.join(LAB_KEYS)}, "
+                    "e.g. openai=gpt-6-sol.")
+        try:
+            provider = resolve_provider(model)
+        except ValueError as e:
+            return f"Refusing: --model {pair!r}: {e}."
+        by_key[key].model, by_key[key].provider = model, provider
+    return ""
+
+
+def _read_record(path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        with open(path) as f:
+            rec = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return rec if isinstance(rec, dict) else None
+
+
+def is_finished(record: Optional[Dict[str, Any]]) -> bool:
+    """A final record whose run finished: it holds final scores (a paid run)."""
+    return bool(record and isinstance(record.get("final"), dict) and record["final"].get("scores"))
+
+
+def grand_jury_usable(record: Dict[str, Any]) -> bool:
+    gj = (record.get("final") or {}).get("grand_jury")
+    return isinstance(gj, dict) and bool(gj.get("juror")) and not gj.get("error")
+
+
+def finished_record(output_dir: Path, run_id: str, expect: Dict[str, Any], dry_run: bool
+                    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """(the finished record at <run_id>.json when it is this run, why it is another run).
+    A dry record never stands in for a real run (and the reverse): it is treated as absent."""
+    rec = _read_record(output_dir / f"{run_id}.json")
+    if not is_finished(rec):
+        return None, None
+    cfg = rec.get("config") or {}
+    if bool(cfg.get("dry_run")) != bool(dry_run):
+        return None, None
+    diffs = [f"{k} {cfg.get(k)!r} != {v!r}" for k, v in expect.items()
+             if cfg.get(k) is not None and cfg.get(k) != v]
+    return (None, "; ".join(diffs)) if diffs else (rec, None)
+
+
+def ask_grand_jury_only(record: Dict[str, Any], run_id: str, output_dir: Path,
+                        grand_jurors: List[str]) -> Tuple[int, Optional[Dict[str, Any]]]:
+    """Re-ask the Grand Jury on a finished run whose verdict is missing (a budget stop
+    during the jury); the seats are never re-run. Returns (exit code, record)."""
+    from pilot import collect_grand_jury
+    print(f"{run_id}: the run is finished; asking the Grand Jury only")
+    try:
+        line = collect_grand_jury(record, grand_jurors, run_id, output_dir)
+    except BudgetExceeded as e:
+        print(f"Halted on the budget guard during the Grand Jury: {e}")
+        return EXIT_JURY_MISSING, record
+    except Exception as e:      # noqa: BLE001 — the run is kept either way
+        print(f"Grand Jury failed: {type(e).__name__}: {e}")
+        return 2, record
+    print(f"{run_id}: {line}")
+    return 0, record
+
+
 def clear_stale(output_dir: Path, run_id: str) -> bool:
-    """Delete a final <run_id>.json left by an earlier run of the same id (H7)."""
+    """Delete a leftover <run_id>.json of an unfinished earlier run of the same id (H7).
+    A finished record (final scores, a paid run) is never deleted (CR #4)."""
     path = output_dir / f"{run_id}.json"
     if path.exists():
+        if is_finished(_read_record(path)):
+            logger.warning(f"[stale] {path} is a finished run; kept")
+            return False
         path.unlink()
         logger.info(f"[stale] removed {path}")
         return True
