@@ -192,7 +192,7 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
     a2a = "merged" if args.scenario == "S1" else args.a2a          # S1 always merges (§5.2)
     cell = cell_name(args.scenario, args.condition, args.kin)
     run_id = args.run_id or default_run_id(cell)
-    output_dir = Path(args.output) if args.output else run_dir(run_id, bool(args.dry_run))
+    output_dir = Path(args.output) if args.output else run_dir(run_id, bool(args.dry_run), args.policy)
 
     dispositions, why = resolve_dispositions(args)
     if why:
@@ -251,7 +251,8 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
         macro_jurors=macro_jurors, choose_disposition=False, run_grand_jury=run_grand_jury,
         run_id=run_id, output_dir=output_dir,
         run_meta={"entry": "main.py", "run_id": run_id, "cell": cell, "pilot": False, "kin": bool(args.kin),
-                  "kin_model": kin_model, "model_overrides": list(args.model), "seed": args.seed},
+                  "kin_model": kin_model, "model_overrides": list(args.model), "seed": args.seed,
+                  "policy": args.policy, "dry_run": bool(args.dry_run)},
         dry_run=bool(args.dry_run), parallel=not args.sequential,
         interview_turns=list(args.interview_turns or []), kin=bool(args.kin))
     try:
@@ -280,9 +281,13 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
     return 0, record
 
 
-def run_dir(run_id: str, dry_run: bool) -> Path:
-    """Default log directory: data/runs/<run_id> (dry runs: data/runs/dry/<run_id>, H7)."""
-    return (RUNS_DIR / "dry" / run_id) if dry_run else (RUNS_DIR / run_id)
+def run_dir(run_id: str, dry_run: bool, policy: Optional[str] = None) -> Path:
+    """Default log directory: data/runs/<run_id> (dry runs: data/runs/dry/<run_id>,
+    H7; scripted --policy runs: data/runs/policy/<run_id>), so neither sits among
+    the main runs. The analysis tools leave both out anyway (run_meta)."""
+    if dry_run:
+        return RUNS_DIR / "dry" / run_id
+    return (RUNS_DIR / "policy" / run_id) if policy else (RUNS_DIR / run_id)
 
 
 def apply_model_overrides(labs, overrides: List[str]) -> str:

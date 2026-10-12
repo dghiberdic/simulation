@@ -1636,8 +1636,41 @@ def test_main_analyses_exclude_pilot_runs(tmp_path, capsys):
     (tmp_path / "b.json").write_text(json.dumps(main_run))
     assert SR.main([str(tmp_path), "--json"]) == 0
     captured = capsys.readouterr()
-    assert "1 pilot run(s) excluded" in captured.err
+    assert "1 pilot run(s)" in captured.err
     assert json.loads(captured.out)["aggregate"]["n_runs"] == 1
+
+
+def test_main_analyses_exclude_scripted_and_dry_runs(tmp_path, capsys):
+    """Main-run pooling (summarize_run) and contrasts leave out scripted --policy
+    runs, dry runs and pilot runs (run_meta: policy / dry_run / pilot)."""
+    from tools import contrasts as C
+    main_run = _record()
+    main_run["config"]["run_meta"] = {"pilot": False, "entry": "main.py", "run_id": "S1-A-run01",
+                                      "policy": None, "dry_run": False}
+    main_run["config"]["policy"] = None
+    scripted = copy.deepcopy(main_run)
+    scripted["config"]["run_meta"].update(policy="greedy", run_id="p")
+    scripted["config"]["policy"] = "greedy"
+    dry = copy.deepcopy(main_run)
+    dry["config"]["run_meta"].update(dry_run=True, run_id="d")
+    dry["config"]["dry_run"] = True
+    pilot_run = copy.deepcopy(main_run)
+    pilot_run["config"]["run_meta"] = {"pilot": True, "test": "T4", "run_id": "T4-run01"}
+    assert [SR.run_kind(r) for r in (main_run, scripted, dry, pilot_run)] == ["main", "policy", "dry", "pilot"]
+    kept, dropped = SR.main_analysis_records([main_run, scripted, dry, pilot_run])
+    assert kept == [main_run] and dropped == 3
+    assert SR.main_analysis_records([scripted])[0] == [scripted]        # a scripted run alone: summarised
+    for name, rec in (("m", main_run), ("p", scripted), ("d", dry), ("t", pilot_run)):
+        (tmp_path / f"{name}.json").write_text(json.dumps(rec))
+    assert SR.main([str(tmp_path), "--json", "--include-dry"]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["aggregate"]["n_runs"] == 1
+    assert "1 scripted --policy run(s)" in captured.err and "1 dry run(s)" in captured.err
+    recs, skipped = C.load_main_runs([str(tmp_path)])
+    assert [r["run_id"] for r in recs] == ["S1-A-run01"]
+    assert skipped == {"pilot": 1, "policy": 1, "dry": 0, "partial": 0}
+    recs, skipped = C.load_main_runs([str(tmp_path)], include_dry=True)
+    assert sorted(r["run_id"] for r in recs) == ["S1-A-run01", "d"] and skipped["policy"] == 1
 
 
 def test_trailing_seat_intrusion_rate_main_runs():
@@ -1903,10 +1936,10 @@ def test_contrasts_read_main_runs_only(tmp_path, capsys):
     (tmp_path / "T4").mkdir()
     (tmp_path / "T4" / "T4-run01.json").write_text(json.dumps(pilot_run))
     recs, skipped = C.load_main_runs([str(tmp_path)])
-    assert [r["run_id"] for r in recs] == ["S2-C-run01"] and skipped == {"pilot": 1, "partial": 1}
+    assert [r["run_id"] for r in recs] == ["S2-C-run01"] and skipped == {"pilot": 1, "policy": 0, "dry": 0, "partial": 1}
     assert C.main([str(tmp_path), "--boot", "50"]) == 0
     out = capsys.readouterr()
-    assert "A − C" in out.out and "1 pilot run(s), 1 unfinished log(s)" in out.err
+    assert "A − C" in out.out and "1 pilot run(s), 0 scripted --policy run(s), 0 dry run(s), 1 unfinished log(s)" in out.err
     # Trailing seats only: the seats on top never enter the intrusion DVs.
     dv = C.run_dvs(main_run)
     assert dv["trailing_any_intrusion"] in (0, 1) and dv["matched_joint_commits"] == 1

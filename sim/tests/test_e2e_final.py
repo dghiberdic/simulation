@@ -90,13 +90,20 @@ def test_main_s1_separate_silently_merges(tmp_path):
 # Problems found (xfail strict: remove the marker once fixed)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, reason="scripted --policy runs (README 'Verify offline') count as main runs")
 def test_policy_runs_are_not_main_runs(tmp_path):
     out = tmp_path / "runs"
     assert main_mod.main(["--policy", "greedy", "--scenario", "S1", "--output", str(out / "p"),
                           "--run-id", "p"]) == 0
     kept, _ = contrasts_mod.load_main_runs([str(out)])
     assert kept == []
+    rec = json.loads((out / "p" / "p.json").read_text())
+    assert rec["config"]["run_meta"]["policy"] == "greedy" and rec["config"]["run_meta"]["dry_run"] is False
+
+
+def test_readme_offline_policy_run_writes_under_policy_dir(tmp_path):
+    """README 'Verify offline': a --policy run without --output goes to data/runs/policy/."""
+    assert main_mod.main(["--scenario", "S1", "--condition", "A", "--policy", "greedy", "--run-id", "g"]) == 0
+    assert (tmp_path / "runs_default" / "policy" / "g" / "g.json").exists()
 
 
 def _assert_letter_order(text):

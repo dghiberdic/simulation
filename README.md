@@ -69,7 +69,7 @@ python -m pytest -q -p no:cacheprovider    # ~1,300 offline tests
 python checks/scripted_checks.py           # SC1–SC15, exit 0 when all pass
 python pilot.py plan --dry-run             # the pilot plan at estimated costs
 python pilot.py priced --dry-run           # the pilot pipeline on stubs (logs: data/pilot/dry/)
-python main.py --scenario S1 --condition A --policy greedy   # a scripted run, no models
+python main.py --scenario S1 --condition A --policy greedy   # a scripted run, no models (logs: data/runs/policy/)
 ```
 
 The scripted checks (spec §9.2) play every seat with zero-cost policies: a sane
@@ -360,10 +360,15 @@ python main.py --scenario S2 --condition B --dry-run      # stubs, $0
 | `--model KEY=MODEL` | — | override one seat's model (key checked; provider set for preflight) |
 | `--budget USD` | none (warned) | guard on the ledger **total** |
 | `--no-grand-jury`, `--no-macro-jury` | off | |
-| `--output DIR`, `--run-id ID` | `data/runs/<run_id>` (dry: `data/runs/dry/<run_id>`), `<cell>-YYYYmmdd-HHMMSS` | |
+| `--output DIR`, `--run-id ID` | `data/runs/<run_id>` (dry: `data/runs/dry/<run_id>`; `--policy`: `data/runs/policy/<run_id>`), `<cell>-YYYYmmdd-HHMMSS` | |
 | `--seed`, `--sequential`, `--spend-file`, `--allow-placeholder-values`, `--verbose` | | |
 
-`--dry-run` without `--output` writes to `data/runs/dry/<run_id>/`.
+`--dry-run` without `--output` writes to `data/runs/dry/<run_id>/`, a
+`--policy` run to `data/runs/policy/<run_id>/`. Wherever they are written,
+`summarize_run.py` (main-run pooling) and `contrasts.py` leave out scripted
+`--policy` runs, dry runs and pilot runs, read from the record's `run_meta`
+(`policy`, `dry_run`, `pilot`); `--include-dry` lets dry runs into the
+contrasts for testing.
 `--model KEY=MODEL` refuses an unknown seat key or a model with no known
 provider, and preflight then checks that model's provider key. A finished run
 is never paid for twice: calling again with the same `--run-id` and output
@@ -429,7 +434,7 @@ reproduces it exactly; if not, the contributions are not reliable (and
 | `data/pilot/T6_coding_sheet.csv`, `hand_scores.csv`, `human_ratings.csv` | human inputs (above) |
 | `data/pilot/human/blind/`, `data/pilot/human/key/` | `export_transcripts.py`: redacted transcripts; letter key and blank templates |
 | `data/runs/<cell>/<cell>-runNN.json`, `data/runs/campaign_state.json` | campaign runs; the state holds the saved plan, the guard, finished runs and runs missing their Grand Jury |
-| `data/runs/<run_id>/<run_id>.json` | `main.py` runs |
+| `data/runs/<run_id>/<run_id>.json` | `main.py` runs (`--policy` runs: `data/runs/policy/<run_id>/`) |
 | `data/spend.json`, `data/spend_calls.jsonl` | the spend ledger and per-call log |
 
 Dry runs use `data/pilot/dry/` (ratings in `disposition_ratings.dry.json`) and

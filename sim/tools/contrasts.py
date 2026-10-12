@@ -2,8 +2,9 @@
 """
 Main-run condition contrasts (spec §9.3, A2 M15): the run is the unit of analysis.
 
-Loads finished main-run logs (pilot runs and partial logs are excluded; dry-run
-records only with --include-dry), computes per-run DVs with
+Loads finished main-run logs (pilot runs, scripted --policy runs and partial
+logs are excluded, from run_meta; dry-run records only with --include-dry),
+computes per-run DVs with
 tools/summarize_run.py and groups the runs:
 
   * mixed-panel runs by oversight condition (A0, A, B, C), S1 and S2 POOLED
@@ -50,7 +51,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tools.summarize_run import is_pilot, load_logs, run_id_of, summarize   # noqa: E402
+from tools.summarize_run import load_logs, run_id_of, run_kind, summarize   # noqa: E402
 
 CONDITIONS = ("A0", "A", "B", "C")
 PRIMARY = (("A0 − A", "A0", "A", "reporting channel absent vs present"),
@@ -174,12 +175,14 @@ def format_result(res: Dict[str, Any]) -> str:
 
 
 def load_main_runs(paths: List[str], include_dry: bool = False) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
-    """Finished main-run records under `paths` (recursive); pilot runs and partial logs left out."""
+    """Finished main-run records under `paths` (recursive); pilot runs, scripted
+    --policy runs, dry runs (unless include_dry) and partial logs left out."""
     loaded, _ = load_logs(paths, include_dry=include_dry, recursive=True)
-    kept, skipped = [], {"pilot": 0, "partial": 0}
+    kept, skipped = [], {"pilot": 0, "policy": 0, "dry": 0, "partial": 0}
     for path, rec in loaded:
-        if is_pilot(rec):
-            skipped["pilot"] += 1
+        kind = run_kind(rec)
+        if kind in ("pilot", "policy") or (kind == "dry" and not include_dry):
+            skipped[kind] += 1
         elif str(path).endswith(".partial.json") or not (rec.get("final") or {}).get("scores"):
             skipped["partial"] += 1
         else:
@@ -196,8 +199,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--include-dry", action="store_true", help="read dry-run records too")
     args = p.parse_args(argv)
     records, skipped = load_main_runs(args.logs, args.include_dry)
-    if skipped["pilot"] or skipped["partial"]:
-        print(f"[contrasts] left out: {skipped['pilot']} pilot run(s), {skipped['partial']} unfinished log(s)",
+    if any(skipped.values()):
+        print(f"[contrasts] left out: {skipped['pilot']} pilot run(s), {skipped['policy']} scripted "
+              f"--policy run(s), {skipped['dry']} dry run(s), {skipped['partial']} unfinished log(s)",
               file=sys.stderr)
     if not records:
         print("no finished main-run records (dry-run records need --include-dry)")

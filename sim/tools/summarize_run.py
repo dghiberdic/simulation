@@ -2849,15 +2849,46 @@ def is_main_run(record: Dict[str, Any]) -> bool:
     return meta.get("pilot") is False or meta.get("entry") == "main.py"
 
 
+def is_scripted_run(record: Dict[str, Any]) -> bool:
+    """A run played by a zero-cost scripted --policy (no models): config.policy or
+    run_meta.policy."""
+    cfg = record.get("config") or {}
+    return bool(cfg.get("policy") or (cfg.get("run_meta") or {}).get("policy"))
+
+
+def run_kind(record: Dict[str, Any]) -> str:
+    """"pilot", "policy" (scripted), "dry" (stub models) or "main" (a model run of
+    main.py / campaign.py); from run_meta (pilot, policy, dry_run) and config."""
+    meta = (record.get("config") or {}).get("run_meta") or {}
+    if is_pilot(record):
+        return "pilot"
+    if is_scripted_run(record):
+        return "policy"
+    if is_dry(record) or meta.get("dry_run"):
+        return "dry"
+    return "main"
+
+
 def main_analysis_records(records: List[Dict[str, Any]], include_pilot: bool = False
                           ) -> Tuple[List[Dict[str, Any]], int]:
-    """Pilot runs are excluded from the main analyses (§9.2): when the logs mix pilot
-    and main runs, the pilot ones are dropped (unless include_pilot). Returns
-    (records kept, pilot runs dropped)."""
-    if include_pilot or all(is_pilot(r) for r in records):
+    """The main analyses pool main runs only (§9.2, §9.3): when the logs hold a
+    model main run, pilot runs (kept with include_pilot), scripted --policy runs
+    and dry runs are dropped. Logs of one other kind alone (the pilot runs for
+    their decisions, a scripted or dry run being checked) are kept. Returns
+    (records kept, runs dropped); excluded_counts() says of which kind."""
+    if not any(run_kind(r) == "main" for r in records):
         return list(records), 0
-    kept = [r for r in records if not is_pilot(r)]
+    drop = {"policy", "dry"} | (set() if include_pilot else {"pilot"})
+    kept = [r for r in records if run_kind(r) not in drop]
     return kept, len(records) - len(kept)
+
+
+def excluded_counts(records: List[Dict[str, Any]], kept: List[Dict[str, Any]]) -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    for r in records:
+        if not any(r is k for k in kept):
+            out[run_kind(r)] = out.get(run_kind(r), 0) + 1
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -3296,9 +3327,13 @@ def main(argv: Optional[List[str]] = None) -> int:
               + (f" ({n - before} new row(s) merged; codes already entered kept)" if before else "")
               + f". {SHEET_HELP}")
         return 0
-    records, dropped = main_analysis_records([rec for _p, rec in loaded], args.include_pilot)
+    every = [rec for _p, rec in loaded]
+    records, dropped = main_analysis_records(every, args.include_pilot)
     if dropped:
-        print(f"[main analysis] {dropped} pilot run(s) excluded (pass --include-pilot to keep them)",
+        kinds = excluded_counts(every, records)
+        names = {"pilot": "pilot run(s) (pass --include-pilot to keep them)",
+                 "policy": "scripted --policy run(s)", "dry": "dry run(s)"}
+        print("[main analysis] excluded: " + "; ".join(f"{n} {names.get(k, k)}" for k, n in kinds.items()),
               file=sys.stderr)
         loaded = [(p, r) for p, r in loaded if any(r is k for k in records)]
     if not records:

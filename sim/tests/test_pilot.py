@@ -444,7 +444,7 @@ def test_usage_report_counts_empty_incomplete_and_cut_interviews_apart():
 
 def test_main_scripted_run_saves_under_default_dir():
     assert main_mod.main(["--policy", "idle", "--turns", "2", "--run-id", "scripted1"]) == 0
-    rec = json.loads((main_mod.RUNS_DIR / "scripted1" / "scripted1.json").read_text())
+    rec = json.loads((main_mod.RUNS_DIR / "policy" / "scripted1" / "scripted1.json").read_text())
     assert rec["config"]["fog"] == "F3" and rec["config"]["run_meta"]["pilot"] is False
 
 
