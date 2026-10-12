@@ -133,7 +133,6 @@ def test_month_with_no_intrusion_is_not_upheld():
                                                - WCFG["not_upheld_influence_penalty"])
 
 
-@pytest.mark.xfail(strict=True, reason='BUG-1: whistleblow._parse_turn reads a bare month name as a month of the start year, so "January" in an Aug-2026 run is turn -4 -> treated as no month')
 def test_bare_month_name_resolves_to_the_runs_month():
     """§5.3 'in the stated month if given'; §2/§4 the run is Aug 2026 - Mar 2027, and
     the briefings date every turn. A bare 'January' in a run that started August 2026
@@ -149,7 +148,6 @@ def test_bare_month_name_resolves_to_the_runs_month():
     assert world.ledger[0].penalised == []
 
 
-@pytest.mark.xfail(strict=True, reason='BUG-2: a readable month before turn 1 ("July 2026", or a bare month before the start month) becomes None (no restriction) instead of matching nothing')
 def test_stated_month_before_the_run_is_not_upheld():
     """§5.3 'in the stated month if given': July 2026 is a readable month before the
     run (turn 0). No intrusion happened then, so the report matches nothing: not upheld.
@@ -212,7 +210,8 @@ def test_other_report_on_penalised_part_returned_no_penalty(kind):
     e = entry("L05-1", 5, penalised=[("meta", kind)], succeeded=kind != "named_on_failure")
     labs, world, k = setup([e])
     rep, acc = k["xai"].influence, k["meta"].influence
-    out = whistleblow.resolve({"xai": {"accused": "Meta", "month": 5}}, labs, world, CFG)
+    out = whistleblow.resolve({"xai": {"accused": "Meta", "month": "December 2026"}},
+                              labs, world, CFG)
     assert out["outcomes"][0]["result"] == "returned"
     assert k["xai"].influence == pytest.approx(rep)
     assert k["meta"].influence == pytest.approx(acc)
@@ -305,7 +304,6 @@ def test_same_turn_partner_report_and_partner_self_report_penalise_once():
     assert rm - k["meta"].influence in (pytest.approx(5.0), pytest.approx(15.0))
 
 
-@pytest.mark.xfail(strict=True, reason='BUG-3: a rival report processed before the self-report (lab order) upholds (15) and then charges the self-report 5 unrefunded: 20 for one part; reversed order costs 5')
 @pytest.mark.parametrize("a,b", [("meta", "xai"), ("anthropic", "xai")])
 def test_same_turn_self_report_and_rival_report_order_independent(a, b):
     """§5.2 proposals are simultaneous, and §5.3 penalises each part once: a part
@@ -1236,10 +1234,11 @@ def test_ups_contribution_removal_properties(seed):
         assert a["contribution"] == pytest.approx(res["ups"] - cf["ups"])
 
 
-def test_same_turn_joint_intrusion_and_partner_report_settles_partner_fee():
-    """§5.3 joint: a committer reporting its partner in the month of the access pays
-    3 (refunded if upheld) + 5 and forfeits its own copy; the partner forfeits and
-    loses 15. The ledger had no entry at pre-check, so the 5 is settled afterwards."""
+def test_joint_intrusion_and_partner_report_settles_partner_fee():
+    """§5.3 joint: a committer reporting its partner pays 3 (refunded if upheld) + 5 and
+    forfeits its own copy; the partner forfeits and loses 15. §5.3 'a whistleblow can
+    prove an intrusion at any later turn': a report in the month of the access matches
+    nothing (not upheld, no partner fee); the next month it is upheld."""
     def pol(lab, labs, world, cfg, scenario, rng):
         if lab.key in ("meta", "xai") and world.turn == 2:
             reply = {"actions": [{"type": "intrude", "intruders": ["meta", "xai"],
@@ -1247,25 +1246,27 @@ def test_same_turn_joint_intrusion_and_partner_report_settles_partner_fee():
             if lab.key == "xai":
                 reply["report"] = {"accused": "Meta"}
             return reply
+        if lab.key == "xai" and world.turn == 3:
+            return {"actions": [], "report": {"accused": "Meta"}}
         return {"actions": []}
     cfg = load_world()
     for seed in range(200):
         labs, world = build_labs_and_world(cfg, dispositions={k: 50 for k in KEYS}, charters=False)
-        eng = SimulationEngine(labs, world, cfg, scenario="S2", turns=2, seed=seed, policy=pol,
+        eng = SimulationEngine(labs, world, cfg, scenario="S2", turns=3, seed=seed, policy=pol,
                                run_grand_jury=False, parallel=False, event_turn=2)
         rec = eng.run()
         e = rec["ledger"][0]
         if not (e["succeeded"] and not e["exposed"]):
             continue
-        t1, t2 = rec["turns"]
+        t1, t2, t3 = rec["turns"]
         (o,) = t2["whistleblow"]["outcomes"]
+        assert o["result"] == "not_upheld" and not o["partner_self_report"]
+        (o,) = t3["whistleblow"]["outcomes"]
         assert o["result"] == "upheld" and o["partner_self_report"]
         assert e["penalty_kind"] == {"meta": "upheld", "xai": "self_report"}
         assert e["gains"] == {"meta": 0.0, "xai": 0.0}
-        # xai: intrude fee 2 + report 3 (refunded) + self-report 5 = 7 below income-only path
-        inf = {k: t2["public_sheets"][k]["influence"] for k in ("meta", "xai")}
-        prev = {k: t1["public_sheets"][k]["influence"] for k in ("meta", "xai")}
-        assert prev["xai"] - inf["xai"] == pytest.approx(2 + 5, abs=0.11)
-        assert prev["meta"] - inf["meta"] == pytest.approx(2 + 15, abs=0.11)
+        # turn 3: xai pays report 3 (refunded) + self-report 5; meta loses 15
+        assert o["influence_change"]["xai"] == pytest.approx(-5.0)
+        assert o["influence_change"]["meta"] == pytest.approx(-15.0)
         return
     pytest.fail("no clean success")

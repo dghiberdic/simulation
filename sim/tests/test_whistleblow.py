@@ -368,15 +368,15 @@ def test_partner_fee_settled_when_own_part_exposed_after_reservation():
 
 
 def test_partner_fee_charged_when_not_reserved():
-    """fee_charged: the reported access was committed this month, after pass 1, so only
-    3 was reserved; the 5 self-report fee is charged at resolution."""
+    """fee_charged: the ledger gained a matching earlier entry after pass 1 (defensive
+    path), so only 3 was reserved; the 5 self-report fee is charged at resolution."""
     labs, world, k = setup([])
     me = k["openai"]
     inf = me.influence
     data, _ = validate_report({"accused": "xAI"}, me, labs, world, CFG)
     assert data["fee"] == FEE
     me.influence -= data["fee"]
-    world.ledger.append(entry(id="L05-1", turn=5))
+    world.ledger.append(entry(id="L04-1", turn=4))
     out = resolve({"openai": data}, labs, world, CFG, fee_charged=True)
     (o,) = out["outcomes"]
     assert o["result"] == "upheld" and o["partner_self_report"] is True
@@ -385,21 +385,24 @@ def test_partner_fee_charged_when_not_reserved():
 
 
 def test_partner_reports_each_other_same_turn():
-    """Both partners report each other in one month: each is upheld against the other,
-    each part is penalised once (first by the earlier report in lab order)."""
-    labs, world, k = setup([entry()])
-    before = {key: k[key].influence for key in ("openai", "xai")}
-    out = resolve({"openai": {"accused": "xAI"}, "xai": {"accused": "OpenAI"}}, labs, world, CFG)
-    assert [o["result"] for o in out["outcomes"]] == ["upheld", "upheld"]
-    e = world.ledger[0]
-    assert sorted(e.penalised) == ["openai", "xai"]
-    assert e.penalty_kind == {"xai": "upheld", "openai": "self_report"}
-    # openai: 3 + 5, 3 refunded; then hit by xai's report: penalty once only (its part
-    # was already penalised by its own self-report this month, so no 15 Inf)
-    assert out["outcomes"][0]["partner_self_report"] is True
-    assert out["outcomes"][1]["partner_self_report"] is False      # xai's part already penalised
-    assert k["openai"].influence == pytest.approx(before["openai"] - SELF)
-    assert k["xai"].influence == pytest.approx(before["xai"] - UPHELD)
+    """Both partners report each other in one month (§5.2 simultaneous, §5.3 joint):
+    each report is also a self-report, and self-reports settle first, so each part is
+    self-reported (5, forfeit) and each accusation finds the partner's part already
+    penalised this month: returned, 3 refunded. Same result in either lab order."""
+    for order in (("openai", "xai"), ("xai", "openai")):
+        labs, world, k = setup([entry()])
+        labs.sort(key=lambda lab: order.index(lab.key) if lab.key in order else -1)
+        before = {key: k[key].influence for key in ("openai", "xai")}
+        know = {key: k[key].know_how for key in ("openai", "xai")}
+        out = resolve({"openai": {"accused": "xAI"}, "xai": {"accused": "OpenAI"}},
+                      labs, world, CFG)
+        assert [o["result"] for o in out["outcomes"]] == ["returned", "returned"]
+        assert all(o["partner_self_report"] for o in out["outcomes"])
+        e = world.ledger[0]
+        assert e.penalty_kind == {"xai": "self_report", "openai": "self_report"}
+        for key, gain in (("openai", 2.0), ("xai", 3.0)):
+            assert k[key].influence == pytest.approx(before[key] - SELF)
+            assert k[key].know_how == pytest.approx(know[key] - gain)
 
 
 def test_report_shapes_and_accused_keys():
@@ -550,3 +553,125 @@ def test_accused_key_precedence():
     # a no-report accused is not overridden by "lab"/"target"
     assert validate_report({"accused": "None.", "target": "Meta"}, me, labs, world, CFG) == (None, "")
 
+
+
+# ---------------------------------------------------------------------------
+# v5 fixes: month parsing from an August start, earlier turns only, order
+# independence (spec §5.2, §5.3, A.8)
+# ---------------------------------------------------------------------------
+
+AUG = date(2026, 8, 1)     # §2: monthly turns from 1 August 2026
+
+
+def test_month_parsing_from_an_august_start():
+    """§5.3 'in the stated month if given': a month without a year is its most recent
+    occurrence at or before the current turn; a bare number 1–12 is a calendar month."""
+    from core.whistleblow import _parse_turn
+    # turn 6 = January 2027, turn 8 = March 2027
+    assert _parse_turn("January", AUG, current_turn=8) == 6
+    assert _parse_turn("Oct", AUG, current_turn=8) == 3
+    assert _parse_turn("August", AUG, current_turn=8) == 1
+    assert _parse_turn("January 2027", AUG, current_turn=8) == 6
+    assert _parse_turn("2027-02", AUG, current_turn=8) == 7
+    # bare numbers are calendar months, not turns
+    assert _parse_turn("10", AUG, current_turn=8) == 3
+    assert _parse_turn(1, AUG, current_turn=8) == 6
+    assert _parse_turn(5.0, AUG, current_turn=8) == -2                 # May 2026
+    assert _parse_turn(13, AUG, current_turn=8) is None and _parse_turn("0", AUG, 8) is None
+    # "turn N" / "month N" stay turns
+    assert _parse_turn("turn 5", AUG, current_turn=8) == 5
+    # readable months outside the run still restrict (no fallback to "any month")
+    assert _parse_turn("July 2026", AUG, current_turn=8) == 0
+    assert _parse_turn("December", AUG, current_turn=3) == -7      # December 2025
+    assert _parse_turn("April 2027", AUG, current_turn=8) == 9
+    assert _parse_turn("last month", AUG, current_turn=1) == 0
+    # with no current turn: the first occurrence from the start month
+    assert _parse_turn("March", AUG) == 8 and _parse_turn("September", AUG) == 2
+
+
+def test_bare_number_is_a_calendar_month_in_a_report():
+    """A.8 asks for the month of the access: "month": 10 means October (turn 3), not
+    turn 10; a value under "turn" is a turn."""
+    e = entry(id="L03-1", turn=3)
+    labs, world, k = setup([e])
+    world.start, world.turn = AUG, 8
+    out = resolve({"anthropic": {"accused": "OpenAI", "month": 10}}, labs, world, CFG)
+    assert out["outcomes"][0]["result"] == "upheld"
+    labs, world, k = setup([entry(id="L03-1", turn=3)])
+    world.start, world.turn = AUG, 8
+    out = resolve({"anthropic": {"accused": "OpenAI", "turn": 3}}, labs, world, CFG)
+    assert out["outcomes"][0]["result"] == "upheld"
+
+
+@pytest.mark.parametrize("month", ["July 2026", "July", "April 2027", "April"])
+def test_readable_month_outside_the_run_matches_nothing(month):
+    """§5.3: a readable month before the run or after the current turn restricts the
+    match: nothing matches, so the report is not upheld (fee kept, further 5)."""
+    labs, world, k = setup([entry(id="L03-1", turn=3)])
+    world.start, world.turn = AUG, 6       # January 2027: bare "July"/"April" are 2026
+    rep = k["anthropic"].influence
+    out = resolve({"anthropic": {"accused": "OpenAI", "month": month}}, labs, world, CFG)
+    # bare "July"/"April" at January 2027 are July/April 2026, before the run
+    assert out["outcomes"][0]["result"] == "not_upheld"
+    assert k["anthropic"].influence == pytest.approx(rep - FEE - WCFG["not_upheld_influence_penalty"])
+    assert world.ledger[0].penalised == []
+
+
+@pytest.mark.parametrize("who,accused", [("anthropic", "OpenAI"), ("xai", "self"),
+                                         ("xai", "OpenAI")])
+def test_report_matches_only_earlier_turns(who, accused):
+    """§5.3 'a whistleblow can prove an intrusion at any later turn': a report (rival,
+    self or partner) cannot match an intrusion of the current month."""
+    labs, world, k = setup([entry(id="L05-1", turn=5)])      # world.turn is 5
+    out = resolve({who: {"accused": accused}}, labs, world, CFG)
+    (o,) = out["outcomes"]
+    assert o["result"] == "not_upheld" and o["entry_id"] is None
+    assert not o["partner_self_report"]
+    assert world.ledger[0].penalised == []
+    me = k[who]
+    assert validate_report({"accused": accused}, me, labs, world, CFG)[0]["partner_fee"] == 0.0
+    world.turn = 6
+    out = resolve({who: {"accused": accused}}, labs, world, CFG)
+    assert out["outcomes"][0]["result"] in ("upheld", "self_report")
+
+
+def _settle(entries, reports, order):
+    import copy as _copy
+    labs, world, k = setup(_copy.deepcopy(entries))
+    labs.sort(key=lambda lab: order.index(lab.key))
+    out = resolve(reports, labs, world, CFG)
+    state = sorted((lab.key, round(lab.influence, 6), round(lab.know_how, 6)) for lab in labs)
+    kinds = [sorted(e.penalty_kind.items()) for e in world.ledger]
+    results = dict(sorted((o["reporter"], o["result"]) for o in out["outcomes"]))
+    return state, kinds, results
+
+
+def test_same_turn_reports_are_order_independent():
+    """§5.2 proposals are simultaneous; §5.3 each part is penalised once. Every lab
+    order gives the same Influence, know-how, penalties and results; self-reports and
+    partner reports settle first and a rival report on a part self-reported this
+    month is returned (refunded)."""
+    import itertools
+    keys = ["anthropic", "openai", "gdm", "meta", "xai"]
+    joint = entry(id="L03-1", turn=3, committers=["openai", "xai"],
+                  gains={"openai": 2.0, "xai": 3.0})
+    solo = entry(id="L04-1", turn=4, committers=["meta"], targets=["gdm"], gains={"meta": 1.0})
+    cases = [
+        {"meta": {"accused": "self"}, "gdm": {"accused": "Meta"}},
+        {"openai": {"accused": "xAI"}, "xai": {"accused": "OpenAI"}},
+        {"xai": {"accused": "self"}, "openai": {"accused": "xAI"}, "anthropic": {"accused": "xAI"}},
+        {"anthropic": {"accused": "OpenAI"}, "gdm": {"accused": "OpenAI"}, "xai": {"accused": "self"}},
+        {"anthropic": {"accused": "Meta"}, "gdm": {"accused": "Meta"}, "meta": {"accused": "OpenAI"}},
+    ]
+    for reports in cases:
+        seen = {_settle([joint, solo], reports, list(p)).__repr__()
+                for p in itertools.permutations(keys)}
+        assert len(seen) == 1, reports
+    # the rival's report on a part self-reported this month is returned and refunded
+    state, kinds, results = _settle([joint, solo], cases[0], keys[::-1])
+    labs, _, k = setup([])
+    assert results == {"meta": "self_report", "gdm": "returned"}
+    state = {key: inf for key, inf, _ in state}
+    assert state["gdm"] == pytest.approx(k["gdm"].influence)
+    assert state["meta"] == pytest.approx(k["meta"].influence - SELF)
+    assert kinds[1] == [("meta", "self_report")]
