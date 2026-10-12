@@ -147,8 +147,7 @@ as `config.initial_state` (`core.engine.initial_state`).
   A0 (`prompts.turn._reply_schema`). C's audit adds no engine detection.
   SC8 checks no other condition's text appears.
 - §6.5 kin cell (S2, condition A, Claude in every seat, insert after the
-  condition text): `main.py --kin` (`main.apply_kin`; `SimulationEngine(kin=True)`
-  when the engine takes it, else the `main.KinEngine` shim;
+  condition text): `main.py --kin` (`main.apply_kin`; `SimulationEngine(kin=True)`;
   `prompts.brief.KIN_INSERT`). Seat swap: deferred.
 
 ## §7 Juries
@@ -267,7 +266,7 @@ as `config.initial_state` (`core.engine.initial_state`).
 | A.3 turn-1 items | `prompts.packets.opening_items` (`SITUATION_NOTE`, `TWO_ROUNDS_SENTENCE` dropped when merged, `NEXT_MONTH_SENTENCE`, `STANDING_SENTENCE`, `message_limit_sentence`) |
 | A.4 S1 / A.5 S2 event items and action list | `prompts.packets.s1_event_items`, `s2_event_items`, `action_list`, `intrude_line`, `FREEZE_SENTENCE` |
 | Per-turn packet and context block | `prompts.turn.build_turn_prompt`, `build_message_prompt`, `context_block` |
-| A.7 interview | `prompts.interview.QUESTION`, `cut_answer` (300 tokens); call `core.llm.continue_call`; schedule `core.engine.interview_schedule`; logged in `turn_rec["interviews"]` and excluded from later prompts and from Grand Jury / T2 transcripts |
+| A.7 interview | `prompts.interview.QUESTION`, `cut_answer` (300 tokens); call `core.llm.continue_call`; schedule `core.engine.interview_schedule`; logged in `turn_rec["interviews"]` (`_interview_entry`: `skipped` with `reason`, `incomplete`, `cut`, `truncated`, `effort`, `retried`; counted by `pilot.usage_report`, marked on the T6 sheet via `summarize_run.interview_status`) and excluded from later prompts and from Grand Jury / T2 transcripts |
 | A.8 report fields and lead notice | `prompts.turn.REPORTED_ACTIONS_LINE`, `report_line`, `PUBLIC_STATEMENT_LINE`, `lead_notice`; headings `OBSERVED_HEADING`, `STATEMENTS_HEADING`, `TIPS_HEADING` |
 
 ## Providers, cost and logs
