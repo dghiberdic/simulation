@@ -21,7 +21,7 @@ model reads its whole charter; GPT-6 Astra's is ~68k tokens). A seat whose
 model gives no usable rating (after the corrective retries) is reported with
 its last errors, the other seats are still rated, and the tool exits 2; re-rate
 that seat alone with --lab KEY (P58). Exit codes: 0 all rated; 1 halted on the
-budget guard (as pilot.py and the probe, P65); 2 preflight failure, fatal API
+budget guard (as pilot.py, P65); 2 preflight failure, fatal API
 stop, or an unusable rating. Seats rated before a stop keep their new values.
 
   python rate_charters.py --dry-run          # offline, prints, writes nothing
@@ -129,7 +129,7 @@ def guard_for(spent: float, budget: Optional[float], headroom: Optional[float]) 
     """
     The ledger total at which to stop: --budget if given, else what is spent
     plus --headroom if given, else the pilot's budget_guard (one guard for the
-    whole pilot, as pilot.py and the probe use).
+    whole pilot, as pilot.py uses).
     """
     if budget is not None:
         return budget
@@ -179,7 +179,7 @@ def main(argv=None) -> int:
             lab_cfg = dict(lab_cfg, model="stub:rate_charters")
         try:
             values, notes = rate_lab(lab_cfg)
-        except BudgetExceeded as e:     # P65: exit 1 on the budget guard, like pilot.py and the probe
+        except BudgetExceeded as e:     # P65: exit 1 on the budget guard, like pilot.py
             print(f"halted on the budget guard at {key}: {e}")
             return 1
         except FatalAPIError as e:

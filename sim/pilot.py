@@ -54,7 +54,6 @@ or refused, 3 approval refused (the re-priced plan exceeds the guard after the c
 """
 
 import argparse
-import csv
 import json
 import logging
 import os
@@ -1015,10 +1014,10 @@ def approve(args, data: Dict[str, Any], root: Path) -> int:
     if args.turns is None or args.turns not in allowed:
         print(f"approve needs the team's T7 decision: --turns {' or --turns '.join(str(t) for t in allowed)}")
         return EXIT_ABORTED
+    if args.budget is not None:                 # a team decision to move the guard
+        data = dict(data, budget_guard=args.budget)
     plan = build_plan(data, root, turns=args.turns)
     print("\n".join(plan_lines(plan)))
-    if args.budget is not None:
-        plan["guard"] = args.budget
     if plan["stop"]:
         print(f"\nAPPROVAL REFUSED: the re-priced plan (${plan['total']:.2f}) exceeds the ${plan['guard']:.0f} "
               "guard after every cut. Stop and agree on the next step (spec §9.2).")

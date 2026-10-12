@@ -273,6 +273,9 @@ def test_approve_refused_when_the_plan_exceeds_the_guard(tmp_path, monkeypatch, 
     assert _dry(root, "approve", "--turns", "8") == pilot.EXIT_OVER_GUARD
     assert "APPROVAL REFUSED" in capsys.readouterr().out
     assert not (root / pilot.APPROVAL_NAME).exists()
+    # The team may move the guard (--budget): the plan is then re-cut against it.
+    assert _dry(root, "approve", "--turns", "8", "--budget", "200") == 0
+    assert json.loads((root / pilot.APPROVAL_NAME).read_text())["cuts"] == []
 
 
 def test_order_is_enforced_and_the_t6_rerun(tmp_path, capsys):
