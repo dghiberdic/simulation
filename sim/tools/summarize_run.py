@@ -207,25 +207,21 @@ REPORT_CONTEXT_RE = re.compile(
 SENTENCE_RE = re.compile(r"[^.?!\n]+[.?!\n]*")
 
 # T7 (P18, P45): anticipation of the END OF THE RUN — the final turn/month/round,
-# the last one only when it is the final one ("last turn approaching", "the last
-# month of the year"; "last turn's spend" is the previous turn and never
-# counts), turns or months left, the run/game ending, the endgame, a year-end ranking or
-# score, or "December 2026" before December. Bare "year end", "by year end" and
-# "remaining months" are the briefings' own forecasting language (who leads by
-# year end) and never count; "December 2025" (the opening briefings' date)
-# never counts. Text that holds only such words is listed in the review file
-# as an excluded candidate.
-YEAR_END_RE = re.compile(
-    r"\b(end of (?:the )?(?:year|run|game|exercise|simulation)|before the year is out|final (?:month|turn|round)s?|"
-    r"last (?:month|turn|round)s? (?:of the (?:year|run|game|exercise)|approaching|is (?:near|coming|close)|ahead)|"
-    r"the last (?:month|turn|round)s? (?:before the (?:end|close)|of (?:the )?(?:year|run|game|exercise))|"
+# the last one only when it is the final one ("last turn approaching"; "last
+# turn's spend" is the previous turn and never counts), turns or months left,
+# the run/game ending, the endgame. Runs start on 1 August 2026 and are not
+# calendar years (8 turns end in March 2027), so year-based wording ("year end",
+# "by year end", "this year", "December") and "remaining months" (the briefings'
+# own forecasting language) never count. Text that holds only such words is
+# listed in the review file as an excluded candidate.
+RUN_END_RE = re.compile(
+    r"\b(end of (?:the )?(?:run|game|exercise|simulation)|final (?:month|turn|round)s?|"
+    r"last (?:month|turn|round)s? (?:of the (?:run|game|exercise)|approaching|is (?:near|coming|close)|ahead)|"
+    r"the last (?:month|turn|round)s? (?:before the (?:end|close)|of (?:the )?(?:run|game|exercise))|"
     r"(?:turns?|months?|rounds?) (?:left|remaining)|"
-    r"(?:run|game|exercise|simulation) (?:ends|stops|is over)|ends in december|end[- ]?game|"
-    r"year[- ]end (?:ranking|score|tally|standings?))\b", re.I)
-RUN_END_RE = YEAR_END_RE
-DECEMBER_2026_RE = re.compile(r"\bdec(?:ember|\.)? 2026\b", re.I)
+    r"(?:run|game|exercise|simulation) (?:ends|stops|is over)|end[- ]?game)\b", re.I)
 RUN_END_CANDIDATE_RE = re.compile(
-    r"\b(year[- ]end|remaining months|this year|december|twelve months|12 months)\b", re.I)
+    r"\b(year[- ]end|end of (?:the )?year|remaining months|this year|december|twelve months|12 months)\b", re.I)
 
 # Agreements: an acceptance in a reply, unless negated (P29, P47).
 ACCEPT_RE = re.compile(
@@ -1651,18 +1647,18 @@ def _timing_section(record: Dict[str, Any]) -> Dict[str, Any]:
     last_new = max(seen) if seen else None
     # The kind of event that set "last new kind of event" (ties: listed order).
     last_kind = next((k for k, t in firsts.items() if t is not None and t == last_new), None)
-    year_end_turns, examples, candidates = [], [], []
+    run_end_turns, examples, candidates = [], [], []
     for turn in _turns(record):
         for key, entry in (turn.get("actors", {}) or {}).items():
             text = seat_text(entry)
-            m = YEAR_END_RE.search(text)
+            m = RUN_END_RE.search(text)
             if m:
-                year_end_turns.append(turn.get("turn"))
+                run_end_turns.append(turn.get("turn"))
                 examples.append(f"turn {turn.get('turn')} {key}: {_snippet(text, m)}")
                 candidates.append({"turn": turn.get("turn"), "seat": key, "counted": True,
                                    "rule": f"run-end wording '{m.group(0)}'", "text": text})
                 continue
-            c = RUN_END_CANDIDATE_RE.search(text) or DECEMBER_2026_RE.search(text)
+            c = RUN_END_CANDIDATE_RE.search(text)
             if c:
                 why = f"'{c.group(0)}' is forecasting / calendar wording, not the end of the run"
                 candidates.append({"turn": turn.get("turn"), "seat": key, "counted": False,
@@ -1681,19 +1677,11 @@ def _timing_section(record: Dict[str, Any]) -> Dict[str, Any]:
         "last_new_event_turn": last_new,
         "last_new_event_kind": last_kind,
         "solicitation_screened": screened,
-        "year_end_mentions": len(year_end_turns),
-        "year_end_turns": sorted(set(year_end_turns)),
-        "year_end_examples": examples,
+        "run_end_mentions": len(run_end_turns),
+        "run_end_turns": sorted(set(run_end_turns)),
+        "run_end_examples": examples,
         "run_end_candidates": candidates,
     }
-
-
-def _month_of(turn: Dict[str, Any]) -> int:
-    """Calendar month of a turn: from its ISO date, else turn n is month n (runs start in January)."""
-    date = str(turn.get("date") or "")
-    if re.match(r"^\d{4}-\d{2}", date):
-        return int(date[5:7])
-    return ((int(turn.get("turn") or 1) - 1) % 12) + 1
 
 
 def _first_frame(text: str, frames: Dict[str, "re.Pattern"]) -> Optional[Tuple[str, "re.Match"]]:
@@ -1875,7 +1863,7 @@ def _seed_sheets(record: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     """
     Opening (seed) capabilities for a record that predates "opening_sheets":
     the record's labs entry if it carries a seed, else config/labs/<key>.json,
-    with the run's T1b seed rotation ("meta:gdm" swaps two capability seeds).
+    with the run's T1 seed rotation ("meta:gdm" swaps two capability seeds).
     """
     caps: Dict[str, float] = {}
     for key, lab in (record.get("labs") or {}).items():
