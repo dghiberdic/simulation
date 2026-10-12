@@ -224,8 +224,8 @@ as `config.initial_state` (`core.engine.initial_state`).
   come from pilot runs only (`summarize_run.is_main_run`); `--decide` prints
   where T1, T2, T8 and T9 are decided (`OTHER_TOOL_DECISIONS`).
 - Human steps: `tools/export_transcripts.py` (redacted Grand Jury and T2
-  transcripts by seat letter, the letter → lab key, blank `hand_scores.csv` /
-  `human_ratings.csv` templates).
+  transcripts by seat letter and blank `hand_scores.csv` /
+  `human_ratings.csv` templates keyed by run id + letter in `blind/`; the letter → lab key in `key/`).
 - Usage calibration (cost per purpose, parse failures and stop reasons per
   provider, served model ids): `pilot.usage_report`,
   `pilot.install_served_probe`.

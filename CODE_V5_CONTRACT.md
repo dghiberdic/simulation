@@ -62,7 +62,7 @@ The authority is `Project Round 2 Spec.md` (repo root). Where code and spec disa
 - **Providers.**
   - Kimi, DeepSeek and Qwen go through OpenAI-compatible clients: base URLs and env keys `MOONSHOT_API_KEY`, `DEEPSEEK_API_KEY`, `DASHSCOPE_API_KEY`, with one optional router (`JUROR_BASE_URL` / `JUROR_API_KEY`) overriding all three.
   - Prices go in `config/prices.json`: kimi-k3 $3/$15 (cached $0.30); deepseek-v4-pro $1.32/$3.96; qwen-3.8-max $2/$6.
-- **Human ratings for T2:** `data/pilot/human_ratings.csv` with columns `run_id,lab,disposition`.
+- **Human ratings for T2:** `data/pilot/human_ratings.csv` with columns `run_id,letter,disposition` (or `run_id,lab,disposition`); letters map to labs through the run's seat letters.
   - `tools/disposition.py` applies the T2 rule: Spearman ρ ≥ 0.5 between our ratings and the juror's on the ten T1 seat-runs, and seat SE ≤ 5 over ≥ 3 rated seat-runs, excluding T5's scripted seats.
   - Otherwise the seat uses its median chosen value, rounded to 10.
   - If the CSV is missing, the tool reports "waiting for human ratings".

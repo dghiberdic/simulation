@@ -12,16 +12,19 @@ the same redacted material:
                                           condition text left out
   <out>/blind/<run_id>/T2_seat_<X>.txt    each model seat's own record for the
                                           T2 disposition rating (§2), seat X
+  <out>/blind/hand_scores.csv             blank T8 template, one row per model
+                                          seat-run: run_id, letter, the five
+                                          rubric items, composite
+                                          (tools/jury_check.py --hand)
+  <out>/blind/human_ratings.csv           blank T2 template: run_id, letter,
+                                          disposition (tools/disposition.py --human)
 
-and, apart, the material that un-blinds them (keep it away from the raters
-until the ratings are in):
+The templates carry no lab column: the raters work by run id and seat letter
+only, and both tools map the letters to labs from the run's seat letters. Apart,
+the material that un-blinds them (keep it away from the raters until the
+ratings are in):
 
   <out>/key/letters.csv          run_id, letter, lab, model: the letter -> lab key
-  <out>/key/hand_scores.csv      blank T8 template, one row per model seat-run:
-                                 run_id, lab, the five rubric items, composite
-                                 (tools/jury_check.py --hand), plus the letter
-  <out>/key/human_ratings.csv    blank T2 template: run_id, lab, disposition
-                                 (tools/disposition.py --human), plus the letter
 
 Scripted seats (T5's xAI) are left out of the T2 transcripts and templates.
 Existing templates are never overwritten (they may hold our scores) unless
@@ -45,8 +48,8 @@ from core.transcript import disposition_transcript, full_transcript, seat_letter
 from tools.summarize_run import load_logs, run_id_of                       # noqa: E402
 
 RUBRIC_ITEMS = ("honesty", "rule_keeping", "restraint", "fair_dealing", "outside_welfare")   # §7
-HAND_COLUMNS = ("run_id", "lab") + RUBRIC_ITEMS + ("composite", "letter")
-HUMAN_COLUMNS = ("run_id", "lab", "disposition", "letter")
+HAND_COLUMNS = ("run_id", "letter") + RUBRIC_ITEMS + ("composite",)
+HUMAN_COLUMNS = ("run_id", "letter", "disposition")
 KEY_COLUMNS = ("run_id", "letter", "lab", "model")
 
 
@@ -93,10 +96,11 @@ def export(records: List[Dict[str, Any]], out: Path, force: bool = False) -> Dic
         key_rows += rows
     key_dir = out / "key"
     _write_csv(key_dir / "letters.csv", KEY_COLUMNS, key_rows, force=True)    # always current
-    blank = [{"run_id": r["run_id"], "lab": r["lab"], "letter": r["letter"]} for r in key_rows]
-    wrote = {"hand_scores.csv": _write_csv(key_dir / "hand_scores.csv", HAND_COLUMNS, blank, force),
-             "human_ratings.csv": _write_csv(key_dir / "human_ratings.csv", HUMAN_COLUMNS, blank, force)}
-    return {"runs": runs, "seat_runs": len(key_rows), "blind": str(out / "blind"), "key": str(key_dir),
+    blank = [{"run_id": r["run_id"], "letter": r["letter"]} for r in key_rows]   # no lab column
+    blind = out / "blind"
+    wrote = {"hand_scores.csv": _write_csv(blind / "hand_scores.csv", HAND_COLUMNS, blank, force),
+             "human_ratings.csv": _write_csv(blind / "human_ratings.csv", HUMAN_COLUMNS, blank, force)}
+    return {"runs": runs, "seat_runs": len(key_rows), "blind": str(blind), "key": str(key_dir),
             "templates_written": wrote}
 
 
@@ -117,8 +121,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     first = Path(args.logs[0])
     out = Path(args.out) if args.out else (first if first.is_dir() else first.parent) / "human"
     res = export(records, out, args.force)
-    print(f"{len(res['runs'])} run(s), {res['seat_runs']} model seat-run(s): redacted transcripts in "
-          f"{res['blind']}; letter key and templates in {res['key']} (keep the key from the raters)")
+    print(f"{len(res['runs'])} run(s), {res['seat_runs']} model seat-run(s): redacted transcripts and "
+          f"blank templates (run_id + letter) in {res['blind']}; letter key in {res['key']} "
+          "(keep the key from the raters)")
     for name, wrote in res["templates_written"].items():
         if not wrote:
             print(f"  {name} exists and was kept (it may hold our scores); --force overwrites it")

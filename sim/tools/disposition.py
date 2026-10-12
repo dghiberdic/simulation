@@ -15,7 +15,10 @@ in data/pilot/disposition_ratings.json:
 
 Before seeing the juror's ratings, we blind-rate the ten seat-runs of the two
 T1 runs (priced and T6) from the same redacted transcripts, in
-data/pilot/human_ratings.csv with columns run_id,lab,disposition.
+data/pilot/human_ratings.csv with columns run_id,letter,disposition (the seat
+letter of the redacted transcript; a `lab` column with the lab key is accepted
+instead). Letters are mapped to labs through the letter each pooled rating
+carries, so the raters never need the key.
 
 Rule
 ----
@@ -55,7 +58,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tools.jury_check import spearman
+from tools.jury_check import letters_to_labs, missing_columns, seat_ident, spearman
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +66,7 @@ SIM_DIR = Path(__file__).resolve().parent.parent
 CONFIG_DIR = SIM_DIR / "config"
 DEFAULT_RATINGS = SIM_DIR / "data" / "pilot" / "disposition_ratings.json"
 DEFAULT_HUMAN = SIM_DIR / "data" / "pilot" / "human_ratings.csv"
-HUMAN_COLUMNS = ("run_id", "lab", "disposition")
+HUMAN_COLUMNS = ("run_id", "letter", "disposition")     # or "lab" for "letter"
 
 RHO_MIN = 0.5                  # Spearman floor between our ratings and the juror's (T2)
 MIN_PAIRS = 3                  # fewer matched seat-runs: no rho
@@ -134,14 +137,16 @@ def is_scripted(seat: str, r: Dict[str, Any]) -> bool:
 # ---------------------------------------------------------------------------
 
 def read_human_ratings(path: Path) -> Optional[Dict[Tuple[str, str], float]]:
-    """{(run_id, lab): 0-100}; None if the file is missing. Bad rows raise ValueError."""
+    """{(run_id, seat): 0-100}, seat = the lab key or "Seat X" for a row keyed by
+    letter (resolve_t2 maps it); None if the file is missing. Bad rows raise
+    ValueError."""
     path = Path(path)
     if not path.exists():
         return None
     out: Dict[Tuple[str, str], float] = {}
     with open(path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
-        missing = [c for c in HUMAN_COLUMNS if c not in (reader.fieldnames or [])]
+        missing = missing_columns(reader.fieldnames, HUMAN_COLUMNS)
         if missing:
             raise ValueError(f"{path}: missing column(s) {', '.join(missing)}")
         for n, row in enumerate(reader, 2):
@@ -151,7 +156,18 @@ def read_human_ratings(path: Path) -> Optional[Dict[Tuple[str, str], float]]:
             if v is None or not 0 <= v <= 100:
                 raise ValueError(f"{path}, line {n}: disposition must be a number from 0 to 100, "
                                  f"got {row.get('disposition')!r}")
-            out[(row["run_id"].strip(), row["lab"].strip())] = v
+            out[(row["run_id"].strip(), seat_ident(row, path, n))] = v
+    return out
+
+
+def pooled_letters(payload: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
+    """{run_id: {lab: letter}} from the letters the pooled juror ratings carry."""
+    out: Dict[str, Dict[str, str]] = {}
+    for field in ("ratings", "failures", "chosen"):
+        for seat, rows in (payload.get(field) or {}).items():
+            for r in rows or []:
+                if isinstance(r, dict) and r.get("letter") and r.get("run_id") is not None:
+                    out.setdefault(str(r["run_id"]), {})[seat] = str(r["letter"])
     return out
 
 
@@ -208,6 +224,7 @@ def resolve_t2(payload: Dict[str, Any], human: Optional[Dict[Tuple[str, str], fl
     """(dispositions {lab: int}, report). With human None: ({}, {"status": WAITING})."""
     if human is None:
         return {}, {"status": WAITING}
+    human = letters_to_labs(human, pooled_letters(payload))
     judged, notes = juror_ratings(payload.get("ratings") or {})
     agree = agreement(human, judged)
     if agree["n"] < T1_SEAT_RUNS:
@@ -285,7 +302,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("input", nargs="?", default=str(DEFAULT_RATINGS),
                         help="pooled juror ratings (default data/pilot/disposition_ratings.json)")
     parser.add_argument("--human", default=str(DEFAULT_HUMAN),
-                        help="our blind ratings, CSV run_id,lab,disposition "
+                        help="our blind ratings, CSV run_id,letter,disposition (or run_id,lab,...) "
                              "(default data/pilot/human_ratings.csv)")
     parser.add_argument("--write", action="store_true", help="write the result to --output")
     parser.add_argument("--output", default=str(CONFIG_DIR / "dispositions.json"))

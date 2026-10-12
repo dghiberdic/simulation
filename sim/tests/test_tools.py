@@ -1936,13 +1936,61 @@ def test_export_transcripts_blind_texts_key_and_templates(tmp_path, capsys):
     for p in blind.iterdir():
         text = p.read_text()
         assert "Anthropic" not in text and "OpenAI" not in text and "claude" not in text.lower(), p.name
-    hand = list(_csv.DictReader(open(out / "key" / "hand_scores.csv")))
-    assert [h["lab"] for h in hand] and set(hand[0]) >= set(jury_check.HAND_COLUMNS)
+    assert sorted(p.name for p in (out / "key").iterdir()) == ["letters.csv"]
+    # The blank templates sit with the transcripts, keyed by run id and letter only.
+    hand = list(_csv.DictReader(open(out / "blind" / "hand_scores.csv")))
+    assert "lab" not in hand[0] and set(hand[0]) >= set(jury_check.HAND_COLUMNS)
     assert all(h["run_id"] == "priced-run01" and h["composite"] == "" for h in hand)
-    human = list(_csv.DictReader(open(out / "key" / "human_ratings.csv")))
-    assert {(h["run_id"], h["lab"]) for h in human} == {("priced-run01", "anthropic"), ("priced-run01", "openai")}
+    assert sorted(h["letter"] for h in hand) == sorted(letters.values())
+    human = list(_csv.DictReader(open(out / "blind" / "human_ratings.csv")))
+    assert "lab" not in human[0]
+    assert {(h["run_id"], h["letter"]) for h in human} == {("priced-run01", v) for v in letters.values()}
     # Our scores are never overwritten by a second export.
-    (out / "key" / "human_ratings.csv").write_text("run_id,lab,disposition\npriced-run01,anthropic,40\n")
+    (out / "blind" / "human_ratings.csv").write_text(
+        f"run_id,letter,disposition\npriced-run01,{letters['anthropic']},40\n")
     assert X.main([str(tmp_path / "logs"), "--out", str(out)]) == 0
     assert "kept" in capsys.readouterr().out
-    assert "40" in (out / "key" / "human_ratings.csv").read_text()
+    assert "40" in (out / "blind" / "human_ratings.csv").read_text()
+
+
+def test_hand_scores_and_human_ratings_by_letter_map_through_the_seat_letters(tmp_path):
+    """Raters fill run_id + letter (no key); both tools map letters to labs."""
+    from core.transcript import seat_letters
+    from tools import disposition as D
+    from tools import jury_check as J
+    rec = _record()
+    rec["run_id"] = "T6-run01"
+    letters = seat_letters(rec)
+    labs = sorted(letters)
+    rec.setdefault("final", {})["grand_jury"] = {
+        "juror": "j", "rubric": "scored",
+        "actors": {k: {"composite": 3.0, "items": {i: 3 for i in J.RUBRIC_ITEMS}} for k in labs}}
+    items = ",".join(J.RUBRIC_ITEMS)
+    hand = tmp_path / "hand.csv"
+    hand.write_text(f"run_id,letter,{items},composite\n" + "".join(
+        f"T6-run01,{letters[k]},{','.join(['3'] * 5)},{1 if k == labs[0] else 3}\n" for k in labs))
+    scores = J.read_hand_scores(hand)
+    assert {k[1] for k in scores} == {f"Seat {letters[k]}" for k in labs}
+    rep = J.compare(rec, "T6-run01", scores)
+    assert {r["lab"] for r in rep["rows"]} == set(labs) and rep["off"] == [labs[0]]
+    # the same file keyed by lab gives the same comparison
+    by_lab = tmp_path / "hand_lab.csv"
+    by_lab.write_text(f"run_id,lab,{items},composite\n" + "".join(
+        f"T6-run01,{k},{','.join(['3'] * 5)},{1 if k == labs[0] else 3}\n" for k in labs))
+    assert J.compare(rec, "T6-run01", J.read_hand_scores(by_lab))["off"] == [labs[0]]
+    bad = tmp_path / "bad.csv"
+    bad.write_text(f"run_id,{items},composite\nT6-run01,{','.join(['3'] * 5)},3\n")
+    with pytest.raises(ValueError, match="letter"):
+        J.read_hand_scores(bad)
+    # T2: human ratings by letter, mapped through the letters the pooled ratings carry
+    human = tmp_path / "human.csv"
+    human.write_text("run_id,letter,disposition\nT6-run01,B,20\nT6-run01,D,60\nT6-run01,A,40\n")
+    pooled = {"ratings": {lab: [{"run_id": "T6-run01", "letter": L, "disposition": v}]
+                          for lab, L, v in (("anthropic", "D", 70), ("openai", "B", 10),
+                                            ("gdm", "A", 50))},
+              "chosen": {}, "families": {}}
+    h = D.read_human_ratings(human)
+    _, report = D.resolve_t2(pooled, h)
+    pairs = {p["lab"]: p["ours"] for p in report["agreement"]["pairs"]}
+    assert pairs == {"anthropic": 60, "openai": 20, "gdm": 40}
+    assert report["agreement"]["rho"] == 1.0
