@@ -1,55 +1,51 @@
 #!/usr/bin/env python3
 """
-Round 2 entry point (spec §9).
+Round 2 main runs (spec §9.3): one cell per call.
 
-Runs one cell — a scenario (S1 or S2) under one oversight condition (A0/A/B/C)
-— over monthly turns from January 2026. Five US labs act through their models;
-a programmatic pre-check enforces the resource rules, intrusions resolve on a
-hidden ledger, and a post-run Grand Jury rates conduct. The final turn is never
-announced to the models.
+A cell is one scenario (S1 or S2) under one oversight condition (A0, A, B, C)
+with one panel: mixed (each model plays its own lab) or kin (--kin: Claude plays
+all five seats, every brief adds the §6.5 insert; S2 under condition A only).
+Monthly turns from 1 August 2026 (8, or 12 if T7 lengthened the run); fog F3
+only; S1 always merges its messages into the proposal, S2 and the kin cell use
+the message mode T9 chose (--a2a). Seats play their T2 dispositions from
+config/dispositions.json (tools/disposition.py --write). The interview (A.7)
+runs at the turns given by --interview-turns ("3,4,5,final" when campaign.py
+finds it adds no more than 15% to a run's cost). After the run the Grand Jury
+scores each actor (rubric items, composite, perceived disposition, §7).
 
-API keys live in sim/.env: ANTHROPIC_API_KEY, OPENAI_API_KEY, VERTEX_API_KEY,
-XAI_API_KEY, MUSE_API_KEY (+ MUSE_BASE_URL). Real runs preflight the keys of
-every model in the run before the first call, refuse placeholder charter values
-(run rate_charters.py first), and halt at --budget dollars of measured spend
-across runs (no guard by default: a warning says so). A real run plays each
-seat's disposition from config/dispositions.json (written by
-tools/disposition.py --write from the pilot's blind ratings); without that file
-it is refused unless --disposition N or --choose-disposition says what to play
-(P64) — it never falls back to a silent 50; every setting must be 0–100 (C4).
+campaign.py runs the cells in interleaved rounds (priority A, C, A0, kin, B)
+and sets the runs per cell; this script runs exactly one.
 
-The log goes to data/runs/<run_id>/<run_id>.json (run id default
-"<scenario>-<condition>-YYYYmmdd-HHMMSS"), with <run_id>.partial.json after
-every turn so a crash keeps the turns so far; a real run first deletes a stale
-<run_id>.json of the same id in its output dir, so an old final record never
-shadows the new run's partial one (H7). Exit codes: 0 done, 1 budget guard,
-2 aborted or crashed (fatal API error, failed preflight, placeholder values, no
-disposition source, any other exception — the partial record is kept).
+API keys live in sim/.env. Real runs preflight every model's key, refuse
+placeholder charter values (rate_charters.py) and a missing dispositions file,
+and halt at --budget dollars of measured spend on the shared ledger. --dry-run
+plays every seat and juror with offline stubs ($0); --policy plays a scripted
+policy with no model or jury at all.
+
+The log goes to data/runs/<run_id>/<run_id>.json (default run id
+"<cell>-YYYYmmdd-HHMMSS"), with <run_id>.partial.json after every turn. Exit
+codes: 0 done, 1 budget guard, 2 refused, aborted or crashed.
 
 Examples:
-  # Offline smoke run with a scripted policy — no API keys, no juries, $0.
-  python main.py --scenario S1 --condition A --policy greedy
-
-  # A real S1 / condition C cell, 12 turns (needs config/dispositions.json); --budget caps
-  # the shared ledger data/spend.json, pilot spend included, not this cell alone.
-  python main.py --scenario S1 --condition C --budget 100 --output data/logs/s1_c
-
-  # Seats choose their own disposition at the first prompt (as in the pilot).
-  python main.py --scenario S1 --condition A --choose-disposition --turns 6 --budget 20
+  python main.py --scenario S1 --condition A --dry-run
+  python main.py --scenario S2 --condition C --a2a merged --interview-turns 3,4,5,final --budget 700
+  python main.py --kin --a2a separate --budget 700
 """
 
 import argparse
+import inspect
 import logging
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from core.config import build_labs_and_world, load_dispositions, load_lab_configs, load_state, load_world
 from core.costs import BudgetExceeded, configure, get_tracker
 from core.engine import RunAborted, SimulationEngine
+from core import engine as engine_mod
 from core.jury import GRAND_JURY_MODELS
 from core.llm import FatalAPIError, preflight
 from core import policies
@@ -59,14 +55,20 @@ logger = logging.getLogger(__name__)
 SIM_DIR = Path(__file__).resolve().parent
 RUNS_DIR = SIM_DIR / "data" / "runs"
 LAB_KEYS = ("anthropic", "openai", "gdm", "meta", "xai")
+KIN_SEAT = "anthropic"                 # §6.5: Claude plays every seat in the kin cell
+KIN_SCENARIO, KIN_CONDITION = "S2", "A"
 
 
-def default_run_id(scenario: str, condition: str) -> str:
-    return f"{scenario}-{condition}-{time.strftime('%Y%m%d-%H%M%S')}"
+def cell_name(scenario: str, condition: str, kin: bool = False) -> str:
+    return "kin-S2-A" if kin else f"{scenario}-{condition}"
+
+
+def default_run_id(cell: str) -> str:
+    return f"{cell}-{time.strftime('%Y%m%d-%H%M%S')}"
 
 
 def _setting(value: str) -> int:
-    """--disposition N: an integer setting from 0 to 100 (C4)."""
+    """--disposition N: an integer setting from 0 to 100."""
     try:
         n = int(value)
     except ValueError:
@@ -76,145 +78,192 @@ def _setting(value: str) -> int:
     return n
 
 
+def parse_interview_turns(value: Optional[str]) -> List[Any]:
+    """'3,4,5,final' -> [3, 4, 5, 'final']; '', 'none' -> []."""
+    if not value or str(value).strip().lower() in ("none", "no", "off"):
+        return []
+    out: List[Any] = []
+    for part in str(value).split(","):
+        part = part.strip().lower()
+        if part == "final":
+            out.append("final")
+        elif part.isdigit() and int(part) >= 1:
+            out.append(int(part))
+        else:
+            raise argparse.ArgumentTypeError(f"bad interview turn {part!r}: use turn numbers and/or 'final'")
+    return out
+
+
 def bad_dispositions(dispositions: Dict[str, Any]) -> List[str]:
-    """config/dispositions.json entries that are not a number from 0 to 100 (C4)."""
+    """config/dispositions.json entries that are not a number from 0 to 100."""
     return [f"{k}={v!r}" for k, v in dispositions.items()
             if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float))
                                   or not 0 <= v <= 100)]
 
 
-def _parse_overrides(pairs):
-    """--set intrusion.gain_share=0.35 --set economy.talent_drift_rate=0.15"""
-    out = {}
-    for pair in pairs or []:
-        key, _, value = pair.partition("=")
-        try:
-            out[key] = int(value)
-        except ValueError:
-            try:
-                out[key] = float(value)
-            except ValueError:
-                out[key] = value
-    return out
-
-
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Round 2 AGI-race simulation (one cell).")
+    p = argparse.ArgumentParser(description="Round 2 main run: one cell (spec §9.3).")
     p.add_argument("--scenario", choices=["S1", "S2"], default="S1")
     p.add_argument("--condition", choices=["A0", "A", "B", "C"], default="A")
-    p.add_argument("--fog", choices=["F0", "F1", "F2", "F3"], default="F3")
-    p.add_argument("--turns", type=int, default=12)
+    p.add_argument("--kin", action="store_true",
+                   help="the kin cell: Claude in all five seats + the §6.5 insert (S2, condition A)")
+    p.add_argument("--turns", type=int, default=None, help="run length (default world.json: 8; 12 if T7 says so)")
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--a2a", choices=["separate", "merged"], default="separate",
-                   help="A2A pre-step, or merge messages into the proposal (T9)")
-    p.add_argument("--brief", choices=["eval", "neutral"], default="eval")
-    p.add_argument("--choose-disposition", action="store_true",
-                   help="seats set their own disposition at the first prompt (as in the pilot)")
+    p.add_argument("--a2a", choices=["separate", "merged"], default="merged",
+                   help="message mode for S2 and the kin cell (T9); S1 always merges")
+    p.add_argument("--interview-turns", type=parse_interview_turns, default=[], metavar="3,4,5,final",
+                   help="interview turns (A.7); default none")
     p.add_argument("--disposition", type=_setting, default=None,
-                   help="force one disposition for every seat (otherwise config/dispositions.json; a real "
-                        "run without that file and without this flag or --choose-disposition is refused)")
+                   help="one disposition for every seat (otherwise config/dispositions.json)")
     p.add_argument("--policy", choices=sorted(policies.POLICIES), default=None,
-                   help="run a zero-cost scripted policy instead of the models (Stage 1)")
+                   help="a zero-cost scripted policy instead of the models (no juries)")
+    p.add_argument("--dry-run", action="store_true", help="offline stub models and jurors, zero cost")
     p.add_argument("--model", action="append", default=[], metavar="KEY=MODEL",
                    help="override one seat's model, e.g. openai=gpt-6-sol")
-    p.add_argument("--set", action="append", default=[], dest="overrides", metavar="KEY=VALUE",
-                   help="override a world.json constant (payoff ladder etc.)")
     p.add_argument("--budget", type=float, default=None,
                    help="halt at this measured spend (USD, shared ledger); none by default (warned)")
-    p.add_argument("--spend-file", default=None,
-                   help="measured-spend ledger (default sim/data/spend.json, shared by all runs)")
+    p.add_argument("--spend-file", default=None, help="measured-spend ledger (default sim/data/spend.json)")
     p.add_argument("--no-grand-jury", action="store_true")
-    p.add_argument("--no-macro-jury", action="store_true",
-                   help="skip the quarterly MacroJury (state values stay fixed)")
-    p.add_argument("--output", default=None,
-                   help="directory for the run log (default data/runs/<run_id>)")
-    p.add_argument("--run-id", default=None,
-                   help="run id (default <scenario>-<condition>-YYYYmmdd-HHMMSS)")
+    p.add_argument("--no-macro-jury", action="store_true", help="skip the MacroJury (state values stay fixed)")
+    p.add_argument("--output", default=None, help="directory for the run log (default data/runs/<run_id>)")
+    p.add_argument("--run-id", default=None, help="run id (default <cell>-YYYYmmdd-HHMMSS)")
     p.add_argument("--allow-placeholder-values", action="store_true",
                    help="allow a real run while charter values are still placeholders")
-    p.add_argument("--sequential", action="store_true",
-                   help="call the five seats one after another instead of in parallel")
+    p.add_argument("--sequential", action="store_true", help="call the seats one after another")
     p.add_argument("--verbose", action="store_true")
     return p
+
+
+class KinEngine(SimulationEngine):
+    """The kin cell's engine: every seat's system prompt carries the §6.5 insert
+    (prompts.brief.KIN_INSERT, after the condition text). Everything else is the
+    mixed engine's."""
+
+    def _system_prompt(self, lab) -> str:
+        build = engine_mod.build_system_prompt
+        kwargs: Dict[str, Any] = {"choose_disposition": self.choose_disposition, "kin": True}
+        if "brief" in inspect.signature(build).parameters and getattr(self, "brief", None) is not None:
+            kwargs["brief"] = self.brief
+        return build(lab.lab, lab.charter_name, lab.charter_text, self.condition, lab.disposition, **kwargs)
+
+
+def apply_kin(labs) -> str:
+    """§6.5: Claude plays all five seats; each seat keeps its charter, charter values and
+    disposition. Returns the kin model id."""
+    claude = next(lab for lab in labs if lab.key == KIN_SEAT)
+    for lab in labs:
+        lab.model, lab.provider = claude.model, claude.provider
+        lab.family = claude.family
+        if hasattr(claude, "effort"):
+            lab.effort = claude.effort
+    return claude.model
 
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S")
+    code, _record = run_cell(args)
+    return code
 
-    overrides = _parse_overrides(args.overrides)
-    cfg = load_world(overrides)
-    run_id = args.run_id or default_run_id(args.scenario, args.condition)
+
+def resolve_dispositions(args) -> Tuple[Optional[Dict[str, int]], Optional[str]]:
+    """(dispositions, refusal). Seats play their T2 values (config/dispositions.json);
+    --disposition N sets every seat; a scripted or dry run may fall back to 50."""
+    if args.disposition is not None:
+        return {k: args.disposition for k in LAB_KEYS}, None
+    dispositions = load_dispositions() or {}
+    bad = bad_dispositions(dispositions)
+    if bad:
+        return None, ("Refusing the run: config/dispositions.json needs a number from 0 to 100 per seat; "
+                      f"got {', '.join(bad)}. Rewrite it with `python tools/disposition.py --write`.")
+    missing = [k for k in LAB_KEYS if dispositions.get(k) is None]
+    if missing and args.policy is None and not args.dry_run:
+        where = ("config/dispositions.json has no setting for " + ", ".join(missing)) if dispositions \
+            else "config/dispositions.json is missing"
+        return None, (f"Refusing a real run: {where}. Main runs play each seat's T2 disposition — write it "
+                      "with `python tools/disposition.py --write` — or pass --disposition N.")
+    if missing:
+        logger.warning(f"[disposition] no T2 value for {', '.join(missing)}: 50 in this scripted / dry run")
+    return {k: dispositions.get(k, 50) for k in LAB_KEYS}, None
+
+
+def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
+    """Run one cell from parsed arguments; returns (exit code, record or None)."""
+    if args.kin and (args.scenario, args.condition) != (KIN_SCENARIO, KIN_CONDITION):
+        if args.scenario != "S1" or args.condition != "A":      # the defaults: silently the kin set-up
+            print("Refusing: the kin cell is S2 under condition A (§6.5).")
+            return 2, None
+        args.scenario, args.condition = KIN_SCENARIO, KIN_CONDITION
+    cfg = load_world()
+    turns = args.turns or int(cfg.get("turns", 8))
+    a2a = "merged" if args.scenario == "S1" else args.a2a          # S1 always merges (§5.2)
+    cell = cell_name(args.scenario, args.condition, args.kin)
+    run_id = args.run_id or default_run_id(cell)
     output_dir = Path(args.output) if args.output else RUNS_DIR / run_id
 
-    dispositions = None
-    if args.choose_disposition:
-        dispositions = {}
-    elif args.disposition is not None:
-        dispositions = {k: args.disposition for k in LAB_KEYS}
-    else:
-        dispositions = load_dispositions() or {}
-        bad = bad_dispositions(dispositions)
-        if bad:
-            print("Refusing the run: config/dispositions.json needs a number from 0 to 100 per seat; "
-                  f"got {', '.join(bad)}. Rewrite it with `python tools/disposition.py --write`.")
-            return 2
-        missing = [k for k in LAB_KEYS if dispositions.get(k) is None]
-        if missing and args.policy is None:
-            # P64: a real main run never plays a silent default setting.
-            print(dispositions_problem(missing, bool(dispositions)))
-            return 2
-        dispositions = {k: dispositions.get(k, 50) for k in LAB_KEYS}   # scripted runs: unused
-
+    dispositions, why = resolve_dispositions(args)
+    if why:
+        print(why)
+        return 2, None
     labs, world = build_labs_and_world(cfg, dispositions=dispositions, charters=args.policy is None)
+    kin_model = apply_kin(labs) if args.kin else None
     for pair in args.model:
         key, _, model = pair.partition("=")
         next(lab for lab in labs if lab.key == key).model = model
 
-    configure(spend_file=Path(args.spend_file) if args.spend_file else None, budget=args.budget)
-
-    # A scripted run is zero-cost: no model calls at all, so no juries either.
+    configure(spend_file=Path(args.spend_file) if args.spend_file else None,
+              budget=None if args.dry_run else args.budget)
     policy = policies.POLICIES[args.policy] if args.policy else None
     offline = policy is not None
-    macro_jurors = [] if (offline or args.no_macro_jury) else load_state()["macro_jury_models"]
+    grand_jurors = list(GRAND_JURY_MODELS)
+    macro_jurors = [] if (offline or args.no_macro_jury) else list(load_state()["macro_jury_models"])
     run_grand_jury = not (offline or args.no_grand_jury)
-
-    if not offline:
+    if args.dry_run and not offline:
+        from pilot import _install_stubs
+        jurors = _install_stubs(labs)
+        if kin_model:
+            for lab in labs:
+                lab.model = "stub:actor_anthropic"
+        grand_jurors = jurors["grand"]
+        macro_jurors = [] if args.no_macro_jury else jurors["macro"]
+    elif not offline:
         problem = real_run_problems(labs, macro_jurors, run_grand_jury, args.allow_placeholder_values)
         if problem:
             print(problem)
-            return 2
+            return 2, None
         if args.budget is None:
-            logger.warning("[budget] real run without --budget: no spend guard; "
-                           "pass --budget USD to cap measured spend")
+            logger.warning("[budget] real run without --budget: no spend guard; pass --budget USD")
         clear_stale(output_dir, run_id)
 
-    engine = SimulationEngine(
-        labs, world, cfg, scenario=args.scenario, condition=args.condition, fog=args.fog,
-        a2a_mode=args.a2a, brief=args.brief, turns=args.turns, seed=args.seed, policy=policy,
-        macro_jurors=macro_jurors, choose_disposition=args.choose_disposition,
-        run_grand_jury=run_grand_jury, run_id=run_id, output_dir=output_dir,
-        run_meta={"entry": "main.py", "run_id": run_id, "model_overrides": list(args.model)},
-        overrides=overrides or None, dry_run=False, parallel=not args.sequential)
+    engine_cls = KinEngine if args.kin else SimulationEngine
+    engine = engine_cls(
+        labs, world, cfg, scenario=args.scenario, condition=args.condition, fog="F3",
+        a2a_mode=a2a, turns=turns, seed=args.seed, policy=policy, grand_jurors=grand_jurors,
+        macro_jurors=macro_jurors, choose_disposition=False, run_grand_jury=run_grand_jury,
+        run_id=run_id, output_dir=output_dir,
+        run_meta={"entry": "main.py", "run_id": run_id, "cell": cell, "pilot": False, "kin": bool(args.kin),
+                  "kin_model": kin_model, "model_overrides": list(args.model), "seed": args.seed},
+        dry_run=bool(args.dry_run), parallel=not args.sequential,
+        interview_turns=list(args.interview_turns or []))
     try:
         record = engine.run()
     except BudgetExceeded as e:
         print(f"Halted on the budget guard: {e}\nPartial record in {output_dir}")
-        return 1
+        return 1, None
     except (RunAborted, FatalAPIError) as e:
         print(f"Run aborted: {type(e).__name__}: {e}\nPartial record in {output_dir}")
-        return 2
-    except Exception as e:      # P39: any other crash keeps the partial record and exits 2
+        return 2, None
+    except Exception as e:      # any other crash keeps the partial record and exits 2
         logger.exception(f"[crash] {run_id}: {type(e).__name__}: {e}")
         print(f"Run crashed: {type(e).__name__}: {e}\nPartial record in {output_dir}")
-        return 2
+        return 2, None
 
     _print_scores(record)
     print(f"\nLog: {output_dir / (run_id + '.json')}")
     if policy is None:
-        print(f"Measured spend: ${get_tracker().persisted_total():.2f}")
-    return 0
+        print(f"Measured spend (ledger): ${get_tracker().persisted_total():.2f}")
+    return 0, record
 
 
 def clear_stale(output_dir: Path, run_id: str) -> bool:
@@ -227,18 +276,7 @@ def clear_stale(output_dir: Path, run_id: str) -> bool:
     return False
 
 
-def dispositions_problem(missing, file_present: bool) -> str:
-    """Why a real run without a disposition source must not start (P64)."""
-    where = ("config/dispositions.json has no setting for " + ", ".join(missing)) if file_present \
-        else "config/dispositions.json is missing"
-    return (f"Refusing a real run: {where}. The main run plays each seat's disposition from the pilot's "
-            "blind ratings — write it with `python tools/disposition.py --write` — or pass "
-            "--disposition N to give every seat the setting N, or --choose-disposition to let the "
-            "seats choose at the first prompt (as in the pilot).")
-
-
-def real_run_problems(labs, macro_jurors, run_grand_jury: bool,
-                      allow_placeholder_values: bool) -> str:
+def real_run_problems(labs, macro_jurors, run_grand_jury: bool, allow_placeholder_values: bool) -> str:
     """Why a real run must not start (placeholder charter values, missing keys), or ""."""
     if not allow_placeholder_values:
         stale = [c["key"] for c in load_lab_configs()
@@ -257,8 +295,9 @@ def real_run_problems(labs, macro_jurors, run_grand_jury: bool,
 
 def _print_scores(record) -> None:
     names = record["labs"]
+    cfg = record["config"]
     print("\n" + "=" * 52)
-    print(f"FINAL STANDING — {record['config']['scenario']} / {record['config']['condition']}")
+    print(f"FINAL STANDING — {(cfg.get('run_meta') or {}).get('cell') or cfg['scenario'] + '/' + cfg['condition']}")
     print("=" * 52)
     print(f"{'Lab':<22}{'Prosperity':>12}{'Rank':>6}")
     print("-" * 52)

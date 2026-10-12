@@ -253,3 +253,152 @@ def configure(spend_file: Optional[Path] = None, budget: Optional[float] = None)
     global _default
     _default = CostTracker(spend_file, budget)
     return _default
+
+
+# ---------------------------------------------------------------------------
+# Re-projection inputs (spec §9.2 "Budget", §9.3 "runs per cell")
+# ---------------------------------------------------------------------------
+#
+# The pilot's priced run is the usage calibration: its measured spend, split by
+# purpose, prices every later run (pilot.py re-prices the rest of the pilot,
+# campaign.py sets runs per cell). measure_runs() turns the tracker's call log
+# and the run records into per-run inputs; project_run() prices one run of a
+# given set-up from them. Inputs that a run did not measure fall back to the
+# estimates below (eval_tractability §2: seat play ≈ $0.45 a turn merged, the
+# separate message rounds ≈ +$0.61 a turn, the Grand Jury ≈ $1.35 a run).
+
+FALLBACK_INPUTS: Dict[str, float] = {
+    "actor_first_turn": 1.25,       # turn 1 writes each seat's charter to the cache
+    "actor_later_turn": 0.45,       # all five seats, merged messages
+    "a2a_per_turn": 0.61,           # the separate two-round message pre-step, all seats
+    "interview_per_turn": 0.20,     # five cached interview continuations
+    "macro_per_review": 0.30,       # three MacroJury calls
+    "grand_jury": 1.35,             # Kimi K3, one post-run batch (§7)
+    "disposition_rating": 0.30,     # the T2 rater, five seat-runs
+}
+# Separate message rounds scale with the seats' own per-turn spend when only a
+# merged run has been measured (0.61 / 0.45 in the estimates).
+A2A_TO_ACTOR_RATIO = FALLBACK_INPUTS["a2a_per_turn"] / FALLBACK_INPUTS["actor_later_turn"]
+SEAT_PURPOSES = ("actor", "a2a", "interview")
+
+
+def measure_runs(calls: List[Dict[str, Any]], records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Per-run cost inputs measured from tracker call entries (each with model,
+    purpose, run_id, cost) and the matching run records. Seat costs are split
+    into turn 1 and later turns from the attempt costs in the records (turn 1
+    writes each seat's charter to the cache); jurors come from the call log.
+    Only inputs a run measured are returned, as means over the runs that
+    measured them, plus "seat_share" ({model: share of seat play}) for the kin
+    cell and "measured_from" (run ids). Missing inputs are absent: callers fill
+    them from FALLBACK_INPUTS (with_fallbacks).
+    """
+    ids = [str((r.get("config") or {}).get("run_meta", {}).get("run_id") or r.get("run_id") or "")
+           for r in records]
+    by_run: Dict[str, Dict[str, float]] = {}
+    by_model: Dict[str, float] = {}
+    for c in calls:
+        rid = str(c.get("run_id") or "")
+        if rid not in ids:
+            continue
+        row = by_run.setdefault(rid, {})
+        row[c.get("purpose") or "?"] = row.get(c.get("purpose") or "?", 0.0) + float(c.get("cost") or 0.0)
+    acc: Dict[str, List[float]] = {}
+
+    def add(key: str, value: Optional[float]) -> None:
+        if value is not None:
+            acc.setdefault(key, []).append(value)
+
+    for rid, rec in zip(ids, records):
+        turns = [t for t in rec.get("turns") or [] if isinstance(t, dict) and not t.get("incomplete")]
+        if not turns:
+            continue
+        spent = by_run.get(rid, {})
+        first = later = 0.0
+        n_later = 0
+        for t in turns:
+            cost = 0.0
+            for key, e in (t.get("actors") or {}).items():
+                if not isinstance(e, dict) or e.get("scripted"):
+                    continue
+                c = sum(float(a.get("cost") or 0.0) for a in e.get("attempts") or [] if isinstance(a, dict))
+                cost += c
+                model = ((rec.get("labs") or {}).get(key) or {}).get("model")
+                if model:
+                    by_model[model] = by_model.get(model, 0.0) + c
+            if t.get("turn") == 1:
+                first += cost
+            else:
+                later += cost
+                n_later += 1
+        if spent.get("actor") or first or later:
+            add("actor_first_turn", first)
+            if n_later:
+                add("actor_later_turn", later / n_later)
+        mode = (rec.get("config") or {}).get("a2a_mode")
+        if mode == "separate" and spent.get("a2a"):
+            add("a2a_per_turn", spent["a2a"] / len(turns))
+        n_iv = sum(1 for t in turns if isinstance(t.get("interviews"), dict))
+        if n_iv and spent.get("interview"):
+            add("interview_per_turn", spent["interview"] / n_iv)
+        n_rev = sum(1 for t in turns if isinstance(t.get("macro_jury"), dict))
+        if n_rev and spent.get("macro_jury"):
+            add("macro_per_review", spent["macro_jury"] / n_rev)
+        if spent.get("grand_jury"):
+            add("grand_jury", spent["grand_jury"])
+        if spent.get("disposition_jury"):
+            add("disposition_rating", spent["disposition_jury"])
+    out: Dict[str, Any] = {k: round(sum(v) / len(v), 4) for k, v in acc.items()}
+    total = sum(by_model.values())
+    if total > 0:
+        out["seat_share"] = {m: round(v / total, 4) for m, v in by_model.items()}
+    out["measured_from"] = [rid for rid in ids if rid]
+    return out
+
+
+def with_fallbacks(measured: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Measured inputs over FALLBACK_INPUTS; the separate message rounds, when not
+    measured but seat play is, scale with it (A2A_TO_ACTOR_RATIO). "estimated"
+    lists the inputs that are not measured."""
+    measured = dict(measured or {})
+    out: Dict[str, Any] = dict(FALLBACK_INPUTS)
+    out.update({k: v for k, v in measured.items() if k in FALLBACK_INPUTS})
+    if "a2a_per_turn" not in measured and "actor_later_turn" in measured:
+        out["a2a_per_turn"] = round(measured["actor_later_turn"] * A2A_TO_ACTOR_RATIO, 4)
+    out["estimated"] = sorted(k for k in FALLBACK_INPUTS if k not in measured)
+    if "seat_share" in measured:
+        out["seat_share"] = dict(measured["seat_share"])
+    return out
+
+
+def project_run(inputs: Dict[str, Any], *, turns: int, a2a: str = "merged", interview_turns: int = 0,
+                grand_jury: bool = False, disposition_rating: bool = False, reviews: int = 0,
+                seat_scale: float = 1.0) -> Dict[str, float]:
+    """
+    One run's projected cost, by part, from with_fallbacks() inputs.
+    seat_scale multiplies seat play (actor, message rounds and interviews):
+    4/5 when one seat is scripted (T5), the kin cell's Claude-for-all factor
+    (kin_seat_scale). Returns {"seats", "a2a", "interview", "macro_jury",
+    "grand_jury", "disposition_rating", "total"}.
+    """
+    i = inputs
+    seats = (i["actor_first_turn"] + max(turns - 1, 0) * i["actor_later_turn"]) * seat_scale
+    parts = {
+        "seats": seats,
+        "a2a": (turns * i["a2a_per_turn"] * seat_scale) if a2a == "separate" else 0.0,
+        "interview": interview_turns * i["interview_per_turn"] * seat_scale,
+        "macro_jury": reviews * i["macro_per_review"],
+        "grand_jury": i["grand_jury"] if grand_jury else 0.0,
+        "disposition_rating": i["disposition_rating"] if disposition_rating else 0.0,
+    }
+    parts = {k: round(v, 4) for k, v in parts.items()}
+    parts["total"] = round(sum(parts.values()), 4)
+    return parts
+
+
+def kin_seat_scale(inputs: Dict[str, Any], kin_model: str = "claude-opus-5-5") -> float:
+    """Seat-play factor of the kin cell (one model in every seat): 5 x that model's
+    measured share of seat play; 1.0 when no share was measured."""
+    share = (inputs.get("seat_share") or {}).get(kin_model)
+    n_models = len(inputs.get("seat_share") or {}) or 5
+    return round(share * n_models, 4) if share else 1.0
