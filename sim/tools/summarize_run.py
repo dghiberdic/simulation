@@ -2769,7 +2769,8 @@ def t6_tally(path: Path) -> Dict[str, Any]:
 # Loading
 # ---------------------------------------------------------------------------
 
-SIDE_FILE_PREFIXES = ("pilot_summary_", "disposition_ratings", "spend", "approval", "post_run_")
+SIDE_FILE_PREFIXES = ("pilot_summary_", "disposition_ratings", "spend", "approval", "post_run_",
+                      "campaign_state")
 
 
 def _expand(paths: List[str], recursive: bool = False, include_dry: bool = False) -> List[str]:
