@@ -186,10 +186,16 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
         if args.scenario != "S1" or args.condition != "A":      # the defaults: silently the kin set-up
             print("Refusing: the kin cell is S2 under condition A (§6.5).")
             return 2, None
+        print(f"Note: --kin runs the kin cell, scenario {KIN_SCENARIO} under condition {KIN_CONDITION} "
+              f"(§6.5): --scenario/--condition {args.scenario}/{args.condition} overridden to "
+              f"{KIN_SCENARIO}/{KIN_CONDITION}.")
         args.scenario, args.condition = KIN_SCENARIO, KIN_CONDITION
     cfg = load_world()
     turns = args.turns or int(cfg.get("turns", 8))
     a2a = "merged" if args.scenario == "S1" else args.a2a          # S1 always merges (§5.2)
+    if args.scenario == "S1" and args.a2a != "merged":
+        print(f"Note: S1 always merges its messages into the proposal (§5.2): --a2a {args.a2a} "
+              "overridden to merged.")
     cell = cell_name(args.scenario, args.condition, args.kin)
     run_id = args.run_id or default_run_id(cell)
     output_dir = Path(args.output) if args.output else run_dir(run_id, bool(args.dry_run), args.policy)

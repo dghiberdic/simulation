@@ -79,11 +79,25 @@ def test_mandate_filter_examples():
     assert mandate_violation("Labs must prioritise long-term safety research over speed.", labs) is None
 
 
-def test_main_s1_separate_silently_merges(tmp_path):
+def test_main_s1_separate_merges_with_a_notice(tmp_path, capsys):
     out = tmp_path / "s1"
     assert main_mod.main(["--dry-run", "--scenario", "S1", "--a2a", "separate", "--output", str(out),
                           "--run-id", "x", "--no-grand-jury", "--no-macro-jury"]) == 0
     assert json.loads((out / "x.json").read_text())["config"]["a2a_mode"] == "merged"
+    assert "Note: S1 always merges its messages" in capsys.readouterr().out
+
+
+def test_main_kin_overrides_scenario_with_a_notice(tmp_path, capsys):
+    out = tmp_path / "k"
+    assert main_mod.main(["--dry-run", "--kin", "--output", str(out), "--run-id", "k", "--turns", "1",
+                          "--no-grand-jury", "--no-macro-jury"]) == 0
+    cfg = json.loads((out / "k.json").read_text())["config"]
+    assert (cfg["scenario"], cfg["condition"]) == ("S2", "A")
+    assert "Note: --kin runs the kin cell, scenario S2 under condition A" in capsys.readouterr().out
+    # campaign's own kin call (S2/A already) prints no notice
+    assert main_mod.main(["--dry-run", "--kin", "--scenario", "S2", "--output", str(out), "--run-id", "k2",
+                          "--turns", "1", "--no-grand-jury", "--no-macro-jury"]) == 0
+    assert "Note:" not in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------
