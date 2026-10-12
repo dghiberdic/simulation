@@ -944,3 +944,27 @@ def test_partner_report_through_the_engine():
     p3 = prompts[("meta", "proposal", 3)]
     assert "you took part in that access, so it also counted as a report on your own lab" in p3
     assert "succeeded, self-reported; the copy was forfeited" in p3
+
+
+def test_record_config_logs_effective_cfg_and_initial_state(tmp_path):
+    """For the offline UPS replay (§8): the record carries the cfg actually used
+    (after overrides) and every seat's t=0 state, so a replay never re-reads config
+    files; disposition is null in choose mode. Saved in the partial log too."""
+    import math
+    eng = _model_engine(lambda k, s, m, u: _idle(s), turns=1, overrides={"intrusion.gain_share": 0.25},
+                        output_dir=tmp_path, run_id="cfglog")
+    cfg = eng.record["config"]
+    assert cfg["effective_cfg"]["intrusion"]["gain_share"] == 0.25
+    assert cfg["effective_cfg"]["event_turn"] == 4 and cfg["effective_cfg"] == json.loads(json.dumps(eng.cfg))
+    init = cfg["initial_state"]
+    assert set(init["labs"]) == set(KEYS) and init["world"]["start"] == "2026-08-01"
+    a = eng.labs[0]
+    row = init["labs"][a.key]
+    assert row["seed"] == a.seed and row["disposition"] == 50 and len(row["charter_sha256"]) == 64
+    assert math.isclose(row["know_how"] + 3.6 * math.log(row["compute"]), a.seed["capability"])
+    eng.run()
+    saved = json.loads((tmp_path / "cfglog.json").read_text())["config"]
+    assert saved["initial_state"]["labs"][a.key]["compute"] == a.seed["compute"]   # t=0, not end
+    chose = _model_engine(lambda k, s, m, u: _idle(s), turns=1, choose=True)
+    assert all(v["disposition"] is None
+               for v in chose.record["config"]["initial_state"]["labs"].values())

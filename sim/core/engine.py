@@ -212,6 +212,31 @@ def mandate_violation(text: str, labs: List[LabState]) -> Optional[str]:
     return None
 
 
+def initial_state(labs: List[LabState], world: WorldState) -> Dict[str, Any]:
+    """The t=0 state a replay starts from, unrounded: {"world": {...}, "labs": {key:
+    {seed, resources, values, charter_values, disposition, model, charter_name,
+    charter_sha256}}}. Charter texts are identified by hash, not copied."""
+    import hashlib
+    return {
+        "world": {"start": world.start.isoformat(), "turn": world.turn,
+                  "us_stock": world.us_stock, "us_growth": world.us_growth,
+                  "china_stock": world.china_stock, "china_growth": world.china_growth,
+                  "national_cap_share": world.national_cap_share, "ceiling": world.ceiling,
+                  "intrusion_open": world.intrusion_open,
+                  "state_values": dict(world.state_values),
+                  "mandates": [dict(m) for m in world.mandates]},
+        "labs": {lab.key: {
+            "lab": lab.lab, "actor": lab.actor, "family": lab.family, "provider": lab.provider,
+            "model": lab.model, "effort": lab.effort, "charter_name": lab.charter_name,
+            "charter_sha256": hashlib.sha256((lab.charter_text or "").encode()).hexdigest(),
+            "charter_values": dict(lab.charter_values), "seed": dict(lab.seed),
+            "talent": lab.talent, "compute": lab.compute, "capital": lab.capital,
+            "influence": lab.influence, "know_how": lab.know_how, "invested": lab.invested,
+            "income": lab.income, "values": dict(lab.values), "disposition": lab.disposition,
+        } for lab in labs},
+    }
+
+
 class RunAborted(RuntimeError):
     """A non-transient API failure ended the run; the partial record was saved."""
 
@@ -314,7 +339,12 @@ class SimulationEngine:
                        "interventions": self.interventions,
                        "choose_disposition": choose_disposition,
                        "overrides": dict(overrides or {}), "rotation": rotation,
-                       "run_meta": dict(run_meta or {}), "dry_run": dry_run},
+                       "run_meta": dict(run_meta or {}), "dry_run": dry_run,
+                       # For offline replays (§8 UPS contribution): the cfg actually used
+                       # (world.json after overrides) and every seat's and the world's
+                       # t=0 state (after rotation; disposition None in choose mode).
+                       "effective_cfg": json.loads(json.dumps(cfg, default=str)),
+                       "initial_state": initial_state(labs, world)},
             "labs": {lab.key: {"lab": lab.lab, "actor": lab.actor, "family": lab.family,
                                "model": lab.model, "provider": lab.provider,
                                "charter_name": lab.charter_name}
