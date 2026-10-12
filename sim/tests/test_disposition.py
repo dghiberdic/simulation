@@ -1,6 +1,7 @@
 """T2 disposition rule (tools/disposition.py; spec §2, §9.2 T2; code contract "Juries")."""
 
 import json
+import re
 
 import pytest
 
@@ -45,7 +46,12 @@ def test_waiting_for_human_ratings(tmp_path, capsys):
                     "--output", str(tmp_path / "out.json")])
     out = capsys.readouterr().out
     assert code == dt.WAITING_EXIT and "waiting for human ratings" in out
-    assert "20" not in out and "kimi" not in out                 # juror ratings stay hidden
+    # juror ratings stay hidden: no rated value (20, 35, 50, 65, 80) as a number, no juror name;
+    # paths are removed first (the tmp path may hold any digits)
+    shown = out.replace(str(tmp_path), "<tmp>")
+    values = sorted({str(v) for v in judged.values()})
+    assert not re.findall(r"(?<![\w.])(?:%s)(?![\w])" % "|".join(values), shown)
+    assert "kimi" not in shown
     assert not (tmp_path / "out.json").exists()
 
 
