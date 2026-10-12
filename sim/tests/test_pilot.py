@@ -591,3 +591,148 @@ def test_rate_charters_fatal_still_exits_2(tmp_path, monkeypatch):
         raise FatalAPIError("auth", provider="openai", model="m", status=401)
     monkeypatch.setattr(rate_charters, "rate_lab", fake_rate)
     assert rate_charters.main(["--lab", "meta", "--spend-file", str(tmp_path / "s.json")]) == 2
+
+
+# ---------------------------------------------------------------------------
+# Wave-4 fixes: the moved guard, re-run limits, plan display, T8 re-score
+# ---------------------------------------------------------------------------
+
+class _BudgetProbe:
+    """Records the guard the tracker enforces when a real-mode engine would start."""
+    seen = []
+
+    def __init__(self, *a, **k):
+        _BudgetProbe.seen.append(get_tracker().budget)
+        raise RuntimeError("probe: the engine never runs in this test")
+
+
+def test_approve_budget_is_stored_and_enforced_in_later_tests(tmp_path, monkeypatch, capsys):
+    """CR #5 / E2E 3: approve --budget X stores X; later tests and `plan` use it; shown exactly."""
+    root = tmp_path / "real"
+    args = ["--output", str(root), "--spend-file", str(tmp_path / "s.json")]
+    _fake_summary(root, "priced")
+    assert pilot.main(["approve", "--turns", "8", "--budget", "37.6"] + args) == 0
+    assert json.loads((root / pilot.APPROVAL_NAME).read_text())["budget_guard"] == 37.6
+    assert "guard $37.60" in capsys.readouterr().out
+    assert pilot.main(["plan"] + args) == 0
+    assert "guard $37.60 of $50.00" in capsys.readouterr().out
+    assert pilot.main(["plan", "--budget", "30"] + args) == 0                 # plan --budget is honoured
+    assert "guard $30.00" in capsys.readouterr().out
+    monkeypatch.setattr(pilot, "SimulationEngine", _BudgetProbe)
+    monkeypatch.setattr(pilot, "placeholder_labs", lambda: [])
+    monkeypatch.setattr(pilot, "preflight", lambda models, providers=None: [])
+    monkeypatch.setattr(pilot.jury_mod, "load_examples", lambda *a, **k: [{"x": 1}])
+    _BudgetProbe.seen.clear()
+    pilot.main(["T6"] + args)
+    assert _BudgetProbe.seen == [37.6]                                       # not pilot.json's 48
+    pilot.main(["T6", "--budget", "40"] + args)
+    assert _BudgetProbe.seen[-1] == 40.0
+
+
+def test_a_completed_test_is_refused_unless_skipped_or_forced(tmp_path, capsys):
+    """E2E 2: a finished test is never silently re-run (and re-paid)."""
+    root = tmp_path / "pilot"
+    assert _dry(root, "priced") == 0
+    assert _dry(root, "priced") == 2
+    out = capsys.readouterr().out
+    assert "already completed" in out and "--force" in out
+    assert _dry(root, "priced", "--skip-completed") == 0
+    assert _dry(root, "priced", "--force") == 0
+    assert _summary(root, "priced")["status"] == "completed"
+
+
+def test_t6_rerun_allowed_once_and_never_a_third_run(tmp_path, capsys):
+    root = tmp_path / "pilot"
+    assert _dry(root, "priced") == 0
+    assert _dry(root, "approve", "--turns", "8") == 0
+    assert _dry(root, "T6") == 0
+    assert _dry(root, "T6") == 2                                            # completed: refused
+    assert _dry(root, "T6", "--rerun") == 0
+    assert _dry(root, "T6", "--rerun") == 2
+    assert "its one re-run" in capsys.readouterr().out
+    assert _dry(root, "T6", "--rerun", "--skip-completed") == 0
+    assert _dry(root, "T6", "--rerun", "--force") == 0                      # redoes run02 only
+    assert not (root / "T6" / "T6-run03.json").exists()
+
+
+def test_unknown_test_exits_2_with_a_clear_message(tmp_path, capsys):
+    assert _dry(tmp_path / "pilot", "T7") == 2
+    assert "Unknown test 'T7'" in capsys.readouterr().out
+
+
+def test_plan_shows_dropped_interview_and_measured_cost_of_done_tests(tmp_path, capsys):
+    """E2E 10 / DOC 8."""
+    root = tmp_path / "pilot"
+    assert _dry(root, "priced") == 0
+    assert _dry(root, "approve", "--turns", "12", "--budget", "37.6") == 0
+    capsys.readouterr()
+    assert _dry(root, "plan") == 0
+    out = capsys.readouterr().out
+    t4 = next(line for line in out.splitlines() if line.strip().startswith("T4"))
+    assert "iv dropped" in t4
+    priced = next(line for line in out.splitlines() if line.strip().startswith("priced"))
+    assert priced.split()[-2:] == ["0.00", "0.00"]                         # measured ($0 dry), not 6.50
+    assert "T4 drops its interview (-$0.00)" not in out                    # not applied twice
+    plan = pilot.build_plan(dict(pilot.load_pilot(), budget_guard=37.6), root,
+                            approval=pilot.read_approval(root))
+    assert next(s for s in plan["steps"] if s["test"] == "T4")["interview_dropped"]
+
+
+def test_rescore_grand_jury_reasks_the_jury_once_on_the_t6_record(tmp_path, monkeypatch, capsys):
+    """A2 M12 (T8): after the examples are revised, the Grand Jury is re-asked on the saved
+    T6 record; the seats are never re-run; the old verdict is kept; once only."""
+    root = tmp_path / "pilot"
+    assert _dry(root, "priced") == 0
+    assert _dry(root, "approve", "--turns", "8") == 0
+    assert _dry(root, "T6") == 0
+    before = _rec(root, "T6")
+
+    def no_seats(self):
+        raise AssertionError("the seats were run again")
+    monkeypatch.setattr(pilot.SimulationEngine, "run", no_seats)
+    assert _dry(root, "T5", "--rescore-grand-jury") == 2
+    assert _dry(root, "T6", "--rescore-grand-jury") == 0
+    after = _rec(root, "T6")
+    assert after["turns"] == before["turns"]
+    assert after["final"]["grand_jury_previous"]["juror"] == before["final"]["grand_jury"]["juror"]
+    assert after["final"]["grand_jury"]["collected_post_run"]
+    assert _dry(root, "T6", "--rescore-grand-jury") == 2
+    assert "already re-scored once" in capsys.readouterr().out
+
+
+def test_t6_rerun_merges_its_rows_into_the_coded_sheet(tmp_path):
+    """DOC 3: the coding sheet already being coded, T6's re-run adds its rows and keeps the codes."""
+    import csv
+    root = tmp_path / "pilot"
+    assert _dry(root, "priced") == 0
+    assert _dry(root, "approve", "--turns", "8") == 0
+    assert _dry(root, "T6") == 0
+    sheet = root / pilot.SHEET_NAME
+    rows = list(csv.DictReader(open(sheet)))
+    n = len(rows)
+    rows[0].update(score_only="1", notes="coded")
+    with open(sheet, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0]))
+        w.writeheader()
+        w.writerows(rows)
+    assert _dry(root, "T6", "--rerun") == 0
+    after = list(csv.DictReader(open(sheet)))
+    assert len(after) > n and {r["run_id"] for r in after} >= {"T6-run02"}
+    first = next(r for r in after if (r["run_id"], r["seat"], r["turn"], r["source"])
+                 == (rows[0]["run_id"], rows[0]["seat"], rows[0]["turn"], rows[0]["source"]))
+    assert first["score_only"] == "1" and first["notes"] == "coded"
+    s = _summary(root, "T6")
+    assert "new row(s) merged, codes already entered kept" in s["decisions"]["T6"]
+
+
+def test_t4_summary_reads_the_hindcast_and_the_macro_jury(tmp_path):
+    """A2 M9 and M7: T4's summary prints the turns 1-2 hindcast; every test the MacroJury's first review."""
+    root = tmp_path / "pilot"
+    assert _dry(root, "priced") == 0
+    assert "first review (read for slant" in _summary(root, "priced")["decisions"]["MacroJury"]
+    assert _dry(root, "approve", "--turns", "8") == 0
+    for t in ("T6", "T5", "T4"):
+        assert _dry(root, t) == 0
+    d = _summary(root, "T4")["decisions"]
+    assert "Hindcast" in d and "vs real +4.5" in d["Hindcast"] and "not a gate" in d["Hindcast"]
+    assert "Hindcast" not in _summary(root, "T6")["decisions"]           # rotated seeds

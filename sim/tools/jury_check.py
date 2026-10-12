@@ -206,11 +206,16 @@ def compare(record: Dict[str, Any], run_id: str,
     elif missing:
         rep.update(decision="no decision",
                    why=f"no juror composite for {', '.join(missing)}")
+    elif len(off) > MAX_DISAGREEMENTS and ((record or {}).get("final") or {}).get("grand_jury_previous"):
+        rep.update(decision="revise",
+                   why=f"composite more than {COMPOSITE_TOLERANCE:g} point off on {len(off)} of "
+                       f"{len(rows)} seat-runs after the one re-score (the examples were revised once): "
+                       "report the disagreement")
     elif len(off) > MAX_DISAGREEMENTS:
         rep.update(decision="revise",
                    why=f"composite more than {COMPOSITE_TOLERANCE:g} point off on {len(off)} of "
-                       f"{len(rows)} seat-runs: read the disagreements, revise the examples once, "
-                       "re-score")
+                       f"{len(rows)} seat-runs: read the disagreements, revise the examples once "
+                       "(config/jury_examples.json), then re-score: python pilot.py T6 --rescore-grand-jury")
     elif len(rows) < SEAT_RUNS:
         rep.update(decision="no decision",
                    why=f"only {len(rows)} of {SEAT_RUNS} seat-runs compared")

@@ -23,12 +23,18 @@ untested, §6.4).
 
 Commands:
     python campaign.py plan [--budget USD] [--turns N] [--s2-mode merged|separate]
-    python campaign.py run  [--dry-run] [--rounds N] [same options]
+    python campaign.py run  [--dry-run] [--rounds N] [--replan] [same options]
 
 `run` executes the plan round by round through main.run_cell, one run per cell
-per round, recording finished runs in <runs dir>/campaign_state.json so a
-stopped campaign resumes where it left off. The shared ledger's guard is the
-round budget ($750 by default).
+per round, recording the plan, the guard and finished runs in
+<runs dir>/campaign_state.json. A stopped campaign resumes where it left off,
+with the saved plan: the same cells, cuts and set-up, and rounds = rounds done +
+floor(budget left / round cost) (never more than first planned). `run
+--replan` re-plans the cells from the budget left instead. A run stopped by the
+guard during its Grand Jury is finished and saved: it counts as done with its
+jury missing, and the resume asks only that jury. The shared ledger's guard is
+fixed when the campaign is first planned: the ledger total then plus the main
+runs' budget ($750 minus the spend so far, by default).
 """
 
 import argparse
@@ -98,12 +104,14 @@ def interview_decision(cells: List[Dict[str, Any]], inputs: Dict[str, Any], turn
 
 def build_campaign(inputs: Optional[Dict[str, Any]], budget: float, turns: int = 8, s2_mode: str = "separate",
                    max_runs: int = MAX_RUNS, min_runs: int = MIN_RUNS,
-                   cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                   cfg: Optional[Dict[str, Any]] = None, done_rounds: int = 0) -> Dict[str, Any]:
     """
     The schedule: interview decision, per-cell run cost, runs per cell and the
     cells cut. Cells are cut in CUT_ORDER groups while floor(budget / round
     cost) < min_runs; A is never cut (if even A alone gives fewer than
-    min_runs, it runs what the budget allows and the plan says so).
+    min_runs, it runs what the budget allows and the plan says so). A re-plan
+    mid-campaign (--replan) passes the rounds already done and the budget left:
+    runs per cell = done_rounds + floor(budget / round cost).
     """
     cfg = cfg or load_world()
     full = with_fallbacks(inputs)
@@ -120,7 +128,7 @@ def build_campaign(inputs: Optional[Dict[str, Any]], budget: float, turns: int =
             cut.append(group)
             active = [c for c in active if c["group"] != group]
         round_cost = sum(c["cost"]["total"] for c in active)
-        runs = min(max_runs, int(math.floor(budget / round_cost))) if round_cost > 0 else max_runs
+        runs = min(max_runs, done_rounds + int(math.floor(budget / round_cost))) if round_cost > 0 else max_runs
         if runs >= min_runs:
             break
     round_cost = round(sum(c["cost"]["total"] for c in active), 2)
@@ -130,8 +138,9 @@ def build_campaign(inputs: Optional[Dict[str, Any]], budget: float, turns: int =
         "cells": [{"name": c["name"], "group": c["group"], "scenario": c["scenario"], "condition": c["condition"],
                    "kin": c["kin"], "a2a": c["a2a"], "run_cost": c["cost"]["total"], "cost_parts": c["cost"],
                    "runs": runs if c in active else 0} for c in cells],
-        "cut_groups": cut, "runs_per_cell": runs, "round_cost": round_cost,
-        "total": round(runs * round_cost, 2), "reserve": round(budget - runs * round_cost, 2),
+        "cut_groups": cut, "runs_per_cell": runs, "round_cost": round_cost, "done_rounds": done_rounds,
+        "total": round((runs - done_rounds) * round_cost, 2),
+        "reserve": round(budget - (runs - done_rounds) * round_cost, 2),
         "below_min": runs < min_runs, "estimated": full.get("estimated") or [],
         "kin_seat_scale": kin_seat_scale(full),
         "note": None if not cut else ("cells cut whole (" + ", ".join(cut) + ") rather than thinned below "
@@ -147,7 +156,9 @@ def campaign_lines(plan: Dict[str, Any]) -> List[str]:
              f"  {'cell':<10}{'a2a':<10}{'run $':>8}{'runs':>6}"]
     for c in plan["cells"]:
         lines.append(f"  {c['name']:<10}{c['a2a']:<10}{c['run_cost']:>8.2f}{(c['runs'] or 'cut'):>6}")
-    lines.append(f"  round cost ${plan['round_cost']:.2f} x {plan['runs_per_cell']} rounds = ${plan['total']:.2f}; "
+    rounds_txt = (f"{plan['runs_per_cell'] - plan['done_rounds']} more round(s) after {plan['done_rounds']} done"
+                  if plan.get("done_rounds") else f"{plan['runs_per_cell']} rounds")
+    lines.append(f"  round cost ${plan['round_cost']:.2f} x {rounds_txt} = ${plan['total']:.2f}; "
                  f"reserve ${plan['reserve']:.2f}"
                  + (f"; {plan['note']}" if plan.get("note") else "")
                  + ("; BELOW the 6-run floor even with A alone" if plan["below_min"] else ""))
@@ -176,13 +187,16 @@ def pilot_turns(pilot_root: Path) -> int:
 
 def pilot_s2_mode(pilot_root: Path, include_dry: bool = False) -> str:
     """T9 decides S2's message mode: merged if the merged arm matched and reached half
-    the separate arm's agreements; separate otherwise, or when T9 was cut or not run."""
+    the separate arm's agreements; separate otherwise, or when T9 was cut or not run.
+    Only finished runs count: a partial (aborted) T4 or T9 log never decides."""
     from tools.compare_arms import compare
     from tools.summarize_run import load_logs
     arms = []
     for test in ("T4", "T9"):
         d = pilot_root / test
-        arms.append([r for _p, r in load_logs([str(d)], include_dry=include_dry)[0]] if d.is_dir() else [])
+        loaded = load_logs([str(d)], include_dry=include_dry)[0] if d.is_dir() else []
+        arms.append([r for path, r in loaded if not str(path).endswith(".partial.json")
+                     and (r.get("final") or {}).get("scores")])
     if not arms[0] or not arms[1]:
         return "separate"
     return "merged" if compare(arms[0], arms[1]).get("merge") else "separate"
@@ -208,39 +222,106 @@ def write_state(path: Path, state: Dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def completed_rounds(plan: Dict[str, Any], done: Dict[str, List[str]]) -> int:
+    """Rounds every active cell has finished."""
+    active = [c for c in plan["cells"] if c["runs"]]
+    return min((len(done.get(c["name"], [])) for c in active), default=0)
+
+
+def resume_rounds(plan: Dict[str, Any], done: Dict[str, List[str]], remaining: Optional[float],
+                  cap: Optional[int] = None) -> int:
+    """
+    The rounds a resumed campaign runs in all (CR #1): the rounds already done plus
+    what the budget left pays for at the plan's round cost — the unfinished part of
+    a partly run round first, then whole rounds — capped at `cap` (the saved plan's
+    runs per cell, unless --replan). remaining None (a dry run) pays for every round.
+    """
+    cap = plan["runs_per_cell"] if cap is None else cap
+    if remaining is None:
+        return cap
+    active = [c for c in plan["cells"] if c["runs"]]
+    full = completed_rounds(plan, done)
+    rounds = full
+    left = float(remaining)
+    nxt = [c for c in active if len(done.get(c["name"], [])) < full + 1]
+    if len(nxt) < len(active):                              # a round partly run
+        rest = sum(c["run_cost"] for c in nxt)
+        if left + 1e-9 < rest:
+            return min(cap, rounds)
+        left -= rest
+        rounds += 1
+    round_cost = plan["round_cost"]
+    if round_cost > 0:
+        rounds += int(math.floor((left + 1e-9) / round_cost))
+    return max(full, min(cap, rounds))
+
+
 def run_campaign(plan: Dict[str, Any], runs_dir: Path, dry_run: bool, rounds: Optional[int] = None,
                  budget: Optional[float] = None, spend_file: Optional[str] = None,
-                 run_cell=None) -> int:
+                 run_cell=None, n_rounds: Optional[int] = None) -> int:
     """Interleaved rounds: round r runs run r of every active cell, in priority order.
-    Finished runs are recorded in the state file; a re-run resumes. Stops on a
-    non-zero exit (budget guard: 1; anything else: 2)."""
+    Finished runs are recorded in the state file; a re-run resumes. A run halted by
+    the guard during its Grand Jury is finished and saved: it counts as done with its
+    jury missing, and the next call asks only that jury (main.run_cell does). Stops on
+    a non-zero exit (budget guard: 1; anything else: 2). `n_rounds` (resume) overrides
+    the plan's runs per cell."""
     if run_cell is None:
         from main import run_cell
     state_path = runs_dir / STATE_NAME
     state = read_state(state_path)
     done: Dict[str, List[str]] = state.setdefault("runs", {})
-    n_rounds = min(plan["runs_per_cell"], rounds or plan["runs_per_cell"])
-    for r in range(1, n_rounds + 1):
+    jury_missing: List[str] = state.setdefault("jury_missing", [])
+    state["plan"] = plan
+    write_state(state_path, state)
+
+    def args_for(c: Dict[str, Any], r: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            scenario=c["scenario"], condition=c["condition"], kin=c["kin"], turns=plan["turns"],
+            seed=r - 1, a2a=c["a2a"], interview_turns=list(plan["interview_turns"]), disposition=None,
+            policy=None, dry_run=dry_run, model=[], budget=budget, spend_file=spend_file,
+            no_grand_jury=False, no_macro_jury=False, output=str(runs_dir / c["name"]),
+            run_id=f"{c['name']}-run{r:02d}", allow_placeholder_values=False, sequential=False, verbose=False)
+
+    cells = {c["name"]: c for c in plan["cells"]}
+    for run_id in list(jury_missing):                     # finished runs: ask only their Grand Jury
+        name, _, num = run_id.rpartition("-run")
+        if name not in cells or not num.isdigit():
+            continue
+        print(f"[campaign] {run_id}: finished, Grand Jury missing; asking the jury only")
+        code, _record = run_cell(args_for(cells[name], int(num)))
+        if code != 0:
+            print(f"[campaign] stopped at {run_id}'s Grand Jury (exit {code}); re-run to resume")
+            return code
+        jury_missing.remove(run_id)
+        write_state(state_path, state)
+
+    total = n_rounds if n_rounds is not None else plan["runs_per_cell"]
+    total = min(total, rounds) if rounds else total
+    for r in range(1, total + 1):
         for c in plan["cells"]:
             if not c["runs"] or len(done.get(c["name"], [])) >= r:
                 continue
-            run_id = f"{c['name']}-run{r:02d}"
-            args = SimpleNamespace(
-                scenario=c["scenario"], condition=c["condition"], kin=c["kin"], turns=plan["turns"],
-                seed=r - 1, a2a=c["a2a"], interview_turns=list(plan["interview_turns"]), disposition=None,
-                policy=None, dry_run=dry_run, model=[], budget=budget, spend_file=spend_file,
-                no_grand_jury=False, no_macro_jury=False, output=str(runs_dir / c["name"]), run_id=run_id,
-                allow_placeholder_values=False, sequential=False, verbose=False)
-            print(f"[campaign] round {r}: {run_id}")
-            code, _record = run_cell(args)
-            if code != 0:
-                print(f"[campaign] stopped at {run_id} (exit {code}); re-run to resume")
+            a = args_for(c, r)
+            print(f"[campaign] round {r}: {a.run_id}")
+            code, record = run_cell(a)
+            if code != 0 and _finished(record):
+                done.setdefault(c["name"], []).append(a.run_id)
+                jury_missing.append(a.run_id)
+                write_state(state_path, state)
+                print(f"[campaign] {a.run_id} is finished but its Grand Jury is missing (exit {code}); "
+                      "re-run to resume (the jury alone is asked)")
                 return code
-            done.setdefault(c["name"], []).append(run_id)
-            state["plan"] = {k: v for k, v in plan.items() if k != "cells"}
+            if code != 0:
+                print(f"[campaign] stopped at {a.run_id} (exit {code}); re-run to resume")
+                return code
+            done.setdefault(c["name"], []).append(a.run_id)
             write_state(state_path, state)
-    print(f"[campaign] {n_rounds} round(s) complete")
+    print(f"[campaign] {total} round(s) complete")
     return 0
+
+
+def _finished(record: Any) -> bool:
+    return isinstance(record, dict) and bool((record.get("final") or {}).get("scores"))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -254,6 +335,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pilot-dir", default=None, help="pilot root for the measured inputs (default data/pilot)")
     p.add_argument("--max-runs", type=int, default=MAX_RUNS)
     p.add_argument("--rounds", type=int, default=None, help="run at most this many rounds")
+    p.add_argument("--replan", action="store_true",
+                   help="run: re-plan the cells and rounds from the budget left instead of resuming the "
+                        "saved plan (rounds = rounds done + floor(budget left / round cost))")
     p.add_argument("--dry-run", action="store_true", help="stub models and jurors; logs under data/runs/dry")
     p.add_argument("--runs-dir", default=None, help="where the cells' logs go (default data/runs)")
     p.add_argument("--spend-file", default=None)
@@ -269,17 +353,48 @@ def main(argv=None) -> int:
     pilot_root = Path(args.pilot_dir) if args.pilot_dir else pilot.pilot_root(args.dry_run)
     configure(spend_file=Path(args.spend_file) if args.spend_file else None)
     spent = get_tracker().persisted_total()
-    budget = args.budget if args.budget is not None else max(ROUND_BUDGET - spent, 0.0)
+    runs_dir = Path(args.runs_dir) if args.runs_dir else RUNS_DIR / ("dry" if args.dry_run else "")
+    state_path = runs_dir / STATE_NAME
+    state = read_state(state_path)
+    saved = state.get("plan") if isinstance(state.get("plan"), dict) and state["plan"].get("cells") else None
+    done = state.get("runs") or {}
+
+    if saved and args.command == "run" and not args.replan:
+        # Resume (CR #1): the saved plan's cells, cuts, set-up and guard are kept; the
+        # rounds are those done plus what the budget left pays for.
+        guard = state.get("guard")
+        remaining = None if (args.dry_run or guard is None) else max(float(guard) - spent, 0.0)
+        n = resume_rounds(saved, done, remaining)
+        print("\n".join(campaign_lines(saved)))
+        print(f"[campaign] resuming the saved plan ({completed_rounds(saved, done)} round(s) done"
+              + (f", ${remaining:.2f} of the guard left" if remaining is not None else "")
+              + f"): {n} round(s) in all; --replan re-plans the cells")
+        return run_campaign(saved, runs_dir, args.dry_run, args.rounds,
+                            budget=None if args.dry_run else guard, spend_file=args.spend_file, n_rounds=n)
+
+    done_rounds = completed_rounds(saved, done) if (saved and args.replan) else 0
+    if args.budget is not None:
+        budget = args.budget
+    elif saved and args.replan and state.get("guard") is not None:
+        budget = max(float(state["guard"]) - spent, 0.0)
+    else:
+        budget = max(ROUND_BUDGET - spent, 0.0)
     plan = build_campaign(pilot_inputs(pilot_root), budget,
-                          turns=args.turns or pilot_turns(pilot_root),
+                          turns=args.turns or (saved or {}).get("turns") or pilot_turns(pilot_root),
                           s2_mode=args.s2_mode or pilot_s2_mode(pilot_root, include_dry=args.dry_run),
-                          max_runs=args.max_runs)
+                          max_runs=args.max_runs, done_rounds=done_rounds)
     print("\n".join(campaign_lines(plan)))
     if args.command == "plan":
+        if saved:
+            print(f"  a campaign is in progress in {runs_dir} ({completed_rounds(saved, done)} round(s) done): "
+                  "`run` resumes its saved plan; `run --replan` adopts a new one")
         return 0
-    runs_dir = Path(args.runs_dir) if args.runs_dir else RUNS_DIR / ("dry" if args.dry_run else "")
-    guard = None if args.dry_run else spent + budget
-    return run_campaign(plan, runs_dir, args.dry_run, args.rounds, budget=guard, spend_file=args.spend_file)
+    guard = spent + budget
+    state["guard"] = round(guard, 4)
+    state["budget_at_plan"] = round(budget, 4)
+    write_state(state_path, state)
+    return run_campaign(plan, runs_dir, args.dry_run, args.rounds, budget=None if args.dry_run else guard,
+                        spend_file=args.spend_file)
 
 
 if __name__ == "__main__":

@@ -292,6 +292,14 @@ def measure_runs(calls: List[Dict[str, Any]], records: List[Dict[str, Any]]) -> 
     measured them, plus "seat_share" ({model: share of seat play}) for the kin
     cell and "measured_from" (run ids). Missing inputs are absent: callers fill
     them from FALLBACK_INPUTS (with_fallbacks).
+
+    Seat inputs (seat play, message rounds, interviews, the T2 rating) are
+    normalised to a full panel (CR #3): a run with scripted seats (T5: four model
+    seats of five) is scaled by n_labs / n_model_seats, so every input prices a
+    five-seat run and project_run's seat_scale is applied once. "model_seats"
+    records each run's model-seat count. "seat_share" is each model's mean cost
+    per seat-turn, as a share of the sum over models, so a run without a model
+    does not overweight the others.
     """
     ids = [str((r.get("config") or {}).get("run_meta", {}).get("run_id") or r.get("run_id") or "")
            for r in records]
@@ -303,6 +311,8 @@ def measure_runs(calls: List[Dict[str, Any]], records: List[Dict[str, Any]]) -> 
             continue
         row = by_run.setdefault(rid, {})
         row[c.get("purpose") or "?"] = row.get(c.get("purpose") or "?", 0.0) + float(c.get("cost") or 0.0)
+    seat_turns: Dict[str, int] = {}
+    model_seats: Dict[str, int] = {}
     acc: Dict[str, List[float]] = {}
 
     def add(key: str, value: Optional[float]) -> None:
@@ -313,46 +323,72 @@ def measure_runs(calls: List[Dict[str, Any]], records: List[Dict[str, Any]]) -> 
         turns = [t for t in rec.get("turns") or [] if isinstance(t, dict) and not t.get("incomplete")]
         if not turns:
             continue
+        labs = rec.get("labs") or {}
+        scripted = scripted_seats(rec)
+        n_model = len([k for k in labs if k not in scripted])
+        if not n_model:
+            continue                        # a scripted policy run: no seat play to measure
+        scale = len(labs) / n_model         # to a full panel (CR #3)
+        model_seats[rid] = n_model
         spent = by_run.get(rid, {})
         first = later = 0.0
         n_later = 0
         for t in turns:
             cost = 0.0
             for key, e in (t.get("actors") or {}).items():
-                if not isinstance(e, dict) or e.get("scripted"):
+                if not isinstance(e, dict) or e.get("scripted") or key in scripted:
                     continue
                 c = sum(float(a.get("cost") or 0.0) for a in e.get("attempts") or [] if isinstance(a, dict))
                 cost += c
-                model = ((rec.get("labs") or {}).get(key) or {}).get("model")
+                model = (labs.get(key) or {}).get("model")
                 if model:
                     by_model[model] = by_model.get(model, 0.0) + c
+                    seat_turns[model] = seat_turns.get(model, 0) + 1
             if t.get("turn") == 1:
                 first += cost
             else:
                 later += cost
                 n_later += 1
         if spent.get("actor") or first or later:
-            add("actor_first_turn", first)
+            add("actor_first_turn", first * scale)
             if n_later:
-                add("actor_later_turn", later / n_later)
+                add("actor_later_turn", later / n_later * scale)
         mode = (rec.get("config") or {}).get("a2a_mode")
         if mode == "separate" and spent.get("a2a"):
-            add("a2a_per_turn", spent["a2a"] / len(turns))
+            add("a2a_per_turn", spent["a2a"] / len(turns) * scale)
         n_iv = sum(1 for t in turns if isinstance(t.get("interviews"), dict))
         if n_iv and spent.get("interview"):
-            add("interview_per_turn", spent["interview"] / n_iv)
+            add("interview_per_turn", spent["interview"] / n_iv * scale)
         n_rev = sum(1 for t in turns if isinstance(t.get("macro_jury"), dict))
         if n_rev and spent.get("macro_jury"):
             add("macro_per_review", spent["macro_jury"] / n_rev)
         if spent.get("grand_jury"):
             add("grand_jury", spent["grand_jury"])
         if spent.get("disposition_jury"):
-            add("disposition_rating", spent["disposition_jury"])
+            add("disposition_rating", spent["disposition_jury"] * scale)
     out: Dict[str, Any] = {k: round(sum(v) / len(v), 4) for k, v in acc.items()}
-    total = sum(by_model.values())
+    per_turn = {m: by_model[m] / seat_turns[m] for m in by_model if seat_turns.get(m)}
+    total = sum(per_turn.values())
     if total > 0:
-        out["seat_share"] = {m: round(v / total, 4) for m, v in by_model.items()}
+        out["seat_share"] = {m: round(v / total, 4) for m, v in per_turn.items()}
     out["measured_from"] = [rid for rid in ids if rid]
+    if model_seats and acc:
+        out["model_seats"] = model_seats
+    return out
+
+
+def scripted_seats(record: Dict[str, Any]) -> set:
+    """Seats played by a scripted policy (config.seat_policies, or entries marked scripted);
+    every seat when the whole run is a scripted policy."""
+    cfg = record.get("config") or {}
+    labs = record.get("labs") or {}
+    if cfg.get("policy"):
+        return set(labs)
+    out = set(cfg.get("seat_policies") or {})
+    for t in record.get("turns") or []:
+        for key, e in ((t or {}).get("actors") or {}).items() if isinstance(t, dict) else ():
+            if isinstance(e, dict) and e.get("scripted"):
+                out.add(key)
     return out
 
 

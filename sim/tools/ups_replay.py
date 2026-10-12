@@ -26,10 +26,13 @@ model or juror call:
   * MacroJury. Each review applies the logged values and mandate
     (record["macro_jury"]) instead of calling the jurors. No Grand Jury, no
     interviews.
-  * Initial state. Rebuilt as the run built it: config/world.json with the run's
-    overrides, the five seats (charters not needed), the run's dispositions
-    (final["dispositions"]; None in choose mode, set by the replayed choice),
-    the T1 capability-seed rotation and the run's interventions.
+  * Initial state. The run's own logged t=0: config.effective_cfg (the world
+    config as the run used it) and config.initial_state (every seat's seed,
+    resources, values, charter values and disposition, T1 rotation applied), so
+    later edits of world.json or the lab seeds never break the replay. Logs that
+    predate them are rebuilt from the current config files (world.json with
+    the run's overrides, the lab seeds, final["dispositions"], the T1 rotation),
+    with a warning. The run's interventions are re-applied either way.
 
 Removal for actor X: X's accepted intrude actions are dropped in every month,
 and so is every report whose logged outcome matched one of X's parts (accused X,
@@ -57,8 +60,8 @@ config and final; *.partial.json skipped).
 
 import argparse
 import copy
+import inspect
 import json
-import math
 import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -252,17 +255,53 @@ def _log_policy(replies: Dict[int, Dict[str, Dict[str, Any]]]):
     return log_policy
 
 
-def _swap_capability(labs, key_a: str, key_b: str, elasticity: float) -> None:
-    """pilot._swap_capability (T1 rotation): swap two seats' capability seeds."""
-    by = {lab.key: lab for lab in labs}
-    a, b = by[key_a], by[key_b]
-    a.seed["capability"], b.seed["capability"] = b.seed["capability"], a.seed["capability"]
-    for lab in (a, b):
-        lab.know_how = lab.seed["capability"] - elasticity * math.log(lab.compute)
+def logged_initial(record: Dict[str, Any]):
+    """(cfg, labs, world) at t=0 from the record itself (CR #7): config.effective_cfg and
+    config.initial_state, logged by every run since the I1 commit (rotation applied, K
+    recomputed). None when the log predates them."""
+    from core.state import LabState, WorldState
+    from datetime import date
+    conf = record.get("config") or {}
+    eff, init = conf.get("effective_cfg"), conf.get("initial_state")
+    if not isinstance(eff, dict) or not isinstance(init, dict) or not init.get("labs"):
+        return None
+    cfg = copy.deepcopy(eff)
+    fields = ("lab", "actor", "family", "provider", "model", "effort", "charter_name", "talent", "compute",
+              "capital", "influence", "know_how", "invested", "income")
+    labs = []
+    for key, s0 in init["labs"].items():
+        lab = LabState(key=key, charter_text="", charter_values=dict(s0.get("charter_values") or {}),
+                       seed=dict(s0.get("seed") or {}), **{f: s0.get(f) for f in fields if f in s0})
+        lab.values = dict(s0.get("values") or {})
+        lab.disposition = s0.get("disposition")
+        labs.append(lab)
+    w0 = init.get("world") or {}
+    world = WorldState(start=date.fromisoformat(str(w0.get("start") or cfg["start_date"])),
+                       turn=int(w0.get("turn") or 0), us_stock=float(w0["us_stock"]),
+                       us_growth=float(w0["us_growth"]), china_stock=float(w0["china_stock"]),
+                       china_growth=float(w0["china_growth"]),
+                       national_cap_share=float(w0.get("national_cap_share", 0.5)), ceiling=w0.get("ceiling"),
+                       intrusion_open=bool(w0.get("intrusion_open")),
+                       state_values=dict(w0.get("state_values") or {}),
+                       mandates=[dict(m) for m in w0.get("mandates") or []])
+    return cfg, labs, world
 
 
 def build_initial(record: Dict[str, Any]):
-    """(cfg, labs, world) at t=0, as the run built them."""
+    """(cfg, labs, world) at t=0, as the run built them: from the logged effective
+    config and initial state when the record has them (CR #7), else — an old log —
+    rebuilt from the current config files (world.json with the run's overrides, the
+    lab seeds, the run's dispositions and T1 rotation), with a warning: a later edit
+    of those files breaks the identity replay."""
+    got = logged_initial(record)
+    if got is not None:
+        return got
+    import logging
+    logging.getLogger(__name__).warning(
+        "[ups_replay] %s predates config.effective_cfg/initial_state: rebuilding t=0 from the current "
+        "config files (the identity replay fails if world.json or the lab seeds changed since the run)",
+        (record.get("config") or {}).get("run_meta", {}).get("run_id") or "this log")
+    from pilot import swap_capability
     conf = record["config"]
     cfg = load_world(conf.get("overrides") or None)
     if conf.get("choose_disposition"):
@@ -273,8 +312,12 @@ def build_initial(record: Dict[str, Any]):
     rotation = conf.get("rotation")
     if rotation:
         src, _, dst = str(rotation).partition(":")
-        _swap_capability(labs, src, dst, cfg["economy"]["capability_compute_elasticity"])
+        swap_capability(labs, src, dst, cfg["economy"]["capability_compute_elasticity"])
     return cfg, labs, world
+
+
+def start_source(record: Dict[str, Any]) -> str:
+    return "logged" if logged_initial(record) is not None else "config files"
 
 
 def replay(record: Dict[str, Any], replies: Optional[Dict[int, Dict[str, Dict[str, Any]]]] = None
@@ -292,10 +335,16 @@ def replay(record: Dict[str, Any], replies: Optional[Dict[int, Dict[str, Dict[st
     cfg, labs, world = build_initial(record)
     turns = len(complete_turns(record))
     macro = macro_outputs(record)
+    extra: Dict[str, Any] = {}
+    params = inspect.signature(SimulationEngine.__init__).parameters
+    if "brief" in params:                       # older engines only (the keyword is going)
+        extra["brief"] = conf.get("brief", "eval")
+    if "kin" in params and (conf.get("run_meta") or {}).get("kin"):
+        extra["kin"] = True
     engine = ReplayEngine(
         labs, world, cfg, scenario=conf["scenario"], condition=conf.get("condition", "A"),
         fog=conf.get("fog", "F3"), a2a_mode=conf.get("a2a_mode", "merged"),
-        brief=conf.get("brief", "eval"), turns=turns, seed=int(conf.get("seed", 0)),
+        turns=turns, seed=int(conf.get("seed", 0)), **extra,
         macro_jurors=["logged-macro-jury"] if macro else [], policy=_log_policy(replies),
         interventions=conf.get("interventions") or [],
         choose_disposition=bool(conf.get("choose_disposition")), run_grand_jury=False,
@@ -410,6 +459,7 @@ def contributions(record: Dict[str, Any], actors: Optional[List[str]] = None) ->
         "run_id": (conf.get("run_meta") or {}).get("run_id"),
         "scenario": conf.get("scenario"), "condition": conf.get("condition"),
         "identity": {"ok": not mismatches, "mismatches": mismatches},
+        "start_state": start_source(record),
         "ups": base["ups"], "terms": dict(base["terms"]), "weights": weights,
         "logged_ups": ((record.get("final") or {}).get("ups_index") or {}).get("ups"),
         "actors": out_actors,
@@ -423,6 +473,9 @@ def contributions(record: Dict[str, Any], actors: Optional[List[str]] = None) ->
 def format_result(path: Path, res: Dict[str, Any]) -> str:
     lines = [f"{path}  ({res.get('scenario')}/{res.get('condition')}"
              + (f", {res['run_id']}" if res.get("run_id") else "") + ")"]
+    if res.get("start_state") == "config files":
+        lines.append("  start state: rebuilt from the CURRENT config files (old log without "
+                     "config.effective_cfg/initial_state)")
     ident = res["identity"]
     if ident["ok"]:
         lines.append("  identity replay: reproduces the run exactly")
