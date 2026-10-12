@@ -970,7 +970,6 @@ def test_a2a_chars_over_4_and_truncation_then_drop():
     assert ch.tokens_remaining("meta", 2) == 500 and ch.tokens_remaining("xai", 1) == 500
 
 
-@pytest.mark.xfail(strict=True, reason='BUG-4: A2A charges len(text)//4 per message, so messages under 4 characters cost 0 tokens and are never dropped')
 def test_a2a_tiny_messages_cannot_exceed_budget():
     """§5.4: the budget is 500 tokens counted as characters ÷ 4 in total per turn.
     Many short messages (each under 4 characters) must not deliver more than
@@ -1001,6 +1000,9 @@ def test_a2a_budget_property_random_messages():
 
 def test_a2a_estimate_tokens():
     assert estimate_tokens("a" * 2000) == 500 and estimate_tokens("") == 0
+    # rounded up, at least 1 per non-empty message (§5.4)
+    assert estimate_tokens("a") == 1 and estimate_tokens("hey") == 1
+    assert estimate_tokens("a" * 5) == 2 and estimate_tokens("a" * 2001) == 501
 
 
 def test_s1_coerces_merged_and_messages_arrive_next_turn():
