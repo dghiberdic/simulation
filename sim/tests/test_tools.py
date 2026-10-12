@@ -2048,6 +2048,8 @@ def test_export_transcripts_blind_texts_key_and_templates(tmp_path, capsys):
     assert X.main([str(tmp_path / "logs"), "--out", str(out)]) == 0
     assert "kept" in capsys.readouterr().out
     assert "40" in (out / "blind" / "human_ratings.csv").read_text()
+    # A blank template reads as "nothing scored yet", not as an error.
+    assert jury_check.read_hand_scores(out / "blind" / "hand_scores.csv") == {}
 
 
 def test_hand_scores_and_human_ratings_by_letter_map_through_the_seat_letters(tmp_path):

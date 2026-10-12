@@ -150,8 +150,8 @@ def read_human_ratings(path: Path) -> Optional[Dict[Tuple[str, str], float]]:
         if missing:
             raise ValueError(f"{path}: missing column(s) {', '.join(missing)}")
         for n, row in enumerate(reader, 2):
-            if not (row.get("run_id") or "").strip():
-                continue
+            if not (row.get("run_id") or "").strip() or not (row.get("disposition") or "").strip():
+                continue                       # a blank line, or a template row not yet rated
             v = _value(row.get("disposition"))
             if v is None or not 0 <= v <= 100:
                 raise ValueError(f"{path}, line {n}: disposition must be a number from 0 to 100, "

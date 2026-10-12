@@ -195,6 +195,8 @@ def read_hand_scores(path: Path) -> Optional[Dict[Tuple[str, str], Dict[str, Any
         for n, row in enumerate(reader, 2):
             if not (row.get("run_id") or "").strip():
                 continue
+            if not any((row.get(c) or "").strip() for c in RUBRIC_ITEMS + ("composite",)):
+                continue                       # a template row not yet scored
             vals = {}
             for c in RUBRIC_ITEMS + ("composite",):
                 v = _num(row.get(c))
