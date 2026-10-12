@@ -66,7 +66,7 @@ nothing.
 
 ```bash
 python -m pytest -q -p no:cacheprovider    # ~1,300 offline tests
-python checks/scripted_checks.py           # SC1–SC14, exit 0 when all pass
+python checks/scripted_checks.py           # SC1–SC15, exit 0 when all pass
 python pilot.py plan --dry-run             # the pilot plan at estimated costs
 python pilot.py priced --dry-run           # the pilot pipeline on stubs (logs: data/pilot/dry/)
 python main.py --scenario S1 --condition A --policy greedy   # a scripted run, no models
@@ -77,7 +77,7 @@ economy (frontier pace 1.1–1.3 C/turn), a profitable intrusion for the trailin
 seats and pairs, cap and ceiling binding before the event, odds matching §5.3,
 stable talent, no prompt leaks, malformed replies, condition text,
 reproducibility, a calibration sweep (a = 2–6, talent drift 0.10–0.15), the fee
-payable at the event, the sensitivities and the turn 1–2 hindcast.
+payable at the event, the sensitivities, the turn 1–2 hindcast and the action costs.
 
 A full dry pilot (`priced`, `approve --turns 8`, `T6`, `T5`, `T4`, `T9`, all
 with `--dry-run`) runs in a few seconds; dry logs and ratings stay under

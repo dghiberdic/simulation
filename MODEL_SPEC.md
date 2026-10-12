@@ -181,10 +181,10 @@ as `config.initial_state` (`core.engine.initial_state`).
 
 ### §9.2 Architecture checks
 
-- Scripted checks SC1–SC14 (economy, payoff, cap and ceiling binding, odds,
+- Scripted checks SC1–SC15 (economy, payoff, cap and ceiling binding, odds,
   talent stability, prompt leaks, malformed replies, condition text,
   reproducibility, policies, calibration sweep a = 2–6 × drift 0.10–0.15, fee
-  payable at the event, sensitivities, hindcast t1–2):
+  payable at the event, sensitivities, hindcast t1–2, action costs):
   `checks/scripted_checks.py` (`run_all`); scripted policies in
   `core.policies.POLICIES` (idle, greedy, income, intrude_profitable,
   pair_intrude, always_intrude, t5_scripted, malformed).
