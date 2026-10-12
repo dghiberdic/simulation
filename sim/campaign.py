@@ -30,7 +30,12 @@ per round, recording the plan, the guard and finished runs in
 <runs dir>/campaign_state.json. A stopped campaign resumes where it left off,
 with the saved plan: the same cells, cuts and set-up, and rounds = rounds done +
 floor(budget left / round cost) (never more than first planned). `run
---replan` re-plans the cells from the budget left instead. A run stopped by the
+--replan` re-plans the cells from the budget left instead: each cell keeps the
+runs it has done (a cell counts only the runs it actually ran), runs per cell
+are the most R whose remaining cost, the sum over the kept cells of
+(R − done[cell]) × run cost, fits the budget left, and cells are cut whole
+against that sum. A cell cut before restarts from run 1 only if the re-plan
+keeps it (its full cost is then in the sum). A run stopped by the
 guard during its Grand Jury is finished and saved: it counts as done with its
 jury missing, and the resume asks only that jury. The shared ledger's guard is
 fixed when the campaign is first planned: the ledger total then plus the main
@@ -40,7 +45,6 @@ runs' budget ($750 minus the spend so far, by default).
 import argparse
 import json
 import logging
-import math
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -102,16 +106,36 @@ def interview_decision(cells: List[Dict[str, Any]], inputs: Dict[str, Any], turn
     return {"run": worst <= INTERVIEW_SHARE, "share_by_cell": shares, "worst_share": worst}
 
 
+def affordable_runs(cells: List[Dict[str, Any]], done: Dict[str, int], budget: float, cap: int) -> int:
+    """The most runs per cell R (<= cap) whose remaining cost, the sum over `cells`
+    of (R − done[cell]) × run cost (cells with done >= R add nothing), fits
+    `budget`. Never below the fewest runs a cell has done (that costs nothing)."""
+    def cost(r: int) -> float:
+        return sum(max(0, r - done.get(c["name"], 0)) * float(c["run_cost"]) for c in cells)
+    floor_r = min((done.get(c["name"], 0) for c in cells), default=0)
+    best = min(floor_r, cap)
+    for r in range(best, cap + 1):
+        if cost(r) <= budget + 1e-9:
+            best = r
+        else:
+            break
+    return best
+
+
 def build_campaign(inputs: Optional[Dict[str, Any]], budget: float, turns: int = 8, s2_mode: str = "separate",
                    max_runs: int = MAX_RUNS, min_runs: int = MIN_RUNS,
-                   cfg: Optional[Dict[str, Any]] = None, done_rounds: int = 0) -> Dict[str, Any]:
+                   cfg: Optional[Dict[str, Any]] = None, done_rounds: int = 0,
+                   done: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
     """
     The schedule: interview decision, per-cell run cost, runs per cell and the
-    cells cut. Cells are cut in CUT_ORDER groups while floor(budget / round
-    cost) < min_runs; A is never cut (if even A alone gives fewer than
-    min_runs, it runs what the budget allows and the plan says so). A re-plan
-    mid-campaign (--replan) passes the rounds already done and the budget left:
-    runs per cell = done_rounds + floor(budget / round cost).
+    cells cut. Runs per cell R = affordable_runs: the most R whose cost, the sum
+    over the kept cells of (R − done[cell]) × run cost, fits the budget. Cells
+    are cut in CUT_ORDER groups while R < min_runs; A is never cut (if even A
+    alone gives fewer than min_runs, the cuts that buy the most runs are kept
+    and the plan says so; a cut that buys no run is not made). A re-plan
+    mid-campaign (--replan) passes `done` ({cell: runs it has done}, only the
+    cells that ran) and the budget left; `done_rounds` (every cell the same) is
+    the older form.
     """
     cfg = cfg or load_world()
     full = with_fallbacks(inputs)
@@ -120,27 +144,36 @@ def build_campaign(inputs: Optional[Dict[str, Any]], budget: float, turns: int =
     for c in cells:
         c["cost"] = cell_cost(c, full, turns, s2_mode, iv["run"], cfg)
         c["a2a"] = "merged" if c["scenario"] == "S1" else s2_mode
+    done = dict(done) if done is not None else {c["name"]: done_rounds for c in cells} if done_rounds else {}
+    for c in cells:
+        c["run_cost"] = c["cost"]["total"]
+    options = []                      # (runs, cuts, active) for each cut step
     active = list(cells)
     cut: List[str] = []
-    runs = 0
     for group in (None,) + CUT_ORDER:
         if group is not None:
-            cut.append(group)
+            cut = cut + [group]
             active = [c for c in active if c["group"] != group]
-        round_cost = sum(c["cost"]["total"] for c in active)
-        runs = min(max_runs, done_rounds + int(math.floor(budget / round_cost))) if round_cost > 0 else max_runs
-        if runs >= min_runs:
+        options.append((affordable_runs(active, done, budget, max_runs), list(cut), list(active)))
+        if options[-1][0] >= min_runs:
             break
+    if options[-1][0] >= min_runs:
+        runs, cut, active = options[-1]
+    else:                             # below the floor even with A alone: the most runs, fewest cuts
+        runs, cut, active = max(options, key=lambda o: (o[0], -len(o[1])))
     round_cost = round(sum(c["cost"]["total"] for c in active), 2)
+    remaining_cost = sum(max(0, runs - done.get(c["name"], 0)) * c["cost"]["total"] for c in active)
+    done_min = min((done.get(c["name"], 0) for c in active), default=0)
     return {
         "budget": round(budget, 2), "turns": turns, "s2_mode": s2_mode, "interview": iv,
         "interview_turns": MAIN_INTERVIEW if iv["run"] else [],
         "cells": [{"name": c["name"], "group": c["group"], "scenario": c["scenario"], "condition": c["condition"],
                    "kin": c["kin"], "a2a": c["a2a"], "run_cost": c["cost"]["total"], "cost_parts": c["cost"],
                    "runs": runs if c in active else 0} for c in cells],
-        "cut_groups": cut, "runs_per_cell": runs, "round_cost": round_cost, "done_rounds": done_rounds,
-        "total": round((runs - done_rounds) * round_cost, 2),
-        "reserve": round(budget - (runs - done_rounds) * round_cost, 2),
+        "cut_groups": cut, "runs_per_cell": runs, "round_cost": round_cost, "done_rounds": done_min,
+        "done": {c["name"]: done.get(c["name"], 0) for c in cells if done.get(c["name"], 0)},
+        "total": round(remaining_cost, 2),
+        "reserve": round(budget - remaining_cost, 2),
         "below_min": runs < min_runs, "estimated": full.get("estimated") or [],
         "kin_seat_scale": kin_seat_scale(full),
         "note": None if not cut else ("cells cut whole (" + ", ".join(cut) + ") rather than thinned below "
@@ -156,9 +189,13 @@ def campaign_lines(plan: Dict[str, Any]) -> List[str]:
              f"  {'cell':<10}{'a2a':<10}{'run $':>8}{'runs':>6}"]
     for c in plan["cells"]:
         lines.append(f"  {c['name']:<10}{c['a2a']:<10}{c['run_cost']:>8.2f}{(c['runs'] or 'cut'):>6}")
-    rounds_txt = (f"{plan['runs_per_cell'] - plan['done_rounds']} more round(s) after {plan['done_rounds']} done"
-                  if plan.get("done_rounds") else f"{plan['runs_per_cell']} rounds")
-    lines.append(f"  round cost ${plan['round_cost']:.2f} x {rounds_txt} = ${plan['total']:.2f}; "
+    done = plan.get("done") or {}
+    if done:
+        rounds_txt = (f"{plan['runs_per_cell']} runs per cell, {sum(done.values())} run(s) already done "
+                      f"(kept), the rest")
+    else:
+        rounds_txt = f"{plan['runs_per_cell']} rounds"
+    lines.append(f"  round cost ${plan['round_cost']:.2f}; {rounds_txt} = ${plan['total']:.2f}; "
                  f"reserve ${plan['reserve']:.2f}"
                  + (f"; {plan['note']}" if plan.get("note") else "")
                  + ("; BELOW the 6-run floor even with A alone" if plan["below_min"] else ""))
@@ -240,20 +277,8 @@ def resume_rounds(plan: Dict[str, Any], done: Dict[str, List[str]], remaining: O
     if remaining is None:
         return cap
     active = [c for c in plan["cells"] if c["runs"]]
-    full = completed_rounds(plan, done)
-    rounds = full
-    left = float(remaining)
-    nxt = [c for c in active if len(done.get(c["name"], [])) < full + 1]
-    if len(nxt) < len(active):                              # a round partly run
-        rest = sum(c["run_cost"] for c in nxt)
-        if left + 1e-9 < rest:
-            return min(cap, rounds)
-        left -= rest
-        rounds += 1
-    round_cost = plan["round_cost"]
-    if round_cost > 0:
-        rounds += int(math.floor((left + 1e-9) / round_cost))
-    return max(full, min(cap, rounds))
+    counts = {c["name"]: len(done.get(c["name"], [])) for c in active}
+    return max(completed_rounds(plan, done), affordable_runs(active, counts, float(remaining), cap))
 
 
 def run_campaign(plan: Dict[str, Any], runs_dir: Path, dry_run: bool, rounds: Optional[int] = None,
@@ -372,7 +397,9 @@ def main(argv=None) -> int:
         return run_campaign(saved, runs_dir, args.dry_run, args.rounds,
                             budget=None if args.dry_run else guard, spend_file=args.spend_file, n_rounds=n)
 
-    done_rounds = completed_rounds(saved, done) if (saved and args.replan) else 0
+    # --replan: each cell keeps the runs it actually ran (never the campaign's
+    # completed rounds credited to a cell that has none).
+    done_counts = {name: len(runs) for name, runs in done.items() if runs} if (saved and args.replan) else {}
     if args.budget is not None:
         budget = args.budget
     elif saved and args.replan and state.get("guard") is not None:
@@ -382,7 +409,7 @@ def main(argv=None) -> int:
     plan = build_campaign(pilot_inputs(pilot_root), budget,
                           turns=args.turns or (saved or {}).get("turns") or pilot_turns(pilot_root),
                           s2_mode=args.s2_mode or pilot_s2_mode(pilot_root, include_dry=args.dry_run),
-                          max_runs=args.max_runs, done_rounds=done_rounds)
+                          max_runs=args.max_runs, done=done_counts)
     print("\n".join(campaign_lines(plan)))
     if args.command == "plan":
         if saved:

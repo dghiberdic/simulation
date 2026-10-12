@@ -329,8 +329,13 @@ perceived vs chosen disposition per seat, UPS-weight sensitivity).
    finished run. It stops on the first non-zero exit (1 budget guard, 2
    anything else); `run` again resumes the saved plan: the same cells and
    set-up, and rounds = rounds done + floor(budget left / round cost), never
-   more than first planned. `run --replan` re-plans the cells and rounds from
-   the budget left instead. A run stopped by the guard during its Grand Jury
+   more than first planned. `run --replan` re-plans the cells and runs per
+   cell from the budget left instead: each cell keeps the runs it actually
+   ran, runs per cell are the most R whose remaining cost — the sum over the
+   kept cells of (R − runs done in that cell) × run cost — fits the budget
+   left, and cells are cut whole against that sum (a cut that buys no run is
+   not made). A cell cut earlier starts from run 1 only if the re-plan keeps
+   it, and then all its runs are in the sum. A run stopped by the guard during its Grand Jury
    is finished and saved: it counts as done with its jury missing, and the
    resume asks only that jury.
 

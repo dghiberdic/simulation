@@ -377,3 +377,86 @@ def test_main_dry_run_without_output_writes_under_runs_dry(tmp_path):
     assert main_mod.main(["--dry-run", "--turns", "1", "--run-id", "dry-x", "--no-grand-jury"]) == 0
     assert (tmp_path / "runs_default" / "dry" / "dry-x" / "dry-x.json").exists()
     assert not (tmp_path / "runs_default" / "dry-x").exists()
+
+
+def _two_rounds_done(tmp_path, monkeypatch):
+    """A campaign planned at $300 (B, kin, A0 cut) stopped after two full rounds."""
+    _ledger(tmp_path / "spend.json", 0.0)
+    plan = campaign.build_campaign(None, 300.0, turns=8, s2_mode="separate")
+    cost = {c["name"]: c["run_cost"] for c in plan["cells"]}
+    active = [c["name"] for c in plan["cells"] if c["runs"]]
+    monkeypatch.setattr(main_mod, "run_cell", _paying_run_cell(tmp_path, cost, fail_at=f"{active[0]}-run03"))
+    assert campaign.main(_campaign_argv(tmp_path, "--budget", "300")) == 1
+    state = json.loads((tmp_path / "runs" / campaign.STATE_NAME).read_text())
+    assert {k: len(v) for k, v in state["runs"].items()} == {k: 2 for k in active}
+    return plan, cost, active, state
+
+
+def test_replan_with_no_budget_left_runs_nothing_and_cuts_nothing_new(tmp_path, monkeypatch):
+    plan, cost, active, state = _two_rounds_done(tmp_path, monkeypatch)
+    _ledger(tmp_path / "spend.json", state["guard"])              # the guard is spent
+    costs.configure()
+    order = []
+    monkeypatch.setattr(main_mod, "run_cell", _paying_run_cell(tmp_path, cost, order=order))
+    assert campaign.main(_campaign_argv(tmp_path, "--replan")) == 0
+    new = json.loads((tmp_path / "runs" / campaign.STATE_NAME).read_text())["plan"]
+    assert order == []                                            # nothing restarted, nothing paid
+    assert new["runs_per_cell"] == 2 and new["total"] == 0.0
+    assert new["cut_groups"] == plan["cut_groups"]                # no cut that buys no run
+    assert new["done"] == {k: 2 for k in active}
+
+
+def test_replan_with_partial_budget_counts_each_cells_own_runs(tmp_path, monkeypatch):
+    plan, cost, active, state = _two_rounds_done(tmp_path, monkeypatch)
+    active_cost = sum(cost[k] for k in active)
+    left = 4 * active_cost + 0.01                                  # four more runs of each kept cell
+    _ledger(tmp_path / "spend.json", state["guard"] - left)
+    costs.configure()
+    order = []
+    monkeypatch.setattr(main_mod, "run_cell", _paying_run_cell(tmp_path, cost, order=order))
+    assert campaign.main(_campaign_argv(tmp_path, "--replan")) == 0
+    new = json.loads((tmp_path / "runs" / campaign.STATE_NAME).read_text())
+    p = new["plan"]
+    kept = [c["name"] for c in p["cells"] if c["runs"]]
+    # the sum over the kept cells of (runs - done) x run cost fits the budget left
+    assert p["total"] == pytest.approx(sum((p["runs_per_cell"] - 2) * cost[k] for k in kept), abs=0.02)
+    assert p["total"] <= left + 1e-6 and p["runs_per_cell"] == 6
+    assert sorted(kept) == sorted(active) and p["cut_groups"] == plan["cut_groups"]
+    # cut cells never restarted from scratch; kept cells resume at run 3
+    assert all(r.rsplit("-run", 1)[0] in active for r in order)
+    assert sorted(order) == sorted(f"{k}-run{n:02d}" for k in active for n in range(3, 7))
+    assert {k: len(v) for k, v in new["runs"].items()} == {k: 6 for k in active}
+
+
+def test_affordable_runs_counts_only_the_runs_each_cell_still_needs():
+    cells = [{"name": "a", "run_cost": 10.0}, {"name": "b", "run_cost": 10.0}, {"name": "new", "run_cost": 5.0}]
+    done = {"a": 3, "b": 3}
+    assert campaign.affordable_runs(cells, done, 0.0, 12) == 0       # "new" has none: R stays at its 0
+    assert campaign.affordable_runs(cells[:2], done, 0.0, 12) == 3
+    # R = 4: a, b one each (20) + new four (20) = 40
+    assert campaign.affordable_runs(cells, done, 40.0, 12) == 4
+    assert campaign.affordable_runs(cells, done, 39.9, 12) == 3
+    assert campaign.affordable_runs(cells[:2], done, 1000.0, 8) == 8
+
+
+def test_replan_charges_a_formerly_cut_cell_its_full_runs(tmp_path, monkeypatch):
+    """A0 was cut with no runs: keeping it costs all its runs, not (R - rounds done)."""
+    plan, cost, active, state = _two_rounds_done(tmp_path, monkeypatch)
+    a0 = [c["name"] for c in plan["cells"] if c["group"] == "A0"]
+    a, z = sum(cost[k] for k in active), sum(cost[k] for k in a0)
+    left = 4 * a + 4 * z + 0.01               # the old rule kept A0 at 6 runs, i.e. 4a + 6z
+    _ledger(tmp_path / "spend.json", state["guard"] - left)
+    costs.configure()
+    before = json.loads((tmp_path / "spend.json").read_text())["total_usd"]
+    order = []
+    monkeypatch.setattr(main_mod, "run_cell", _paying_run_cell(tmp_path, cost, order=order))
+    assert campaign.main(_campaign_argv(tmp_path, "--replan")) == 0
+    p = json.loads((tmp_path / "runs" / campaign.STATE_NAME).read_text())["plan"]
+    spent = json.loads((tmp_path / "spend.json").read_text())["total_usd"] - before
+    assert spent <= left + 1e-6 and p["total"] <= left + 1e-6
+    kept = {c["name"] for c in p["cells"] if c["runs"]}
+    if kept & set(a0):
+        assert p["total"] == pytest.approx(sum((p["runs_per_cell"] - (2 if k in active else 0)) * cost[k]
+                                               for k in kept), abs=0.02)
+    else:
+        assert not [r for r in order if r.rsplit("-run", 1)[0] in a0]
