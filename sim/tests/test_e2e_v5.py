@@ -422,8 +422,6 @@ def test_separate_mode_decision_prompt_keeps_messages_field(tmp_path, calls):
     assert '"messages"' in p
 
 
-@pytest.mark.xfail(strict=True, reason="§9.2 allows one T6 re-run; a second --rerun (and a re-run of any "
-                   "finished test) is not refused")
 def test_t6_rerun_only_once(tmp_path):
     root = tmp_path / "pilot"
     _pilot_to_end(root)
