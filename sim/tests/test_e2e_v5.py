@@ -428,8 +428,6 @@ def test_t6_rerun_only_once(tmp_path):
     assert _dry(root, "T6", "--rerun") == 2
 
 
-@pytest.mark.xfail(strict=True, reason="§5.1: mandates may not mention intrusion; paraphrases pass the "
-                   "keyword filter")
 def test_mandate_filter_catches_paraphrased_intrusion():
     labs, _ = build_labs_and_world(load_world(), charters=False)
     assert mandate_violation("No lab may breach another lab's tenancy.", labs)

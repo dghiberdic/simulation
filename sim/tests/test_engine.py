@@ -184,6 +184,42 @@ def test_mandate_violation_rules():
         assert mandate_violation(bad, labs), bad
 
 
+def test_mandate_filter_covers_paraphrases():
+    """§5.1: mandates may not mention intrusion, reporting, audits or a named lab —
+    paraphrases from the audits (A1 M2, A2 M6, E2E 4) included; a lab name followed by
+    a hyphen ("meta-analysis") is not a lab."""
+    from core.engine import mandate_violation
+    labs, _ = build_labs_and_world(load_world(), dispositions=dict(DISPS))
+    for bad in (
+            # intrusion
+            "No lab may breach another lab's tenancy.",
+            "Labs must not access rival tenancies without authority.",
+            "Labs should avoid any breach of other labs' systems.",
+            "Labs should avoid breaching other labs' systems.",
+            "Stop all cyber operations against peers.",
+            "Do not copy competitors' checkpoints.",
+            "No lab shall spy on its peers.", "Exfiltrating model weights is forbidden.",
+            "Hackers will face the full force of the law.",
+            # reporting
+            "Labs should disclose any violation to the Allocator.",
+            "Labs must notify the Allocator of any cyber incident.",
+            "Labs should whistle blow on misconduct.", "Whistleblowers are protected.",
+            "Labs must inform on peers that break the rules.",
+            "Labs should alert the authorities to wrongdoing.",
+            # audits
+            "Labs must submit to inspection of their logs.",
+            "All labs must submit to audits.", "Forensic reviews will follow.",
+            # named labs
+            "Google must share its research.", "xAI should expand.", "OpenAI must open its books.",
+            "Pro-Anthropic lobbying must stop."):
+        assert mandate_violation(bad, labs), bad
+    for ok in ("Prioritise safety research, as a recent meta-analysis recommends.",
+               "Labs should prioritise long-term safety research.",
+               "Expand domestic chip manufacturing and keep prices stable.",
+               "Raise the national time horizon; invest in public-interest AI."):
+        assert mandate_violation(ok, labs) is None, ok
+
+
 # ---------------------------------------------------------------------------
 # v5: keyed draws, S1 merged, F3 only, integrity inputs
 # ---------------------------------------------------------------------------

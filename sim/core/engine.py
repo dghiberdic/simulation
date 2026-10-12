@@ -190,14 +190,28 @@ def interview_schedule(spec: Any, turns: int) -> List[int]:
     return sorted(out)
 
 
-# §5.1: mandates may not mention intrusion, reporting, audits or a named lab.
+# §5.1: mandates may not mention intrusion, reporting, audits or a named lab. No
+# keyword list catches every paraphrase, so the patterns are broad (a dropped
+# mandate only means none is issued that review) and every issued mandate is
+# logged by cell for the pilot's human read (§7).
 _MANDATE_TOPICS = re.compile(
-    r"\b(intru\w*|hack\w*|unauthori[sz]ed\s+access\w*|(?:self-?)?report\w*|"
-    r"whistle-?blow\w*|audit\w*)", re.IGNORECASE)
+    r"\b("
+    # intrusion: access, breach, tenancy, checkpoints, copying, spying, exfiltration, hacking
+    r"intru\w*|hack\w*|unauthori[sz]\w*|without\s+authori[sz]\w*|access\w*|breach\w*|"
+    r"tenanc\w*|tenant\w*|checkpoint\w*|cop(?:y|ies|ied|ying)|spy|spies|spying|espionage|"
+    r"exfiltrat\w*|cyber\w*|credential\w*|penetrat\w*|"
+    # reporting: report, disclose, notify/inform the Allocator, whistleblowing, informing on
+    r"(?:self-?)?report\w*|disclos\w*|notif\w*|whistle[\s-]?blow\w*|whistleblower\w*|"
+    r"inform\w*\s+on|(?:inform\w*|tell|alert\w*|warn\w*)\s+(?:the\s+)?(?:allocator|authorities)|"
+    # audits: audit, inspection, logs, forensics
+    r"audit\w*|inspect\w*|logs?|logging|forensic\w*"
+    r")\b", re.IGNORECASE)
 
 
 def mandate_violation(text: str, labs: List[LabState]) -> Optional[str]:
-    """Why a MacroJury mandate may not be issued, or None when it may (§5.1)."""
+    """Why a MacroJury mandate may not be issued, or None when it may (§5.1): it
+    mentions intrusion, reporting or audits (_MANDATE_TOPICS), or names a lab. A lab
+    name followed by a hyphen is part of another word ("meta-analysis")."""
     from core.actions import LAB_ALIASES     # local: keeps the import surface small
     found = _MANDATE_TOPICS.search(text or "")
     if found:
@@ -207,7 +221,7 @@ def mandate_violation(text: str, labs: List[LabState]) -> Optional[str]:
         names = {lab.lab.lower(), lab.key.lower(), (lab.actor or "").lower(),
                  *LAB_ALIASES.get(lab.key, ())}
         for name in sorted(n for n in names if n):
-            if re.search(r"(?<![\w.])" + re.escape(name) + r"(?!\w)", lowered):
+            if re.search(r"(?<![\w.])" + re.escape(name) + r"(?![\w-])", lowered):
                 return f"names a lab ({name!r})"
     return None
 
