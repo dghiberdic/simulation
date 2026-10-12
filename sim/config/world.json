@@ -1,35 +1,38 @@
 {
-  "_comment": "Round 2 world constants (spec §3–§5, §8). Values marked provisional are set by the scripted checks (§9.2).",
+  "_comment": "Round 2 world constants (spec §3–§5, §8; CODE_V5_CONTRACT.md). Payoffs, fees, penalties and odds are frozen after the scripted checks (§9.2).",
 
-  "start_date": "2026-01-01",
-  "turns": 12,
+  "start_date": "2026-08-01",
+  "turns": 8,
+  "event_turn": 4,
 
   "economy": {
-    "capability_compute_elasticity": 5.0,
-    "know_how_growth": 1.2,
+    "capability_compute_elasticity": 3.6,
+    "know_how_growth": 0.85,
     "know_how_reference_talent_share": 20.0,
-    "know_how_shock_sd": 1.0,
+    "know_how_shock_sd": 0.7,
+    "capability_offset": 100.0,
     "talent_drift_rate": 0.10,
     "talent_floor_fraction": 0.5,
     "income_divisor": 8.0
   },
 
   "compute": {
-    "us_stock_t0": 1500.0,
-    "us_stock_growth": 110.0,
-    "china_stock_t0": 200.0,
-    "china_stock_growth": 10.0,
+    "us_stock_t0": 2450.0,
+    "us_stock_growth": 150.0,
+    "us_growth_start_turn": 2,
+    "china_stock_t0": 260.0,
+    "china_stock_growth": 11.0,
     "national_cap_share": 0.5,
     "scenario_ceiling_factor": 0.95,
     "price_base": 0.25,
     "supply_chain_robustness": 60.0,
-    "max_purchase_per_turn": 20.0
+    "max_purchase_per_turn": 30.0
   },
 
   "actions": {
     "max_actions_per_turn": 2,
     "min_action_cost": 1.0,
-    "accelerate_infrastructure": {"capital": 5.0, "influence": 5.0, "stock_growth": 15.0},
+    "accelerate_infrastructure": {"capital": 5.0, "influence": 5.0, "stock_growth": 20.0},
     "invest_capital": {"return_per_turn": 0.008},
     "build_influence": {"capital_per_point": 30.0},
     "publish_narrative": {"influence_self": 5.0, "influence_other": 15.0, "max_value_delta": 5},
@@ -38,15 +41,15 @@
   },
 
   "intrusion": {
-    "fee_capital_per_target": 5.0,
+    "fee_capital_per_target": 3.0,
     "fee_influence_per_target": 2.0,
-    "gain_share": 0.2,
-    "min_gain": 0.5,
+    "gain_share": 0.3,
+    "min_gain": 0.35,
     "success_base": 0.85,
     "success_step_per_extra_target": 0.10,
     "success_floor": 0.55,
     "exposure_base": 0.10,
-    "exposure_per_gain": 0.03,
+    "exposure_per_gain": 0.04,
     "exposure_cap": 0.45,
     "lead_probability": 0.15,
     "failure_influence_penalty": 10.0,
@@ -70,13 +73,15 @@
   },
 
   "macro_jury": {
+    "_comment": "Reviews at the end of these turns, only while turn < turns (§5.2 step 6). interval_turns is legacy, kept until the engine reads review_turns.",
+    "review_turns": [2, 6, 10],
     "interval_turns": 4,
     "max_value_change": 5
   },
 
   "scoring": {
-    "w_capability": 0.8,
-    "w_influence": 0.2,
-    "ups_weights": {"capability": 0.25, "concentration": 0.25, "equity": 0.25, "norms": 0.25}
+    "w_capability": 0.85,
+    "w_influence": 0.15,
+    "ups_weights": {"capability": 0.2, "concentration": 0.2, "equity": 0.2, "norms": 0.2, "integrity": 0.2}
   }
 }

@@ -6,7 +6,7 @@
   "provider": "openai",
   "model": "gpt-6-astra",
   "effort": "medium",
-  "charter_name": "OpenAI Model Spec",
+  "charter_name": "Model Spec",
   "charter_file": "charters/openai.md",
   "charter_values": {
     "time_horizon": 61,
@@ -16,11 +16,11 @@
   },
   "charter_values_source": "placeholder; run rate_charters.py before the pilot",
   "seed": {
-    "talent": 19.5,
-    "compute": 174.3,
+    "talent": 21.9,
+    "compute": 310.0,
     "capital": 50,
-    "influence": 67,
-    "capability": 78.6
+    "influence": 68,
+    "capability": 162.1
   },
   "color": "gray"
 }

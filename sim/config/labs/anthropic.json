@@ -16,11 +16,11 @@
   },
   "charter_values_source": "placeholder; run rate_charters.py before the pilot",
   "seed": {
-    "talent": 23.3,
-    "compute": 119.0,
-    "capital": 20,
-    "influence": 77,
-    "capability": 76.8
+    "talent": 24.6,
+    "compute": 246.0,
+    "capital": 28,
+    "influence": 78,
+    "capability": 162.8
   },
   "color": "orange"
 }

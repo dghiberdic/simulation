@@ -8,8 +8,8 @@
     "democratic_tendency": 70
   },
   "macro_jury_models": [
-    "claude-sonnet-5",
-    "gpt-6-sol",
-    "gemini-3.1-pro"
+    "kimi-k3",
+    "deepseek-v4-pro",
+    "qwen-3.8-max"
   ]
 }

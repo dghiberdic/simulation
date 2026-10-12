@@ -4,11 +4,12 @@ Economy (spec §3.1–§3.3), ported from the v8 stage-1 check (income-based
 talent target, Capital floored at 0 with no upper cap).
 
 Per turn, before proposals (§5.2 step 1):
-  income      I = Cap₀/8 · √((C · Inf) ÷ (C₀ · Inf₀))
+  income      I = Cap₀/8 · √((C̃ · Inf) ÷ (C̃₀ · Inf₀))     C̃ = C − 100 (capability_offset)
   talent      target = max(0.5 · seed, seed · √((I · Inf) ÷ (I₀ · Inf₀)));
               move r of the way to target, then renormalise to 100
-  know-how    ΔK = 1.2 · (talent ÷ 20) + N(0, σ)       (no compounding)
-  capability  C = a · ln(compute) + K
+  know-how    ΔK = 0.85 · (talent ÷ 20) + N(0, σ)      (no compounding)
+  capability  C = a · ln(compute) + K                  (a = 3.6)
+  stock       US +150 and China +11 units per turn from turn 2 (us_growth_start_turn)
 
 After execution, purchases are granted pro rata to units requested under the
 binding limit min(national cap, scenario ceiling).
@@ -16,7 +17,8 @@ binding limit min(national cap, scenario ceiling).
 
 import math
 import random
-from typing import Any, Dict, List
+from statistics import NormalDist
+from typing import Any, Callable, Dict, List, Optional
 
 from core.state import VALUE_AXES, LabState, WorldState
 
@@ -30,9 +32,21 @@ def base_income(lab: LabState, econ: Dict[str, Any]) -> float:
     return lab.seed["capital"] / econ["income_divisor"]
 
 
+def capability_offset(econ: Dict[str, Any]) -> float:
+    """The offset in C̃ = C − offset (§3.1); used in income and UPS ratios only."""
+    return float(econ.get("capability_offset", 0.0))
+
+
 def capital_income(lab: LabState, econ: Dict[str, Any]) -> float:
-    c = lab.capability(econ["capability_compute_elasticity"])
-    ratio = (c * lab.influence) / (lab.seed["capability"] * lab.seed["influence"])
+    """I = Cap₀/8 · √((C̃ · Inf) ÷ (C̃₀ · Inf₀)), C̃ = C − capability_offset (§3.1).
+    A non-positive C̃ (or seed C̃) gives zero income rather than a math error."""
+    off = capability_offset(econ)
+    c_t = lab.capability(econ["capability_compute_elasticity"]) - off
+    c0_t = lab.seed["capability"] - off
+    denom = c0_t * lab.seed["influence"]
+    if denom <= 0:
+        return 0.0
+    ratio = (c_t * lab.influence) / denom
     return base_income(lab, econ) * math.sqrt(max(ratio, 0.0))
 
 
@@ -74,11 +88,26 @@ def value_pull(values: Dict[str, int], state_values: Dict[str, int],
 # Turn steps
 # ---------------------------------------------------------------------------
 
+def shock_from_uniform(u: float, sd: float) -> float:
+    """Know-how shock N(0, sd) from one uniform draw u (inverse normal CDF), so a
+    keyed, logged uniform (CODE_V5_CONTRACT: purpose "shock") fixes the shock."""
+    if not sd:
+        return 0.0
+    u = min(max(u, 1e-12), 1.0 - 1e-12)
+    return sd * NormalDist().inv_cdf(u)
+
+
 def macro_growth(labs: List[LabState], world: WorldState, cfg: Dict[str, Any],
-                 rng: random.Random) -> Dict[str, Any]:
+                 rng: random.Random,
+                 shock_uniform: Optional[Callable[[int, str], float]] = None) -> Dict[str, Any]:
     """
     §5.2 step 1 for all seats: invest_capital repayment, Capital income,
-    talent drift, know-how growth with shock, and national stock growth.
+    talent drift, know-how growth with shock, and national stock growth
+    (from turn compute.us_growth_start_turn).
+
+    shock_uniform(turn, lab_key) -> u in (0, 1), if given, supplies each seat's
+    shock as a keyed uniform (e.g. lambda t, k: keyed.uniform(t, "shock", None, k));
+    otherwise shocks come from rng.gauss as before.
 
     Returns:
         {"income": {key: float}, "talent": {key: float}, "shock": {key: float},
@@ -108,16 +137,24 @@ def macro_growth(labs: List[LabState], world: WorldState, cfg: Dict[str, Any],
 
     sd = econ["know_how_shock_sd"]
     for lab in labs:
-        shock = rng.gauss(0.0, sd) if sd else 0.0
+        if shock_uniform is not None:
+            shock = shock_from_uniform(shock_uniform(world.turn, lab.key), sd)
+        else:
+            shock = rng.gauss(0.0, sd) if sd else 0.0
         growth = econ["know_how_growth"] * lab.talent / econ["know_how_reference_talent_share"]
         lab.know_how += growth + shock
         record["shock"][lab.key] = round(shock, 3)
         record["know_how_growth"][lab.key] = round(growth, 3)
 
-    if world.turn > 1:
+    if world.turn >= growth_start_turn(cfg):
         world.us_stock += world.us_growth
         world.china_stock += world.china_growth
     return record
+
+
+def growth_start_turn(cfg: Dict[str, Any]) -> int:
+    """First turn on which US (and China) stock grows (§3.1, §5.2 step 1: from turn 2)."""
+    return int(cfg.get("compute", {}).get("us_growth_start_turn", 2))
 
 
 def apply_value_pull(labs: List[LabState], world: WorldState, cfg: Dict[str, Any]) -> None:
