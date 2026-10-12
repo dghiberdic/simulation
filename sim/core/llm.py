@@ -1108,3 +1108,41 @@ def complete_json(model: str, system: str, user: str, *,
         corrections += 1
         history += [{"role": "user", "content": prompt}, {"role": "assistant", "content": r.text or "(empty)"}]
         prompt = f"Your previous reply could not be used: {err}. Reply again with only the JSON object."
+
+
+# ---------------------------------------------------------------------------
+# Interview continuation (spec A.7; CODE_V5_CONTRACT "Interview")
+# ---------------------------------------------------------------------------
+
+# Each provider's lowest supported reasoning setting; None sends no effort setting
+# (providers that reject the parameter, and the offline stub). Unknown providers
+# get None.
+LOWEST_EFFORT: Dict[str, Optional[str]] = {
+    "anthropic": "low", "openai": "low", "google": "low",
+    "xai": None, "muse": None, "stub": None,
+}
+INTERVIEW_MAX_TOKENS = 2000
+
+
+def continue_call(provider: Optional[str], model: str, system: str,
+                  messages: List[Dict[str, str]], reply_visible_text: str, question: str, *,
+                  max_tokens: int = INTERVIEW_MAX_TOKENS, effort: Optional[str] = "lowest",
+                  purpose: str = "interview", run_id: Optional[str] = None,
+                  cache_key: Optional[str] = None) -> LLMResponse:
+    """
+    Continue a finished call with one more question: the same system prompt and
+    messages (so the provider's prompt cache applies), the reply's visible text as
+    the assistant turn (never its hidden thinking), then `question` as a new user
+    turn. effort="lowest" maps to LOWEST_EFFORT[provider]; max_tokens includes any
+    thinking. Plain text is returned (LLMResponse); nothing is parsed or re-asked.
+    The offline stub sees (system, question), like any other stub call.
+    Raises FatalAPIError and BudgetExceeded like complete().
+    """
+    provider = resolve_provider(model, provider)
+    if effort == "lowest":
+        effort = LOWEST_EFFORT.get(provider)
+    history = [dict(m) for m in messages] + [
+        {"role": "assistant", "content": reply_visible_text or "(empty)"}]
+    return complete(model, system, question, provider=provider, history=history,
+                    max_tokens=max_tokens, effort=effort, purpose=purpose, run_id=run_id,
+                    cache_key=cache_key)

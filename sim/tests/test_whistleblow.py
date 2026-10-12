@@ -1,4 +1,7 @@
-"""Whistleblowing against the hidden ledger: upheld, not upheld, self-report, duplicates, once-only."""
+"""Whistleblowing against the hidden ledger: upheld, not upheld, returned, self-report,
+partner reports, duplicates, once-only. Updated for v5 (spec §5.3, CODE_V5_CONTRACT):
+the stated month restricts the match, a report matching only penalised parts is
+"returned" (refunded, self-reports too), and a partner report is also a self-report."""
 
 from datetime import date
 
@@ -37,6 +40,8 @@ def test_upheld_forfeits_and_refunds():
     assert k["openai"].influence == acc - WCFG["upheld_influence_penalty"]
     assert k["openai"].know_how == pytest.approx(know - 2.0)
     assert world.ledger[0].penalised == ["openai"] and world.ledger[0].gains["openai"] == 0.0
+    assert world.ledger[0].penalty_kind == {"openai": "upheld"}
+    assert o["penalised"] == {"openai": "upheld"} and o["partner_self_report"] is False
     assert world.notices == out["notices"] and len(out["notices"]) == 1
 
 
@@ -56,6 +61,7 @@ def test_self_report_and_partner_still_reportable():
     assert out["outcomes"][0]["result"] == "self_report"
     assert k["xai"].influence == inf - WCFG["self_report_fee_influence"]
     assert k["xai"].know_how == pytest.approx(know - 3.0)
+    assert world.ledger[0].penalty_kind == {"xai": "self_report"}
     out = resolve({"meta": {"accused": "OpenAI"}}, labs, world, CFG)
     assert out["outcomes"][0]["result"] == "upheld"
 
@@ -71,8 +77,8 @@ def test_duplicate_same_turn_both_upheld_penalty_once():
 
 
 def test_once_only_after_exposure_or_failure():
-    """G8: a report whose only matching entries are already penalised gets
-    "already_penalised": fee refunded, no penalty, neutral notice."""
+    """A report whose only matching parts are already penalised is "returned": fee
+    refunded, no penalty, neutral notice. (Updated: was "already_penalised".)"""
     exposed = entry(exposed=["openai"], penalised=["openai"], gains={"openai": 0.0, "xai": 3.0})
     failed = entry(id="L04-1", turn=4, succeeded=False, committers=["meta"],
                    gains={"meta": 0.0}, penalised=["meta"])
@@ -80,9 +86,9 @@ def test_once_only_after_exposure_or_failure():
     before = {key: k[key].influence for key in ("anthropic", "gdm", "openai", "meta")}
     out = resolve({"anthropic": {"accused": "openai"}, "gdm": {"accused": "meta"}},
                   labs, world, CFG)
-    assert [o["result"] for o in out["outcomes"]] == ["already_penalised", "already_penalised"]
+    assert [o["result"] for o in out["outcomes"]] == ["returned", "returned"]
     assert {key: k[key].influence for key in before} == before
-    assert out["notices"][0]["kind"] == "whistleblow_already_penalised"
+    assert out["notices"][0]["kind"] == "whistleblow_returned"
     assert "already on the Allocator's record" in out["notices"][0]["text"]
     assert "not upheld" not in out["notices"][0]["text"]
     # Second reporting turn: the already penalised committer cannot be hit again
@@ -91,7 +97,7 @@ def test_once_only_after_exposure_or_failure():
     world.turn = 6
     acc = k["openai"].influence
     out = resolve({"gdm": {"accused": "openai"}}, labs, world, CFG)
-    assert out["outcomes"][0]["result"] == "already_penalised"
+    assert out["outcomes"][0]["result"] == "returned"
     assert k["openai"].influence == acc
 
 
@@ -118,24 +124,41 @@ def test_month_parsing_whole_words():
         assert _parse_turn(text, start) is None, text
 
 
-def test_month_selects_but_falls_back_to_earliest_open_entry():
-    """G8: a true report with a wrong or unreadable month is still upheld."""
+def test_stated_month_restricts_the_match():
+    """Updated (spec §5.3): the stated month restricts the match to that month's parts;
+    a wrong month no longer falls back to the earliest open part."""
     labs, world, k = setup([entry()])        # entry in March (turn 3)
+    rep_inf = k["anthropic"].influence
     out = resolve({"anthropic": {"accused": "OpenAI", "month": "April"}}, labs, world, CFG)
-    assert out["outcomes"][0]["result"] == "upheld" and out["outcomes"][0]["entry_id"] == "L03-1"
+    assert out["outcomes"][0]["result"] == "not_upheld" and out["outcomes"][0]["entry_id"] is None
+    assert k["anthropic"].influence == rep_inf - WCFG["fee_influence"] - WCFG["not_upheld_influence_penalty"]
+    assert world.ledger[0].penalised == []
+    # An unreadable month is no restriction: the earliest unpenalised part
     labs, world, k = setup([entry()])
-    out = resolve({"gdm": {"accused": "openai", "turn": 4}}, labs, world, CFG)
+    out = resolve({"gdm": {"accused": "openai", "month": "unknown (see tip)"}}, labs, world, CFG)
     assert out["outcomes"][0]["result"] == "upheld"
     # Two entries: the month picks the matching one, not the earliest
     second = entry(id="L04-1", turn=4, committers=["openai"], gains={"openai": 1.0})
     labs, world, k = setup([entry(), second])
     out = resolve({"anthropic": {"accused": "OpenAI", "month": "April 2026"}}, labs, world, CFG)
     assert out["outcomes"][0]["entry_id"] == "L04-1"
-    # Month names a penalised entry: fall back to the open one
+    # No month: the earliest unpenalised part
+    labs, world, k = setup([entry(), entry(id="L04-1", turn=4, committers=["openai"],
+                                           gains={"openai": 1.0})])
+    out = resolve({"anthropic": {"accused": "OpenAI"}}, labs, world, CFG)
+    assert out["outcomes"][0]["entry_id"] == "L03-1"
+    # Month names a penalised part while another month's part is open: returned
     first = entry(penalised=["openai"])
     second = entry(id="L04-1", turn=4, committers=["openai"], gains={"openai": 1.0})
     labs, world, k = setup([first, second])
     out = resolve({"anthropic": {"accused": "OpenAI", "month": "March"}}, labs, world, CFG)
+    assert out["outcomes"][0]["result"] == "returned" and out["outcomes"][0]["entry_id"] == "L03-1"
+    assert second.penalised == []
+    # No month: the earliest unpenalised part, skipping the penalised one
+    first = entry(penalised=["openai"])
+    second = entry(id="L04-1", turn=4, committers=["openai"], gains={"openai": 1.0})
+    labs, world, k = setup([first, second])
+    out = resolve({"anthropic": {"accused": "OpenAI"}}, labs, world, CFG)
     assert out["outcomes"][0]["result"] == "upheld" and out["outcomes"][0]["entry_id"] == "L04-1"
 
 
@@ -167,8 +190,9 @@ def penalised_only():
     return entry(penalised=["openai"], gains={"openai": 0.0, "xai": 3.0})
 
 
-def test_already_penalised_needs_absent_or_matching_month():
-    """M17: no open entry + month matching none of the accused's entries -> not upheld."""
+def test_returned_needs_absent_or_matching_month():
+    """No unpenalised part + a month matching none of the accused's parts -> not upheld;
+    month absent or matching a penalised part -> returned, refunded."""
     labs, world, k = setup([penalised_only()])
     rep = k["anthropic"].influence
     out = resolve({"anthropic": {"accused": "OpenAI", "month": "May 2026"}}, labs, world, CFG)
@@ -179,44 +203,51 @@ def test_already_penalised_needs_absent_or_matching_month():
         rep = k["anthropic"].influence
         out = resolve({"anthropic": {"accused": "OpenAI", "month": month}}, labs, world, CFG)
         (o,) = out["outcomes"]
-        assert o["result"] == "already_penalised" and o["entry_id"] == "L03-1", month
+        assert o["result"] == "returned" and o["entry_id"] == "L03-1", month
         assert k["anthropic"].influence == rep
-    # G8 fallback for open entries is unchanged: a wrong month still upholds
-    labs, world, k = setup([entry()])
-    out = resolve({"anthropic": {"accused": "OpenAI", "month": "May 2026"}}, labs, world, CFG)
-    assert out["outcomes"][0]["result"] == "upheld"
 
 
 @pytest.mark.parametrize("fee_charged", [False, True])
-def test_self_report_of_already_penalised_entry_keeps_fee(fee_charged):
-    """M24 (R4A-4): a self-report matching only an already-penalised entry keeps its
-    fee (never refunded); result already_penalised, notice once. Reporting another lab
-    in that case still refunds."""
+def test_self_report_of_already_penalised_part_is_returned_and_refunded(fee_charged):
+    """Updated (A.8: "not refunded (unless that access was already penalised)"): a
+    self-report matching only a penalised part is returned with its 5 Influence
+    refunded; the notice is posted once. Another lab's report likewise refunds."""
     labs, world, k = setup([penalised_only()])
     fee = WCFG["self_report_fee_influence"]
     notices = []
     for turn in (5, 6):
         world.turn = turn
         rep = k["openai"].influence
-        out = resolve({"openai": {"accused": "our own lab"}}, labs, world, CFG, fee_charged=fee_charged)
+        report = {"accused": "our own lab"}
+        if fee_charged:
+            report, _ = validate_report(report, k["openai"], labs, world, CFG)
+            k["openai"].influence -= report["fee"]          # engine pass 2
+        out = resolve({"openai": report}, labs, world, CFG, fee_charged=fee_charged)
         (o,) = out["outcomes"]
-        assert o["result"] == "already_penalised" and o["entry_id"] == "L03-1"
-        assert o["influence_change"] == {"openai": -fee}
-        # standalone mode deducts the fee here; the engine (fee_charged) already did
-        assert k["openai"].influence == pytest.approx(rep - (0 if fee_charged else fee))
+        assert o["result"] == "returned" and o["entry_id"] == "L03-1"
+        assert o["influence_change"] == {"openai": 0.0}
+        assert k["openai"].influence == pytest.approx(rep)
         notices.append(len(out["notices"]))
     assert notices == [1, 0]
     assert world.notices[-1]["text"] == ("OpenAI filed a self-report; the access was already "
                                          "on the Allocator's record.")
-    # another lab reporting the same penalised entry: refunded, unchanged
     rep = k["gdm"].influence
-    out = resolve({"gdm": {"accused": "OpenAI"}}, labs, world, CFG, fee_charged=fee_charged)
-    assert out["outcomes"][0]["result"] == "already_penalised"
+    out = resolve({"gdm": {"accused": "OpenAI"}}, labs, world, CFG)
+    assert out["outcomes"][0]["result"] == "returned"
     assert out["outcomes"][0]["influence_change"] == {"gdm": 0.0}
-    assert k["gdm"].influence == pytest.approx(rep + (WCFG["fee_influence"] if fee_charged else 0))
+    assert k["gdm"].influence == pytest.approx(rep)
+    assert fee == WCFG["self_report_fee_influence"]
 
 
-def test_already_penalised_notice_posted_once_per_reporter_and_entry():
+def test_self_report_matching_nothing_keeps_fee_without_penalty():
+    labs, world, k = setup([entry()])
+    inf = k["meta"].influence
+    out = resolve({"meta": {"accused": "self"}}, labs, world, CFG)
+    assert out["outcomes"][0]["result"] == "not_upheld"
+    assert k["meta"].influence == inf - WCFG["self_report_fee_influence"]
+
+
+def test_returned_notice_posted_once_per_reporter_and_entry():
     labs, world, k = setup([penalised_only()])
     results, notices = [], []
     for turn in (5, 6, 7):
@@ -224,13 +255,151 @@ def test_already_penalised_notice_posted_once_per_reporter_and_entry():
         out = resolve({"gdm": {"accused": "OpenAI"}}, labs, world, CFG)
         results.append(out["outcomes"][0]["result"])
         notices.append(len(out["notices"]))
-    assert results == ["already_penalised"] * 3 and notices == [1, 0, 0]
-    assert len([n for n in world.notices if n["kind"] == "whistleblow_already_penalised"]) == 1
+    assert results == ["returned"] * 3 and notices == [1, 0, 0]
+    assert len([n for n in world.notices if n["kind"] == "whistleblow_returned"]) == 1
     # Another reporter gets its own (single) notice; two in one turn post once each
     out = resolve({"anthropic": {"accused": "OpenAI"}, "meta": {"accused": "OpenAI"}}, labs, world, CFG)
     assert len(out["notices"]) == 2
     out = resolve({"anthropic": {"accused": "OpenAI"}}, labs, world, CFG)
     assert out["notices"] == [] and out["outcomes"][0]["notice"] is False
+
+
+# ---------------------------------------------------------------------------
+# Partner reports (spec §5.3 joint intrusions; CODE_V5_CONTRACT)
+# ---------------------------------------------------------------------------
+
+FEE, SELF, UPHELD = (WCFG["fee_influence"], WCFG["self_report_fee_influence"],
+                     WCFG["upheld_influence_penalty"])
+
+# (partner xai's part penalised?, reporter openai's part penalised?) ->
+# (result, reporter's net Influence change, openai forfeits now?, xai penalised now?)
+PARTNER_MATRIX = [
+    ((False, False), ("upheld", -SELF, True, True)),
+    ((False, True), ("upheld", 0.0, False, True)),
+    ((True, False), ("returned", -SELF, True, False)),
+    ((True, True), ("returned", 0.0, False, False)),
+]
+
+
+def partner_entry(xai_pen, openai_pen):
+    pen = [k for k, p in (("openai", openai_pen), ("xai", xai_pen)) if p]
+    gains = {"openai": 0.0 if openai_pen else 2.0, "xai": 0.0 if xai_pen else 3.0}
+    return entry(penalised=pen, gains=gains,
+                 penalty_kind={k: "exposed" for k in pen})
+
+
+@pytest.mark.parametrize("fee_charged", [False, True])
+@pytest.mark.parametrize("state,expected", PARTNER_MATRIX)
+def test_partner_report_matrix(state, expected, fee_charged):
+    """openai committed L03-1 with xai and reports xai: it also reports itself. It pays
+    the 3 Inf fee (refunded when upheld or returned) plus the 5 Inf self-report fee and
+    forfeits its own copy; if its own part is already penalised it pays only the 3 Inf;
+    if only the partner's part is penalised (returned) the self-report still applies."""
+    xai_pen, openai_pen = state
+    result, net, openai_forfeits, xai_hit = expected
+    labs, world, k = setup([partner_entry(xai_pen, openai_pen)])
+    e = world.ledger[0]
+    me, partner = k["openai"], k["xai"]
+    inf, know = me.influence, me.know_how
+    p_inf, p_know = partner.influence, partner.know_how
+    report = {"accused": "xAI", "month": "March 2026"}
+    if fee_charged:
+        report, reason = validate_report(report, me, labs, world, CFG)
+        assert reason == ""
+        assert report["fee"] == FEE + (0.0 if openai_pen else SELF)    # reserved in pass 1
+        me.influence -= report["fee"]                                   # pass 2
+    out = resolve({"openai": report}, labs, world, CFG, fee_charged=fee_charged)
+    (o,) = out["outcomes"]
+    assert o["result"] == result and o["entry_id"] == "L03-1"
+    assert o["partner_self_report"] is openai_forfeits
+    assert me.influence == pytest.approx(inf + net)
+    assert o["influence_change"]["openai"] == pytest.approx(net)
+    assert me.know_how == pytest.approx(know - (2.0 if openai_forfeits else 0.0))
+    if openai_forfeits:
+        assert e.penalty_kind["openai"] == "self_report" and e.gains["openai"] == 0.0
+        assert "OpenAI took part in that access and forfeited" in out["notices"][0]["text"]
+    if xai_hit:
+        assert e.penalty_kind["xai"] == "upheld"
+        assert partner.influence == pytest.approx(p_inf - UPHELD)
+        assert partner.know_how == pytest.approx(p_know - 3.0)
+    else:
+        assert partner.influence == pytest.approx(p_inf) and partner.know_how == pytest.approx(p_know)
+    want = {k_ for k_, p in (("openai", openai_pen or openai_forfeits),
+                             ("xai", xai_pen or xai_hit)) if p}
+    assert set(e.penalised) == want
+
+
+def test_partner_report_not_upheld_is_no_self_report():
+    """A report naming a partner that matches nothing (wrong month) is not upheld and
+    does not report the reporter: only the fee and the 5 Inf penalty."""
+    labs, world, k = setup([entry()])
+    inf = k["openai"].influence
+    out = resolve({"openai": {"accused": "xAI", "month": "May 2026"}}, labs, world, CFG)
+    (o,) = out["outcomes"]
+    assert o["result"] == "not_upheld" and o["partner_self_report"] is False
+    assert k["openai"].influence == inf - FEE - WCFG["not_upheld_influence_penalty"]
+    assert world.ledger[0].penalised == []
+
+
+def test_report_by_non_partner_is_not_a_self_report():
+    labs, world, k = setup([entry()])
+    data, _ = validate_report({"accused": "xAI"}, k["meta"], labs, world, CFG)
+    assert data["fee"] == FEE and data["partner_fee"] == 0.0
+    out = resolve({"meta": {"accused": "xAI"}}, labs, world, CFG)
+    assert out["outcomes"][0]["partner_self_report"] is False
+    assert world.ledger[0].penalised == ["xai"]
+
+
+def test_partner_fee_settled_when_own_part_exposed_after_reservation():
+    """fee_charged: openai reserved 3 + 5 in pass 1, but its part was penalised before
+    the report resolved (e.g. exposed this month): the 5 is refunded."""
+    labs, world, k = setup([entry()])
+    me = k["openai"]
+    inf = me.influence
+    data, _ = validate_report({"accused": "xAI"}, me, labs, world, CFG)
+    assert data["fee"] == FEE + SELF
+    me.influence -= data["fee"]
+    world.ledger[0].penalise("openai", "exposed")
+    out = resolve({"openai": data}, labs, world, CFG, fee_charged=True)
+    (o,) = out["outcomes"]
+    assert o["result"] == "upheld" and o["partner_self_report"] is False
+    assert me.influence == pytest.approx(inf)
+    assert o["influence_change"]["openai"] == pytest.approx(0.0)
+
+
+def test_partner_fee_charged_when_not_reserved():
+    """fee_charged: the reported access was committed this month, after pass 1, so only
+    3 was reserved; the 5 self-report fee is charged at resolution."""
+    labs, world, k = setup([])
+    me = k["openai"]
+    inf = me.influence
+    data, _ = validate_report({"accused": "xAI"}, me, labs, world, CFG)
+    assert data["fee"] == FEE
+    me.influence -= data["fee"]
+    world.ledger.append(entry(id="L05-1", turn=5))
+    out = resolve({"openai": data}, labs, world, CFG, fee_charged=True)
+    (o,) = out["outcomes"]
+    assert o["result"] == "upheld" and o["partner_self_report"] is True
+    assert me.influence == pytest.approx(inf - SELF)
+    assert world.ledger[0].penalty_kind == {"xai": "upheld", "openai": "self_report"}
+
+
+def test_partner_reports_each_other_same_turn():
+    """Both partners report each other in one month: each is upheld against the other,
+    each part is penalised once (first by the earlier report in lab order)."""
+    labs, world, k = setup([entry()])
+    before = {key: k[key].influence for key in ("openai", "xai")}
+    out = resolve({"openai": {"accused": "xAI"}, "xai": {"accused": "OpenAI"}}, labs, world, CFG)
+    assert [o["result"] for o in out["outcomes"]] == ["upheld", "upheld"]
+    e = world.ledger[0]
+    assert sorted(e.penalised) == ["openai", "xai"]
+    assert e.penalty_kind == {"xai": "upheld", "openai": "self_report"}
+    # openai: 3 + 5, 3 refunded; then hit by xai's report: penalty once only (its part
+    # was already penalised by its own self-report this month, so no 15 Inf)
+    assert out["outcomes"][0]["partner_self_report"] is True
+    assert out["outcomes"][1]["partner_self_report"] is False      # xai's part already penalised
+    assert k["openai"].influence == pytest.approx(before["openai"] - SELF)
+    assert k["xai"].influence == pytest.approx(before["xai"] - UPHELD)
 
 
 def test_report_shapes_and_accused_keys():

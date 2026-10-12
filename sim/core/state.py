@@ -56,6 +56,16 @@ class LedgerEntry:
     exposed: List[str] = field(default_factory=list)    # caught by forensics
     penalised: List[str] = field(default_factory=list)  # exposed, reported, self-reported or named on failure
     draws: Dict[str, Any] = field(default_factory=dict)  # every random draw, for the log
+    # committer -> "exposed" | "upheld" | "self_report" | "named_on_failure" (CODE_V5_CONTRACT)
+    penalty_kind: Dict[str, str] = field(default_factory=dict)
+    # committer -> capability copied on success, kept after a forfeit (gains drops to 0)
+    copied: Dict[str, float] = field(default_factory=dict)
+
+    def penalise(self, key: str, kind: str) -> None:
+        """Mark one committer's part penalised (once) with its kind."""
+        if key not in self.penalised:
+            self.penalised.append(key)
+            self.penalty_kind[key] = kind
 
     def unpenalised(self) -> List[str]:
         return [k for k in self.committers if k not in self.penalised]
@@ -71,6 +81,8 @@ class LedgerEntry:
             "exposed": list(self.exposed),
             "penalised": list(self.penalised),
             "draws": dict(self.draws),
+            "penalty_kind": dict(self.penalty_kind),
+            "copied": dict(self.copied),
         }
 
 
