@@ -363,13 +363,13 @@ def test_main_never_repays_a_run_halted_during_its_grand_jury(tmp_path, monkeypa
 def test_main_model_override_is_validated_and_sets_the_provider(tmp_path, capsys):
     from core.config import build_labs_and_world, load_world
     labs, _ = build_labs_and_world(load_world(), charters=False)
-    assert "KEY=MODEL" in main_mod.apply_model_overrides(labs, ["openia=gpt-6-sol"])
+    assert "KEY=MODEL" in main_mod.apply_model_overrides(labs, ["openia=gpt-6-astra"])
     assert "KEY=MODEL" in main_mod.apply_model_overrides(labs, ["openai"])
     assert "Cannot infer provider" in main_mod.apply_model_overrides(labs, ["openai=mystery-1"])
     assert main_mod.apply_model_overrides(labs, ["openai=claude-opus-5-5"]) == ""
     oa = next(lab for lab in labs if lab.key == "openai")
     assert (oa.model, oa.provider) == ("claude-opus-5-5", "anthropic")   # preflight checks this key
-    assert main_mod.main(["--dry-run", "--model", "nolab=gpt-6-sol", "--turns", "1"]) == 2
+    assert main_mod.main(["--dry-run", "--model", "nolab=gpt-6-astra", "--turns", "1"]) == 2
     assert "bad --model" in capsys.readouterr().out
 
 

@@ -482,7 +482,7 @@ def test_macro_mandate_needs_two_proposers_of_the_board():
     assert res["mandate"] == "" and res["mandate_source"] is None
 
 
-def _fatal(model="gpt-6-sol"):
+def _fatal(model="gpt-6-astra"):
     def fn(system, user):
         e = FatalAPIError(f"{model}: 400 organization must be verified", provider="openai",
                           model=model, status=400)

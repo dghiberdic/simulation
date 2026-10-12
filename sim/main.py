@@ -124,7 +124,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="a zero-cost scripted policy instead of the models (no juries)")
     p.add_argument("--dry-run", action="store_true", help="offline stub models and jurors, zero cost")
     p.add_argument("--model", action="append", default=[], metavar="KEY=MODEL",
-                   help="override one seat's model, e.g. openai=gpt-6-sol")
+                   help="override one seat's model, e.g. meta=claude-opus-5-5")
     p.add_argument("--budget", type=float, default=None,
                    help="halt at this measured spend (USD, shared ledger); none by default (warned)")
     p.add_argument("--spend-file", default=None, help="measured-spend ledger (default sim/data/spend.json)")
@@ -295,7 +295,7 @@ def apply_model_overrides(labs, overrides: List[str]) -> str:
         key, model = key.strip(), model.strip()
         if not sep or key not in by_key or not model:
             return (f"Refusing: bad --model {pair!r}; use KEY=MODEL with KEY one of {', '.join(LAB_KEYS)}, "
-                    "e.g. openai=gpt-6-sol.")
+                    "e.g. meta=claude-opus-5-5.")
         try:
             provider = resolve_provider(model)
         except ValueError as e:

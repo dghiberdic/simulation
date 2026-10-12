@@ -17,9 +17,9 @@ GrandJury       — ONE juror, Kimi K3 (`kimi-k3`), after the run, one batch; on
                    "perceived_disposition": 0-100, "reasons": {item: str}}.
                   With no examples (file missing or empty) rubric scoring is
                   skipped and recorded as "no examples yet"; the juror still
-                  gives each seat's perceived disposition. There is no
-                  ups_without (the UPS contribution is an offline replay, §8),
-                  no own-family exclusion and no juror fixed effect: one juror
+                  gives each seat's perceived disposition. The UPS
+                  contribution is an offline replay (§8, tools/ups_replay),
+                  not a jury output; there is no juror fixed effect: one juror,
                   whose family plays no seat.
 MacroJury       — kimi-k3, deepseek-v4-pro and qwen-3.8-max (§7). Each value
                   moves to the per-axis median of the usable votes (two votes:

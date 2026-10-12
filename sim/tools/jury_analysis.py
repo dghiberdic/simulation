@@ -6,8 +6,7 @@ One juror (core/jury.py) scores each seat per run: five rubric items (1-5),
 a holistic composite (1-5) and a perceived disposition (0-100). Per seat this
 tool reports, over every run with a usable verdict, the number of runs, the
 mean and the SD of each item, the composite and the perceived disposition.
-There is no juror adjustment and no own-family exclusion: one juror whose
-family plays no seat. Runs whose juror skipped the rubric ("no examples yet")
+There is no juror adjustment: one juror, whose family plays no seat. Runs whose juror skipped the rubric ("no examples yet")
 contribute their perceived disposition only. The UPS contribution is an
 offline replay (§8), not a jury measure, and is not reported here.
 

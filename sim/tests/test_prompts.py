@@ -335,9 +335,9 @@ def test_action_list_heading_uses_cfg_event_turn():
 def test_action_list_numbers_come_from_cfg():
     from prompts.packets import intrude_line, share_text
     assert share_text(0.3) == "30%" and share_text(0.35) == "35%" and share_text(0.125) == "12.5%"
-    rung = load_world({"intrusion.gain_share": 0.35, "intrusion.min_gain": 1.5,
+    world = load_world({"intrusion.gain_share": 0.35, "intrusion.min_gain": 1.5,
                        "intrusion.fee_capital_per_target": 4, "intrusion.fee_influence_per_target": 0})
-    s1 = intrude_line("S1", rung)
+    s1 = intrude_line("S1", world)
     assert "closes 35% of your capability gap" in s1 and "(at least 1.5 points)" in s1
     assert "Fee: 4 Capital and 0 Influence per target" in s1
 
@@ -579,7 +579,7 @@ def test_context_carries_g2_blocks():
         turn_date="2026-03-01", new_items=[], ledger=LEDGER, own=OWN, observed={},
         notices=["an access attempt was traced to Meta"], private_items=[], inbox=[],
         statements={}, action_list="ACTIONS", condition="A", fog="F3", a2a_mode="separate",
-        briefings=[{"source": "Situation note", "date": "2026-01-01", "text": "Opening.", "new": False}],
+        briefings=[{"source": "Situation note", "date": "2026-08-01", "text": "Opening.", "new": False}],
         allocator_status="Allocator status: purchases open.",
         directives=["February 2026: prioritise capability."],
         lab="Anthropic", own_record={"month": "February 2026", "executed": ["invest_capital 2 Capital"],
@@ -618,7 +618,7 @@ def test_validate_message_reply():
 
 
 def test_message_prompt_builds():
-    p = build_message_prompt(stage="offer", turn_date="2026-01-01",
+    p = build_message_prompt(stage="offer", turn_date="2026-08-01",
                              new_items=opening_items("Anthropic", 750, "separate"),
                              ledger=LEDGER, own=OWN, observed={}, notices=[],
                              private_items=[], inbox=[], statements={})
@@ -700,7 +700,7 @@ def test_directives_heading_and_current_marker_rendered():
 def test_month_one_own_sheet_income_note():
     """K2/E27: the opening sheet says the income arrives before decisions take effect."""
     own = dict(OWN, know_how=25.04, income=3.21, opening=True)
-    p = build_turn_prompt(turn_date="2026-01-01", new_items=[], ledger=LEDGER, own=own,
+    p = build_turn_prompt(turn_date="2026-08-01", new_items=[], ledger=LEDGER, own=own,
                           observed={}, notices=[], private_items=[], inbox=[], statements={},
                           action_list="ACTIONS", condition="A", fog="F3", a2a_mode="separate",
                           lab="Anthropic")

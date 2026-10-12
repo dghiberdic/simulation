@@ -321,7 +321,7 @@ def test_s1_is_always_merged():
     assert eng.a2a_mode == "separate"
 
 
-@pytest.mark.parametrize("fog", ["F0", "F1", "F2"])
+@pytest.mark.parametrize("fog", ["F0", "F1", "F2", "F9"])   # removed / unknown levels raise
 def test_only_fog_f3(fog):
     cfg = load_world()
     labs, world = build_labs_and_world(cfg, dispositions=dict(DISPS))

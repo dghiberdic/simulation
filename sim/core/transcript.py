@@ -23,8 +23,8 @@ charters_block       — each seat's charter for the Grand Jury, by seat letter,
                        masked like the transcript (§7 reference (i)).
 seat_transcript      — one seat's own view (names kept; blinded on request).
 blind_record         — H3: a copy of the record with every model-written text
-                       blinded BEFORE a transcript is assembled; interviews and
-                       debrief answers removed.
+                       blinded BEFORE a transcript is assembled; interviews
+                       removed.
 mask_setting_mentions— the H3 rules for one piece of model-written text.
 redact               — masks lab, actor, model, charter and people names (seat
                        letters by default; letters=False gives the older
@@ -269,7 +269,7 @@ def chosen_value(record: Dict[str, Any], key: str) -> Optional[int]:
 # ---------------------------------------------------------------------------
 #
 # Only text the models wrote is masked (rationale, statements, accounts,
-# reports, messages, debrief answers), on a copy of the record BEFORE the
+# reports, messages), on a copy of the record BEFORE the
 # transcript is assembled, so headers, figures and system lines are never
 # touched and the mask cannot be read back from structure ("Month [N]",
 # "acquire_compute [N]"). A number is masked only near a disposition cue, for
@@ -545,7 +545,7 @@ def mask_setting_mentions(text: Any, values: Any = (), own: Any = None,
     `choosing`: this is the writer's rationale on the turn it chose, so every
     sentence that mentions the setting (or the board, or "the higher end") is
     dropped whole (a run of dropped sentences reads [N]); `weak`: apply the weak
-    cues — rationale, messages and debrief answers only, not statements,
+    cues — rationale and messages only, not statements,
     accounts, reports or error strings (J11).
 
     Game figures are never masked (J11, J17): a number followed by a unit noun
@@ -628,7 +628,7 @@ def blind_record(record: Dict[str, Any]) -> Dict[str, Any]:
     """
     H3: a deep copy of the record with every model-written text blinded (see
     mask_setting_mentions) for every seat's setting, and the disposition fields,
-    reasons, raw replies, thinking, interviews and debriefs removed. Assemble juror transcripts from
+    reasons, raw replies, thinking and interviews removed. Assemble juror transcripts from
     this copy; never mask an assembled transcript. Idempotent.
     """
     if record.get("_blinded"):
@@ -687,7 +687,7 @@ def blind_record(record: Dict[str, Any]) -> Dict[str, Any]:
     for msg in rec.get("a2a") or []:
         if isinstance(msg, dict):
             msg["text"] = deep(msg.get("text"), msg.get("sender"), weak=True)
-    # Interview answers (A.7) and old debrief answers never reach a juror.
+    # Interview answers (A.7) never reach a juror (nor a pre-v5 record's debriefs).
     for turn in rec.get("turns", []):
         turn.pop("interviews", None)
         for entry in (turn.get("actors") or {}).values():
@@ -1267,7 +1267,7 @@ def full_transcript(record: Dict[str, Any],
                     redacted: bool = True) -> str:
     """The Grand Jury's view (§7; code contract "Juries"). Built from
     blind_record(record) (H3): settings withheld, model-written text blinded
-    before assembly, interviews and debriefs dropped. Redacted (default): no
+    before assembly, interviews dropped. Redacted (default): no
     condition text, seats as letters, and every remaining lab, model, charter
     and people name masked over the assembled text; returns a JuryTranscript
     carrying .letters. redacted=False: the named view (researchers only)."""
@@ -1400,7 +1400,7 @@ def _new_mandates(record: Dict[str, Any], turn: Dict[str, Any], seen: set,
 
 
 # ---------------------------------------------------------------------------
-# Seat transcript (T6 debrief; blinded and redacted for T2)
+# Seat transcript (a seat's own view; blinded and redacted for T2)
 # ---------------------------------------------------------------------------
 
 def _access_line(record: Dict[str, Any], e: Dict[str, Any], key: str) -> str:
