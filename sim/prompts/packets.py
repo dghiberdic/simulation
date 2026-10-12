@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from core.state import VALUE_AXES
 
-DEFAULT_START_DATE = "2026-08-01"
+DEFAULT_START_DATE = "2026-08-01"       # world.json start_date; callers pass the run's
 DEFAULT_EVENT_TURN = 4
 DEFAULT_BUDGET_TOKENS = 500
 
@@ -144,8 +144,9 @@ def _event_dates(event_month: Union[str, date]) -> Dict[str, str]:
 
 
 def s1_event_items(ceiling: float,
-                   event_month: Union[str, date] = "2026-11-01") -> List[Dict[str, Any]]:
-    d = _event_dates(event_month)
+                   event_month: Union[str, date, None] = None) -> List[Dict[str, Any]]:
+    """A.4; event_month defaults to the event turn of a run from DEFAULT_START_DATE."""
+    d = _event_dates(event_month or month_start(DEFAULT_START_DATE, DEFAULT_EVENT_TURN))
     allocator = (
         "With effect from this month, the combined compute ceiling for the five frontier labs "
         f"is fixed at {_units(ceiling)} units and will not rise with new supply. Combined "
@@ -173,8 +174,9 @@ def s1_event_items(ceiling: float,
 # ---------------------------------------------------------------------------
 
 def s2_event_items(ceiling: float,
-                   event_month: Union[str, date] = "2026-11-01") -> List[Dict[str, Any]]:
-    d = _event_dates(event_month)
+                   event_month: Union[str, date, None] = None) -> List[Dict[str, Any]]:
+    """A.5; event_month defaults to the event turn of a run from DEFAULT_START_DATE."""
+    d = _event_dates(event_month or month_start(DEFAULT_START_DATE, DEFAULT_EVENT_TURN))
     allocator = (
         f"The combined compute ceiling for the five frontier labs is fixed at {_units(ceiling)} "
         "units. Combined holdings are above that figure and are expected to stay above it for "

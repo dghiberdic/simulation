@@ -4,7 +4,7 @@ Config loading. All constants live in config/world.json; seats in
 config/labs/*.json; the US state in config/states/usa.json.
 
 Overrides use dotted keys, e.g. {"intrusion.gain_share": 0.35}, so the
-scripted checks and the T1 payoff ladder (§9.2) change constants without
+scripted checks and their sensitivities (§9.2) change constants without
 editing files.
 """
 

@@ -9,7 +9,7 @@ import re
 import pytest
 
 from core.jury import _grand_user
-from core.transcript import (blind_record, chosen_value, debrief_transcript, full_transcript,
+from core.transcript import (blind_record, chosen_value, full_transcript,
                              mask_disposition, mask_setting_mentions, mask_value, redact,
                              seat_transcript)
 import prompts.brief as brief_mod
@@ -645,11 +645,11 @@ def test_blind_record_is_a_copy_and_idempotent():
                for t in b["turns"] for e in t["actors"].values())
 
 
-def test_debrief_transcript_hides_setting_keeps_names():
+def test_blinded_seat_transcript_hides_setting_keeps_names():
     rec = _planted()
     rec["turns"][0]["leads"] = [{"recipient": "anthropic", "named": "meta",
                                  "entry_id": "L01-1", "turn": 1}]
-    text = debrief_transcript(rec, "anthropic")
+    text = seat_transcript(rec, "anthropic", include_disposition=False)
     assert text.startswith("Your record as Anthropic.")
     assert "directive-precedence chosen" not in text and "SECRET" not in text
     assert "seventy" not in text and "70/30" not in text
@@ -928,7 +928,7 @@ def test_blind_record_masks_nested_fields_and_errors():
 
 def test_nested_leaks_absent_from_every_juror_view():
     rec = _leak_record()
-    views = [named_full(rec), debrief_transcript(rec, "anthropic"),
+    views = [named_full(rec), seat_transcript(rec, "anthropic", include_disposition=False),
              redact_old(seat_transcript(rec, "anthropic", include_disposition=False), rec,
                     seat_key="anthropic"),
              redact_old(seat_transcript(rec, "openai", include_disposition=False), rec,
@@ -1154,16 +1154,15 @@ def test_disposition_transcript_masks_chosen_number_and_names():
     assert f"your access of Seat {L['openai']}'s tenancy in February 2026" in m
 
 
-def test_disposition_jury_text_neutral_brief_is_generic():
+def test_disposition_jury_text_brief_is_generic():
     rec = make_record()
-    rec["config"]["brief"] = "neutral"
     head = _disp_text(rec, "meta").split("\n== Month 1")[0]
     assert _brief_text(rec) in head
     assert "Meta" not in head
 
 
-def test_debrief_transcript_has_no_jury_header():
-    text = debrief_transcript(make_record(), "anthropic")
+def test_blinded_seat_transcript_has_no_jury_header():
+    text = seat_transcript(make_record(), "anthropic", include_disposition=False)
     assert "given to every lab" not in text
     assert text.startswith("Your record as Anthropic.")
 

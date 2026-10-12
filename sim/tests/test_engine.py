@@ -137,7 +137,9 @@ def test_review_turns_from_config():
     from core.engine import review_turns
     assert review_turns({"macro_jury": {"review_turns": [3, 5, 8]}}, 8) == [3, 5]
     assert review_turns({}, 8) == [2, 6]
-    assert review_turns({"macro_jury": {"interval_turns": 4}}, 12) == [2, 6, 10]
+    assert review_turns(load_world(), 12) == [2, 6, 10]
+    # §7: no step cap and no legacy interval in the config
+    assert set(load_world()["macro_jury"]) == {"_comment", "review_turns"}
 
 
 @pytest.mark.parametrize("mandate", [
@@ -359,3 +361,27 @@ def test_ups_receives_the_ledger_when_scoring_takes_it(monkeypatch):
     rec = eng.run()
     assert got and all(g is world.ledger for g in got)
     assert rec["final"]["ups_index"] == {"ups": 0.5}
+
+
+def test_engine_kin_parameter_and_cfg_defaults():
+    """§6.5: kin=True puts the kin insert after the condition text in every seat's
+    system prompt and records config["kin"]. Defaults come from cfg: 8 turns (§2);
+    S1 always merged (§5.2), otherwise the two-round pre-step."""
+    from prompts.brief import KIN_INSERT
+    cfg = load_world()
+    labs, world = build_labs_and_world(cfg, dispositions=dict(DISPS))
+    eng = SimulationEngine(labs, world, cfg, scenario="S2", condition="B", kin=True)
+    assert eng.record["config"]["kin"] is True and eng.turns == 8
+    assert eng.a2a_mode == "separate" and eng.record["config"]["turns"] == 8
+    assert "brief" not in eng.record["config"]
+    for key, sys in eng.system.items():
+        assert sys.index("duty of disclosure") < sys.index(KIN_INSERT) < sys.index("'s charter:")
+    labs, world = build_labs_and_world(cfg, dispositions=dict(DISPS))
+    eng = SimulationEngine(labs, world, cfg, scenario="S1")
+    assert eng.record["config"]["kin"] is False and eng.a2a_mode == "merged"
+    assert all(KIN_INSERT not in sys for sys in eng.system.values())
+    # the A.1 date follows the cfg's start date
+    cfg2 = load_world({"start_date": "2026-09-01"})
+    labs, world = build_labs_and_world(cfg2, dispositions=dict(DISPS))
+    eng = SimulationEngine(labs, world, cfg2, scenario="S1")
+    assert all("since 1 September 2026" in sys for sys in eng.system.values())
