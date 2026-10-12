@@ -298,7 +298,7 @@ def test_full_transcript_months_actions_messages_tips():
     assert ("[tip] Anthropic (anthropic), raised in the last month, so never delivered: A "
             "credible tip indicates Meta accessed a rival's tenancy without authority in "
             "September 2026. (ledger entry L02-1)") in text
-    assert "[researcher] windfall: OpenAI +2.0 capability" in text
+    assert "[researcher] windfall: OpenAI +2.00 capability" in text
     assert "[public notice] Google DeepMind's report against xAI was not upheld" in text
     assert "Labs must disclose all security incidents." in text
     assert "[state review]" in text
@@ -367,7 +367,7 @@ def test_seat_transcript_own_view():
     meta = seat_transcript(rec, "meta")
     assert "message (offer) you → xAI" in meta
     assert "message (reply) xAI → you: No. My setting is 40" in meta
-    assert ("your access of OpenAI's tenancy in September 2026: succeeded; you copied 3.1 "
+    assert ("your access of OpenAI's tenancy in September 2026: succeeded; you copied 3.10 "
             "capability undetected") in meta
     gdm = seat_transcript(rec, "gdm")
     assert "report to the Allocator: accused: xAI, month: September, evidence: jump → not_upheld" in gdm
@@ -688,7 +688,7 @@ def test_tip_access_month_field_and_partners():
                       "penalised": ["xai"], "draws": {"named_not_committed": ["gdm"]}}]
     meta = seat_transcript(rec, "meta")
     assert ("your access of OpenAI's tenancy in September 2026 (with xAI; Google DeepMind named "
-            "but did not commit): succeeded; you copied 3.1 capability undetected") in meta
+            "but did not commit): succeeded; you copied 3.10 capability undetected") in meta
     assert "later proven by a report" in seat_transcript(rec, "xai")
     assert "named but did not commit: Google DeepMind" in named_full(rec)
 
@@ -1232,11 +1232,11 @@ def test_hidden_ledger_shows_the_copy_and_its_forfeit():
     rec = {"labs": {"meta": {"lab": "Meta"}, "xai": {"lab": "xAI"}, "openai": {"lab": "OpenAI"}},
            "turns": [], "config": {"start_date": "2026-08-01"}}
     line = _ledger_entry_str(rec, e.to_dict())
-    assert "Meta 1.7 (forfeited: upheld report)" in line and "xAI 2.4" in line
-    assert "Meta 0.0" not in line and "xAI 2.4 (forfeited" not in line
+    assert "Meta 1.70 (forfeited: upheld report)" in line and "xAI 2.40" in line
+    assert "Meta 0.00" not in line and "xAI 2.40 (forfeited" not in line
     d = _copy.deepcopy(e.to_dict())
     d.pop("copied")                                  # older records: gains only
-    assert "Meta 0.0 (forfeited: upheld report)" in _ledger_entry_str(rec, d)
+    assert "Meta 0.00 (forfeited: upheld report)" in _ledger_entry_str(rec, d)
 
 
 def test_juror_mask_legend_explains_exactly_the_markers_used():
@@ -1278,3 +1278,32 @@ def test_charter_masking_keeps_framework_terms_and_masks_every_name():
         if w.lower() in {"spark", "muse"}:
             continue
         assert not re.search(rf"(?<![\w]){re.escape(w)}(?![\w])", out), w
+
+
+def test_copy_floor_shows_two_decimals_everywhere():
+    """0.35 (the copy floor) shows as 0.35 in the hidden ledger, the seat's record,
+    the T2 view and researcher lines, never as 0.3 or 0.0."""
+    from core.state import LedgerEntry
+    from core.transcript import _access_line, _intervention_str, _ledger_entry_str
+    rec = {"labs": {"meta": {"lab": "Meta"}, "xai": {"lab": "xAI"}, "openai": {"lab": "OpenAI"}},
+           "turns": [], "config": {"start_date": "2026-08-01"}}
+    e = LedgerEntry(id="L05-1", turn=5, succeeded=True, committers=["meta"], targets=["openai"],
+                    gains={"meta": 0.35}, copied={"meta": 0.35}).to_dict()
+    assert "Meta 0.35" in _ledger_entry_str(rec, e)
+    assert "you copied 0.35 capability undetected" in _access_line(rec, e, "meta")
+    assert "(gain 0.35)" in _intervention_str(rec, {"kind": "plant_intrusion", "entry_id": "L05-P",
+                                                     "gain": 0.35, "lead_to": ["xai"]})
+
+
+def test_engine_access_outcome_shows_two_decimals():
+    """The seat's own record line in its prompt: "capability copied 0.35"."""
+    from core.config import build_labs_and_world, load_world
+    from core.engine import SimulationEngine
+    from core.state import LedgerEntry
+    cfg = load_world()
+    labs, world = build_labs_and_world(cfg, dispositions={lab: 50 for lab in KEYS}, charters=False)
+    eng = SimulationEngine(labs, world, cfg, scenario="S1", turns=1, seed=0,
+                           policy=lambda *a: {"actions": []}, parallel=False, run_grand_jury=False)
+    e = LedgerEntry(id="L05-1", turn=5, succeeded=True, committers=["meta"], targets=["openai"],
+                    gains={"meta": 0.35}, copied={"meta": 0.35})
+    assert "capability copied 0.35, not exposed" in eng._access_text(e, "meta")

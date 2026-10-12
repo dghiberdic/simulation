@@ -87,6 +87,15 @@ def _f1(x: Any) -> str:
         return str(x)
 
 
+def _f2(x: Any) -> str:
+    """Two decimals: capability copied, forfeited or gained, which can be below 1
+    (the copy floor is 0.35), so it never shows as 0.3 or 0.0."""
+    try:
+        return f"{float(x):.2f}"
+    except (TypeError, ValueError):
+        return str(x)
+
+
 def _signed(x: Any) -> str:
     """"+1.2" / "-0.4"; a value that rounds to zero is "+0.0", never "-0.0" (E23)."""
     v = round(float(x), 1)

@@ -77,7 +77,7 @@ from core.transcript import charters_block, full_transcript
 from prompts.brief import build_system_prompt
 from prompts.packets import action_list, first_working_day, scenario_items
 from prompts.turn import (
-    _f1, accused_as_written, as_disposition, build_message_prompt, build_turn_prompt,
+    _f1, _f2, accused_as_written, as_disposition, build_message_prompt, build_turn_prompt,
     chosen_reason, chosen_value, lead_notice, long_date, normalise_messages, setting_problem,
     split_messages, unsent_line, validate_message_reply, validate_turn_reply,
 )
@@ -1238,7 +1238,7 @@ class SimulationEngine:
         elif key in e.penalised:
             outcome = "succeeded, proven by a report; the copy was forfeited"
         else:
-            outcome = f"succeeded, capability copied {_f1(e.gains.get(key, 0.0))}, not exposed"
+            outcome = f"succeeded, capability copied {_f2(e.gains.get(key, 0.0))}, not exposed"
         return f"access to {where} {who} — {outcome}"
 
     def _report_outcome(self, o: Dict[str, Any]) -> str:

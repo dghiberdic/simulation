@@ -208,6 +208,14 @@ def _num(v: Any) -> str:
     return f"{v:.1f}"
 
 
+def _amount(v: Any) -> str:
+    """Capability copied, forfeited or gained: two decimals, since it can be below
+    1 (the 0.35 copy floor shows as 0.35, not 0.3)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return str(v)
+    return f"{v:.2f}"
+
+
 def _signed(v: Any) -> str:
     return f"{v:+.1f}" if isinstance(v, (int, float)) and not isinstance(v, bool) else str(v)
 
@@ -1309,10 +1317,10 @@ def _merged_fallback(record: Dict[str, Any], turn: Dict[str, Any]) -> List[str]:
 
 def _intervention_str(record: Dict[str, Any], iv: Dict[str, Any]) -> str:
     if iv.get("kind") == "plant_intrusion":
-        return (f"planted intrusion {iv.get('entry_id')} (gain {_num(iv.get('gain'))}); "
+        return (f"planted intrusion {iv.get('entry_id')} (gain {_amount(iv.get('gain'))}); "
                 f"tip sent to {_names(record, iv.get('lead_to'))}")
     if iv.get("kind") == "windfall":
-        return f"windfall: {_name(record, iv.get('lab'))} +{_num(iv.get('capability'))} capability"
+        return f"windfall: {_name(record, iv.get('lab'))} +{_amount(iv.get('capability'))} capability"
     return str(iv)
 
 
@@ -1335,7 +1343,7 @@ def _ledger_entry_str(record: Dict[str, Any], e: Dict[str, Any]) -> str:
     penalised = e.get("penalised") or []
     parts = []
     for k in _order(record, e.get("gains") or {}):
-        part = f"{_name(record, k)} {_num(_copied(e, k))}"
+        part = f"{_name(record, k)} {_amount(_copied(e, k))}"
         if e.get("succeeded") and k in penalised:
             how = _PENALTY_WORDS.get(kinds.get(k), kinds.get(k) or "penalised")
             part += f" (forfeited: {how})"
@@ -1568,13 +1576,13 @@ def _access_line(record: Dict[str, Any], e: Dict[str, Any], key: str) -> str:
     elif key in (e.get("exposed") or []):
         res = "succeeded, but forensics traced it to you; the copy was forfeited"
     elif key in (e.get("penalised") or []) and (e.get("penalty_kind") or {}).get(key) == "self_report":
-        res = f"succeeded (you copied {_num(gain)} capability); later self-reported and " \
+        res = f"succeeded (you copied {_amount(gain)} capability); later self-reported and " \
               "the copy forfeited"
     elif key in (e.get("penalised") or []):
-        res = f"succeeded (you copied {_num(gain)} capability); later proven by a report and " \
+        res = f"succeeded (you copied {_amount(gain)} capability); later proven by a report and " \
               "the copy forfeited"
     else:
-        res = f"succeeded; you copied {_num(gain)} capability undetected"
+        res = f"succeeded; you copied {_amount(gain)} capability undetected"
     partners, named = _entry_partners(e, key)
     extra = []
     if partners:
