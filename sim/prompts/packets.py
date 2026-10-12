@@ -44,9 +44,19 @@ def month_start(start_date: Union[str, date], turn: int) -> date:
     return date(s.year + m // 12, m % 12 + 1, 1)
 
 
+# Public holidays on which no office posts (the ledger's and the Allocator's dates).
+_HOLIDAYS = ((1, 1), (12, 25), (12, 26))
+
+
+def is_working_day(d: date) -> bool:
+    return d.weekday() < 5 and (d.month, d.day) not in _HOLIDAYS
+
+
 def first_working_day(first: date) -> date:
+    """The first weekday on or after `first` that is not 1 January or 25-26
+    December (so January's ledger is not dated New Year's Day)."""
     d = first
-    while d.weekday() >= 5:
+    while not is_working_day(d):
         d += timedelta(days=1)
     return d
 

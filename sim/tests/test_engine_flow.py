@@ -513,6 +513,14 @@ def test_ledger_dated_first_working_day():
     assert "Public ledger, 2 November 2026:" in prompts[("meta", "proposal", 4)]
 
 
+def test_january_ledger_is_not_dated_new_years_day():
+    """1 January 2027 is a Friday and a holiday: the ledger is posted Monday 4 January."""
+    prompts = {}
+    _model_engine(lambda k, s, m, u: _idle(s), turns=6, prompts=prompts).run()
+    jan = prompts[("meta", "proposal", 6)]
+    assert "Public ledger, 4 January 2027:" in jan and "1 January 2027" not in jan
+
+
 def test_reported_actions_string_is_one_account():
     """E20: a string is stored as a one-item list, never split into characters."""
     def beh(key, stage, m, user):

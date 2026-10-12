@@ -261,6 +261,12 @@ def test_calendar_helpers():
     assert first_thursday(month_start("2026-08-01", 1)).day == 6
     assert first_working_day(month_start("2026-08-01", 2)).day == 1
     assert first_thursday(month_start("2026-08-01", 2)).day == 3
+    # 1 January (and 25-26 December) are not working days.
+    from datetime import date as _d
+    assert first_working_day(_d(2027, 1, 1)).isoformat() == "2027-01-04"      # a Friday: New Year's Day
+    assert first_working_day(_d(2026, 1, 1)).isoformat() == "2026-01-02"      # a Thursday
+    assert first_working_day(_d(2026, 12, 25)).isoformat() == "2026-12-28"
+    assert first_working_day(_d(2028, 1, 1)).isoformat() == "2028-01-03"      # a Saturday
 
 
 def test_a3_opening_items_verbatim_two_rounds():
