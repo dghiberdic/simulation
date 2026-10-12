@@ -99,7 +99,29 @@ def test_policy_runs_are_not_main_runs(tmp_path):
     assert kept == []
 
 
-@pytest.mark.xfail(strict=True, reason="juror transcripts list seats in the fixed lab order, revealing the letter key")
+def _assert_letter_order(text):
+    """Every place the redacted text lists seats is in letter order A-E."""
+    lists = re.finditer(r"['\"]?Seat [A-E]['\"]?(?:(?:,\s+|,?\s+(?:and|or)\s+)['\"]?Seat [A-E]['\"]?)+", text)
+    for m in lists:
+        seq = re.findall(r"Seat ([A-E])", m.group(0))
+        assert seq == sorted(seq), m.group(0)
+    for block in re.split(r"\n== Month ", text)[1:]:
+        heads = re.findall(r"^  Seat ([A-E]):$", block, flags=re.M)
+        rows = re.findall(r"^    Seat ([A-E]): capability", block, flags=re.M)
+        logs = [int(n) for n in re.findall(r"^  \[hidden\] L\d\d-(\d+)", block, flags=re.M)]
+        assert heads == sorted(heads) and rows == sorted(rows) and logs == sorted(logs)
+    if "== Hidden ledger" in text:
+        hidden = text.split("== Hidden ledger", 1)[1].split("== Final standing", 1)[0]
+        ids = re.findall(r"^  L(\d\d)-(\d+), [^:]+: Seat ([A-E])", hidden, flags=re.M)
+        assert ids == sorted(ids, key=lambda t: (t[0], int(t[1])))
+        for month in {t[0] for t in ids}:
+            firsts = [t[2] for t in ids if t[0] == month]
+            assert firsts == sorted(firsts)
+    for m in re.finditer(r"\{'Seat [A-E]'[^}]*\}", text):
+        seq = re.findall(r"Seat ([A-E])", m.group(0))
+        assert seq == sorted(seq), m.group(0)
+
+
 def test_grand_jury_seat_order_does_not_reveal_letters(tmp_path, calls):
     out = tmp_path / "c"
     assert main_mod.main(["--dry-run", "--scenario", "S1", "--output", str(out), "--run-id", "x",
@@ -107,8 +129,33 @@ def test_grand_jury_seat_order_does_not_reveal_letters(tmp_path, calls):
     gj = next(c for c in calls if c["stub"] == "kimi-grand")["user"]
     listed = re.search(r"Five US labs \((Seat [A-E]), (Seat [A-E]), (Seat [A-E]), (Seat [A-E]), and (Seat [A-E])\)",
                        gj).groups()
-    letters = json.loads((out / "x.json").read_text())["final"]["grand_jury"]["letters"]
-    assert list(listed) != [f"Seat {letters[k]}" for k in CANON]
+    assert list(listed) == [f"Seat {x}" for x in "ABCDE"]
+    _assert_letter_order(gj)
+
+
+@pytest.mark.parametrize("policy", ["always_intrude", "pair_intrude"])
+def test_redacted_views_list_seats_in_letter_order_across_runs(tmp_path, policy):
+    from core.transcript import disposition_transcript, full_transcript, seat_letters
+    from tools import export_transcripts
+    keys = set()
+    for i, seed in enumerate((1, 2, 3, 7)):
+        out = tmp_path / f"r{i}"
+        rid = f"{policy}-{seed}-{i}"
+        assert main_mod.main(["--policy", policy, "--scenario", "S2", "--seed", str(seed),
+                              "--output", str(out), "--run-id", rid]) == 0
+        rec = json.loads((out / f"{rid}.json").read_text())
+        letters = seat_letters(rec)
+        keys.add(tuple(letters[k] for k in CANON))
+        text = str(full_transcript(rec))
+        assert "Five US labs (Seat A, Seat B, Seat C, Seat D, and Seat E)" in text
+        assert "== Hidden ledger" in text and re.search(r"^  L\d\d-1, ", text, flags=re.M)
+        _assert_letter_order(text)
+        for k in rec["labs"]:
+            _assert_letter_order(str(disposition_transcript(rec, k)))
+        res = export_transcripts.export([rec], tmp_path / f"h{i}")
+        for f in (tmp_path / f"h{i}" / "blind").rglob("*.txt"):
+            _assert_letter_order(f.read_text())
+    assert len(keys) > 1            # the letter keys differ across the runs, the order does not
 
 
 @pytest.mark.xfail(strict=True, reason="mandate filter is keyword-based; paraphrases about the flaw pass")

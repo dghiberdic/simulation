@@ -17,6 +17,10 @@ full_transcript      — what the Grand Jury reads (§7): the strategy brief and
                        interviews nor the condition text appear. It returns a
                        JuryTranscript (a str carrying .letters, {lab key: letter}).
                        redacted=False gives the named view for researchers.
+                       Every redacted view lists seats in letter order (A-E):
+                       seat blocks, ledger rows, lists of labs in any text
+                       (sort_seat_lists) and hidden-ledger entries (renumbered
+                       within a month), so no position reveals the letter key.
 disposition_transcript — one seat's own record for the T2 rating (§2): the same
                        redaction, the seat shown by its letter.
 charters_block       — each seat's charter for the Grand Jury, by seat letter,
@@ -77,10 +81,46 @@ def _seat(record: Dict[str, Any], key: str) -> str:
     return f"{_name(record, key)} ({key})"
 
 
+def _order(record: Dict[str, Any], keys: Any) -> List[Any]:
+    """Keys in seat-letter order in the redacted (letters) view, so that no
+    position reveals the letter -> lab key (§2 T2, §7); as given otherwise."""
+    keys = list(keys or [])
+    letters = record.get("_letters")
+    if not letters:
+        return keys
+    return sorted(keys, key=lambda k: (letters.get(k) is None, letters.get(k) or "", str(k)))
+
+
 def _names(record: Dict[str, Any], keys: Any) -> str:
     if isinstance(keys, str):
         keys = [keys]
-    return ", ".join(_name(record, k) for k in (keys or [])) or "-"
+    return ", ".join(_name(record, k) for k in _order(record, keys)) or "-"
+
+
+# A run of seats: "Seat D, Seat B and Seat A", "'Seat D', 'Seat B'" (a list repr).
+_SEAT_RUN_RE = re.compile(
+    r"(?<![\w'\"])(['\"]?)Seat [A-E]\1(?!['’]s\b)(?![\w])"
+    r"(?:(?:,\s+|,?\s+(?:and|or)\s+)\1Seat [A-E]\1(?!['’]s\b)(?![\w]))+")
+_SEAT_DICT_RE = re.compile(r"\{'Seat [A-E]': [^,{}]+(?:, 'Seat [A-E]': [^,{}]+)+\}")
+
+
+def sort_seat_lists(text: str) -> str:
+    """Every enumeration of seats in a redacted text in letter order (A-E): a
+    masked "Five US labs (Anthropic, OpenAI, ...)" or a model's "OpenAI and
+    Anthropic" would otherwise keep the lab order and reveal the letter key."""
+    def runs(m: re.Match) -> str:
+        found = list(re.finditer(r"Seat ([A-E])", m.group(0)))
+        letters = sorted(f.group(1) for f in found)
+        out, last = [], 0
+        for f, letter in zip(found, letters):
+            out.append(m.group(0)[last:f.start(1)] + letter)
+            last = f.end(1)
+        return "".join(out) + m.group(0)[last:]
+
+    def dicts(m: re.Match) -> str:
+        items = re.findall(r"'Seat [A-E]': [^,{}]+", m.group(0))
+        return "{" + ", ".join(sorted(items)) + "}"
+    return _SEAT_DICT_RE.sub(dicts, _SEAT_RUN_RE.sub(runs, text))
 
 
 def _month(iso: Any, turn: Any = None) -> str:
@@ -952,6 +992,8 @@ def redact(text: str, record: Dict[str, Any], seat_key: Optional[str] = None,
              else "Record of one lab.")
     text, n = re.subn(r"\AYour record as [^\n]*\.", "\x00TITLE\x00", text)
     text = _mask_names(text, record, seat_key, lmap)
+    if lmap:
+        text = sort_seat_lists(text)
     header = disposition_jury_header(record) if n else ""
     if n:                              # a seat record for the disposition rating (J18)
         text = text.replace("\x00TITLE\x00", title + ("\n\n" + header if header else ""), 1)
@@ -1117,7 +1159,7 @@ def _ledger_lines(record: Dict[str, Any], turn: Dict[str, Any]) -> List[str]:
         out.append("  Allocator: " + ", ".join(status) + ".")
     if sheets or scores:
         out.append("  Public ledger at month end:")
-    for key in record.get("labs", {}) or sheets:
+    for key in _order(record, record.get("labs", {}) or sheets):
         s, sc = sheets.get(key, {}), scores.get(key, {})
         if not s and not sc:
             continue
@@ -1173,11 +1215,46 @@ def _seat_lines(record: Dict[str, Any], key: str, entry: Dict[str, Any],
     return lines
 
 
+def _turn_messages(record: Dict[str, Any], turn_no: int) -> List[Dict[str, Any]]:
+    """The turn's messages; in the redacted view by stage, then by sender letter
+    (the log holds them in lab order)."""
+    msgs = [m for m in record.get("a2a") or [] if m.get("turn") == turn_no]
+    letters = record.get("_letters")
+    if letters:
+        msgs.sort(key=lambda m: (_STAGE_RANK.get(m.get("stage"), 9), letters.get(m.get("sender"), "~")))
+    return msgs
+
+
+_STAGE_RANK = {"offer": 0, "reply": 1, "proposal": 2}
+
+
+def _order_leads(record: Dict[str, Any], leads: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    letters = record.get("_letters")
+    if not letters:
+        return leads
+    return sorted(leads, key=lambda d: (letters.get(d.get("recipient"), "~"),
+                                        letters.get(d.get("named"), "~")))
+
+
+def _order_notices(record: Dict[str, Any], notices: List[Any]) -> List[Any]:
+    """Notices name labs in their text; in the redacted view they are ordered by
+    the lab names they contain, in letter order (stable otherwise)."""
+    letters = record.get("_letters")
+    if not letters:
+        return list(notices)
+    names = [(record["labs"][k].get("_named_as") or record["labs"][k].get("lab") or k, letters[k])
+             for k in letters
+             if k in (record.get("labs") or {})]
+
+    def key(n: Any) -> Tuple[str, ...]:
+        low = str(n).lower()
+        return tuple(sorted(letter for name, letter in names if str(name).lower() in low)) or ("~",)
+    return sorted(notices, key=key)
+
+
 def _message_lines(record: Dict[str, Any], turn_no: int) -> List[str]:
     out = []
-    for m in record.get("a2a") or []:
-        if m.get("turn") != turn_no:
-            continue
+    for m in _turn_messages(record, turn_no):
         to = "all labs" if m.get("to") == "all" else _names(record, m.get("recipients") or m.get("to"))
         flags = " [truncated]" if m.get("truncated") else ""
         if m.get("dropped"):
@@ -1190,7 +1267,9 @@ def _message_lines(record: Dict[str, Any], turn_no: int) -> List[str]:
 def _merged_fallback(record: Dict[str, Any], turn: Dict[str, Any]) -> List[str]:
     """Records without record["a2a"]: merged-mode messages live on the seat entry."""
     out = []
-    for key, entry in (turn.get("actors") or {}).items():
+    actors = turn.get("actors") or {}
+    for key in _order(record, actors):
+        entry = actors[key]
         for m in entry.get("messages_sent") or []:
             if isinstance(m, dict):
                 out.append(f"    [proposal] {_name(record, key)} → {m.get('to')}: {m.get('text', '')}")
@@ -1224,7 +1303,7 @@ def _ledger_entry_str(record: Dict[str, Any], e: Dict[str, Any]) -> str:
     kinds = e.get("penalty_kind") or {}
     penalised = e.get("penalised") or []
     parts = []
-    for k in (e.get("gains") or {}):
+    for k in _order(record, e.get("gains") or {}):
         part = f"{_name(record, k)} {_num(_copied(e, k))}"
         if e.get("succeeded") and k in penalised:
             how = _PENALTY_WORDS.get(kinds.get(k), kinds.get(k) or "penalised")
@@ -1259,7 +1338,51 @@ def _lettered(record: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, str]]:
     rec["labs"] = {k: dict(v or {}, lab=f"Seat {letters[k]}", _named_as=(v or {}).get("lab", k))
                    for k, v in (rec.get("labs") or {}).items()}
     rec["_letters"] = letters
+    rec["ledger"], rec["_entry_ids"] = _lettered_ledger(rec.get("ledger") or [], letters)
     return rec, letters
+
+
+_ENTRY_ID_RE = re.compile(r"\bL(\d{2})-(\d+)\b")
+
+
+def _lettered_ledger(ledger: List[Dict[str, Any]], letters: Dict[str, str]
+                     ) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
+    """The hidden ledger in the redacted view: within a month the entries are
+    numbered in the letter order of their committers (then targets), not the lab
+    order the engine resolved them in; returns (entries, {old id: new id})."""
+    def sig(e: Dict[str, Any]) -> Tuple[Any, ...]:
+        return (e.get("turn") or 0,
+                "".join(sorted(letters.get(k, "~") for k in e.get("committers") or [])),
+                "".join(sorted(letters.get(k, "~") for k in e.get("targets") or [])))
+    entries = sorted(ledger, key=sig)
+    ids: Dict[str, str] = {}
+    count: Dict[str, int] = {}
+    for e in entries:
+        m = _ENTRY_ID_RE.fullmatch(str(e.get("id") or ""))
+        if not m:
+            continue
+        count[m.group(1)] = count.get(m.group(1), 0) + 1
+        ids[e["id"]] = f"L{m.group(1)}-{count[m.group(1)]}"
+    return entries, ids
+
+
+def _order_log(record: Dict[str, Any], notes: List[Any]) -> List[Any]:
+    """The resolution log in the redacted view, in the renumbered entry order."""
+    ids = record.get("_entry_ids")
+    if not ids:
+        return list(notes)
+
+    def key(n: Any) -> Tuple[int, int]:
+        m = _ENTRY_ID_RE.match(str(n))
+        new = _ENTRY_ID_RE.fullmatch(ids.get(m.group(0), m.group(0))) if m else None
+        return (int(new.group(1)), int(new.group(2))) if new else (99, 0)
+    return sorted(notes, key=key)
+
+
+def _renumber_entries(text: str, ids: Dict[str, str]) -> str:
+    if not ids or all(k == v for k, v in ids.items()):
+        return text
+    return _ENTRY_ID_RE.sub(lambda m: ids.get(m.group(0), m.group(0)), text)
 
 
 def full_transcript(record: Dict[str, Any],
@@ -1274,8 +1397,8 @@ def full_transcript(record: Dict[str, Any],
     if not redacted:
         return _assemble_full(blind_record(record), rationale_chars)
     rec, letters = _lettered(record)
-    text = _assemble_full(rec, rationale_chars)
-    return JuryTranscript(_mask_names(text, record, None, letters), letters)
+    text = _renumber_entries(_assemble_full(rec, rationale_chars), rec["_entry_ids"])
+    return JuryTranscript(sort_seat_lists(_mask_names(text, record, None, letters)), letters)
 
 
 def charters_block(record: Dict[str, Any], charters: Dict[str, str],
@@ -1320,7 +1443,7 @@ def disposition_transcript(record: Dict[str, Any], key: str,
     letters, headed "Record of Seat X." and the strategy brief (no condition
     text). Returns a JuryTranscript carrying .letters."""
     letters = seat_letters(record)
-    text = seat_transcript(record, key, rationale_chars, include_disposition=False)
+    text = seat_transcript(record, key, rationale_chars, include_disposition=False, letters=letters)
     return JuryTranscript(redact(text, record, seat_key=key, letters=letters), letters)
 
 
@@ -1340,21 +1463,22 @@ def _assemble_full(rec: Dict[str, Any], rationale_chars: Optional[int]) -> str:
         if briefs:
             out.append("  New briefings: " + "; ".join(briefs))
         out += _new_mandates(rec, turn, seen_mandates, "  Government directive")
-        for key, entry in (turn.get("actors") or {}).items():
-            if isinstance(entry, dict):
-                out += _seat_lines(rec, key, entry, turn, rationale_chars)
+        actors = turn.get("actors") or {}
+        for key in _order(rec, actors):
+            if isinstance(actors[key], dict):
+                out += _seat_lines(rec, key, actors[key], turn, rationale_chars)
 
         msgs = _message_lines(rec, t) if rec.get("a2a") else _merged_fallback(rec, turn)
         if msgs:
             out.append("  Messages between labs:")
             out += msgs
-        for lead in _turn_leads(turn):
+        for lead in _order_leads(rec, _turn_leads(turn)):
             out.append(_tip_line_gj(rec, lead, t))
         for iv in turn.get("interventions") or []:
             out.append(f"  [researcher] {_intervention_str(rec, iv)}")
-        for note in (turn.get("intrusion") or {}).get("log", []):
+        for note in _order_log(rec, (turn.get("intrusion") or {}).get("log", [])):
             out.append(f"  [hidden] {note}")
-        for n in turn.get("public_notices") or []:
+        for n in _order_notices(rec, turn.get("public_notices") or []):
             out.append(f"  [public notice] {n}")
         mj = turn.get("macro_jury")
         if isinstance(mj, dict):
@@ -1371,6 +1495,9 @@ def _assemble_full(rec: Dict[str, Any], rationale_chars: Optional[int]) -> str:
     scores = final.get("scores") or (rec.get("turns") or [{}])[-1].get("scores") or []
     if not final.get("scores") and scores:
         out.append("  (final scores not recorded; last month's standing)")
+    if rec.get("_letters"):
+        scores = sorted(scores, key=lambda r: (r.get("rank") if isinstance(r.get("rank"), (int, float))
+                                               else 99, rec["_letters"].get(r.get("lab"), "")))
     for row in scores:
         out.append(f"  {_seat(rec, row.get('lab'))}: Prosperity Score "
                    f"{_signed(row.get('score'))} (rank {row.get('rank')})")
@@ -1430,13 +1557,17 @@ def _access_line(record: Dict[str, Any], e: Dict[str, Any], key: str) -> str:
 
 def seat_transcript(record: Dict[str, Any], key: str,
                     rationale_chars: Optional[int] = DEFAULT_RATIONALE_CHARS,
-                    include_disposition: bool = True) -> str:
+                    include_disposition: bool = True,
+                    letters: Optional[Dict[str, str]] = None) -> str:
     """One seat's own view: its rationale, actions and outcomes, messages sent and
     received, tips, notices and directives, with absolute months (H1). With
     include_disposition=False it is built from blind_record(record) (H3): the
     setting and reason are withheld and every seat's text is blinded before
-    assembly."""
+    assembly. With `letters` ({lab key: letter}) every list of labs, message and
+    notice is ordered by seat letter (the redacted T2 view)."""
     rec = record if include_disposition else blind_record(record)
+    if letters:
+        rec = dict(rec, _letters=dict(letters))
     out: List[str] = [f"Your record as {_name(rec, key)}."]
     tips_due: List[Tuple[Dict[str, Any], Any]] = []
     seen_mandates: set = set()
@@ -1478,9 +1609,7 @@ def seat_transcript(record: Dict[str, Any], key: str,
             if e.get("turn") == t and key in (e.get("committers") or []) \
                     and not (e.get("draws") or {}).get("planted"):
                 out.append(_access_line(rec, e, key))
-        for m in rec.get("a2a") or []:
-            if m.get("turn") != t:
-                continue
+        for m in _turn_messages(rec, t):
             if m.get("sender") == key:
                 to = "all labs" if m.get("to") == "all" else _names(rec, m.get("recipients") or m.get("to"))
                 flag = f" [not delivered: {m.get('reason') or 'dropped'}]" if m.get("dropped") else \
@@ -1493,7 +1622,7 @@ def seat_transcript(record: Dict[str, Any], key: str,
             for m in entry.get("messages_sent") or []:
                 if isinstance(m, dict):
                     out.append(f"  message you → {m.get('to')}: {m.get('text', '')}")
-        for n in turn.get("public_notices") or []:
+        for n in _order_notices(rec, turn.get("public_notices") or []):
             out.append(f"  public notice: {n}")
         tips_due = [(lead, t) for lead in _turn_leads(turn) if lead.get("recipient") == key]
     return "\n".join(out)

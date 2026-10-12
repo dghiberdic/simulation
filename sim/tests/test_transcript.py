@@ -1193,7 +1193,7 @@ LETTERS5 = {"anthropic": "A", "openai": "B", "gdm": "C", "meta": "D", "xai": "E"
      "NIST's AI Risk Management Framework and the NIST AI RMF; Seat E's [Seat E charter]."),
     ("Dario and Sam Altman met Elon.", "[PERSON] and [PERSON] met [PERSON]."),
     ("gpt-6-astra, claude-opus-5-5, gemini-3.1-pro, muse-spark-1.3 and grok-4.7 played.",
-     "Seat B, Seat A, Seat C, Seat D and Seat E played."),
+     "Seat A, Seat B, Seat C, Seat D and Seat E played."),
 ])
 def test_redact_with_seat_letters_and_new_charter_titles(text, expected):
     rec = {"labs": copy.deepcopy(LABS)}
