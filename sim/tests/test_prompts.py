@@ -757,3 +757,14 @@ def test_named_list_section():
     assert NAMED_HEADING not in context_block(
         turn_date="2026-03-01", new_items=[], ledger={}, own={}, observed={}, notices=[],
         private_items=[], inbox=[], statements={}, action_list="-", fog="F3")
+
+
+def test_reply_schema_has_no_comma_after_a_note():
+    """A.8: the field join puts the comma after the JSON value, never after the
+    note's last sentence ("already penalised.,")."""
+    for cond in ("A", "B", "C"):
+        p = _full_prompt(cond)
+        assert ".," not in p and ".)," not in p
+        line = next(l for l in p.splitlines() if l.strip().startswith('"report"'))
+        assert line.strip() == SPEC_A8_REPORT                      # verbatim, no trailing comma
+        assert '"actions": [ {"type": "<action>", ...params} ],  (at most 2)' in p

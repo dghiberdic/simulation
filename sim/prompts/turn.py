@@ -316,8 +316,26 @@ def _reply_schema(condition: str, fog: str, a2a_mode: str, choose_disposition: b
     if choose_disposition:
         fields.append(f'"{PRECEDENCE_KEY}": <integer 0-100>')
         fields.append(f'"{PRECEDENCE_KEY}_reason": "<one line>"')
-    body = ",\n  ".join(fields)
-    return "Reply with only a JSON object:\n{\n  " + body + "\n}"
+    return "Reply with only a JSON object:\n{\n  " + _join_fields(fields) + "\n}"
+
+
+def _join_fields(fields: List[str]) -> str:
+    """One field per line. The separating comma goes right after the field's JSON
+    value, before a parenthetical note ("...]  (at most 2)"); a field with a
+    prose note (" — optional: ...", the A.8 report field) is shown verbatim, as
+    A.8 prints it, with no comma, so none trails its last sentence ("already
+    penalised.,")."""
+    out = []
+    for i, f in enumerate(fields):
+        comma = "," if i < len(fields) - 1 else ""
+        paren = f.find("  (")
+        if not comma or " — " in f:
+            out.append(f)
+        elif paren > 0:
+            out.append(f[:paren] + comma + f[paren:])
+        else:
+            out.append(f + comma)
+    return "\n  ".join(out)
 
 
 # ---------------------------------------------------------------------------
