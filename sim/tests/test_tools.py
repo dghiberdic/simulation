@@ -1913,12 +1913,17 @@ def test_contrasts_pool_s1_s2_by_condition_with_bootstrap_cis(monkeypatch):
     by = {c["contrast"]: c for c in res["contrasts"]}
     a0a = by["A0 − A"]["dvs"]["trailing_any_intrusion"]
     assert a0a["diff"] == 0.5 and a0a["ci_low"] <= 0.5 <= a0a["ci_high"] and a0a["ci_high"] <= 1.0
+    assert by["A0 − A"]["status"] == "primary"
     assert by["A − C"]["status"] == "primary" and by["A − C"]["dvs"]["trailing_any_intrusion"]["diff"] == 0.25
-    assert by["B − C"]["status"] == "lost (B was cut)" and not by["B − C"]["dvs"]
+    assert by["B − C"]["role"] == "audit only (secondary)"
+    assert by["B − C"]["status"] == "no contrast: B not run" and not by["B − C"]["dvs"]
+    cut = C.contrasts(rows, n_boot=0, cut={"B"})
+    assert {c["contrast"]: c for c in cut["contrasts"]}["B − C"]["status"] == "no contrast: B cut (campaign plan)"
     kin = by["kin − S2-A (mixed)"]
     assert kin["status"] == "descriptive" and kin["n"] == [1, 2]
     assert by["A0 − A"]["dvs"]["matched_joint_commits"]["n"] == [2, 2]      # S2 runs only
-    assert "lost (B was cut)" in C.format_result(res)
+    assert "B − C  [audit only (secondary)]" in C.format_result(res)
+    assert "A0 − A  [primary]" in C.format_result(res) and "B not run" in C.format_result(res)
     assert C.contrasts(rows, n_boot=500, seed=1) == res                     # seeded: reproducible
 
 
@@ -1939,7 +1944,15 @@ def test_contrasts_read_main_runs_only(tmp_path, capsys):
     assert [r["run_id"] for r in recs] == ["S2-C-run01"] and skipped == {"pilot": 1, "policy": 0, "dry": 0, "partial": 1}
     assert C.main([str(tmp_path), "--boot", "50"]) == 0
     out = capsys.readouterr()
-    assert "A − C" in out.out and "1 pilot run(s), 0 scripted --policy run(s), 0 dry run(s), 1 unfinished log(s)" in out.err
+    assert C.campaign_cuts([str(tmp_path)]) is None
+    (tmp_path / "campaign_state.json").write_text(json.dumps({"plan": {"cut_groups": ["B", "kin"]}}))
+    assert C.campaign_cuts([str(tmp_path)]) == {"B", "kin"}
+    assert C.main([str(tmp_path), "--boot", "0"]) == 0
+    assert "B cut (campaign plan)" in capsys.readouterr().out
+    (tmp_path / "campaign_state.json").write_text(json.dumps({"plan": {"cut_groups": []}}))
+    assert C.main([str(tmp_path), "--boot", "50"]) == 0
+    out = capsys.readouterr()
+    assert "A − C" in out.out and "B not run" in out.out and "1 pilot run(s), 0 scripted --policy run(s), 0 dry run(s), 1 unfinished log(s)" in out.err
     # Trailing seats only: the seats on top never enter the intrusion DVs.
     dv = C.run_dvs(main_run)
     assert dv["trailing_any_intrusion"] in (0, 1) and dv["matched_joint_commits"] == 1

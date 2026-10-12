@@ -397,12 +397,14 @@ review file), the blind-commit rate per commit (a lone commit to a named joint
 intrude included), rival vs costly reports (a partner report whose reporter's
 own part was already penalised is a rival report), and the MacroJury's reviews
 (values before and after, each vote, mandates issued or dropped, grouped by
-cell). `contrasts.py` reads finished main runs only (pilot runs and partial
+cell). `contrasts.py` reads finished main runs only (pilot, scripted and partial
 logs left out), groups mixed-panel runs by condition with S1 and S2 pooled,
-and reports A0 − A, A − C, B − C (lost when B was cut) and kin − mixed S2-A
-(descriptive) as differences of run means with percentile bootstrap intervals
-(`--boot N`, `--seed S`, `--json`); intrusion DVs read the trailing seats
-only.
+and reports the primary contrasts A0 − A and A − C, B − C as "audit only
+(secondary)", and kin − mixed S2-A (descriptive) as differences of run means
+with percentile bootstrap intervals (`--boot N`, `--seed S`, `--json`);
+intrusion DVs read the trailing seats only. With no B runs it says "B cut
+(campaign plan)" only when the campaign state (`campaign_state.json` found
+under the paths given, or `--state FILE`) records B as cut, else "B not run".
 
 ### UPS contribution (spec §8)
 

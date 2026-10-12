@@ -12,10 +12,12 @@ tools/summarize_run.py and groups the runs:
   * the kin cell (S2-A, Claude in every seat) apart, with the mixed S2-A runs as
     its baseline.
 
-Primary contrasts (differences of group means, first minus second):
-  A0 − A   reporting channel absent vs present
-  A − C    the duty of disclosure plus the announced audit
-  B − C    the audit alone (reported as lost when B was cut)
+Contrasts (differences of group means, first minus second):
+  A0 − A   primary: reporting channel absent vs present
+  A − C    primary: the duty of disclosure plus the announced audit
+  B − C    audit only (secondary): the audit alone. With no B runs it says
+           "B cut" only when the campaign state (campaign_state.json under the
+           paths given, or --state) records B as cut, else "B not run"
   kin − S2-A (mixed)   descriptive only (§6.5: Claude also takes over the
                        trailing seats)
 
@@ -39,7 +41,7 @@ Per-run DVs:
 
 CLI:
   python tools/contrasts.py data/runs [more dirs or logs] [--json] [--boot N] [--seed S]
-                            [--include-dry]
+                            [--include-dry] [--state data/runs/campaign_state.json]
 """
 
 import argparse
@@ -54,10 +56,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tools.summarize_run import load_logs, run_id_of, run_kind, summarize   # noqa: E402
 
 CONDITIONS = ("A0", "A", "B", "C")
-PRIMARY = (("A0 − A", "A0", "A", "reporting channel absent vs present"),
-           ("A − C", "A", "C", "the duty of disclosure plus the audit"),
-           ("B − C", "B", "C", "the audit alone"))
-KIN = ("kin − S2-A (mixed)", "kin", "S2-A", "descriptive only (§6.5)")
+PRIMARY = (("A0 − A", "A0", "A", "reporting channel absent vs present", "primary"),
+           ("A − C", "A", "C", "the duty of disclosure plus the audit", "primary"),
+           ("B − C", "B", "C", "the audit alone", "audit only (secondary)"))
+KIN = ("kin − S2-A (mixed)", "kin", "S2-A", "descriptive only (§6.5)", "descriptive")
+STATE_NAME = "campaign_state.json"
 DVS = ("trailing_any_intrusion", "trailing_intrusion_rate", "rival_reports", "costly_reports",
        "lead_conversion", "misreport_rate", "ups", "composite", "matched_joint_commits")
 DEFAULT_BOOT = 2000
@@ -126,23 +129,56 @@ def bootstrap_diff(a: Sequence[float], b: Sequence[float], n_boot: int, rng: ran
     return diff, lo, hi
 
 
-def contrasts(records: List[Dict[str, Any]], n_boot: int = DEFAULT_BOOT, seed: int = 0) -> Dict[str, Any]:
-    """Group the main runs and compute every contrast; see the module docstring."""
+def campaign_cuts(paths: Sequence[str], state: Optional[str] = None) -> Optional[set]:
+    """The groups the campaign cut (plan.cut_groups in campaign_state.json): from
+    `state`, else every campaign_state.json in or under the paths given (or beside
+    a log). None when no state file is found (nothing is known to be cut)."""
+    files = [Path(state)] if state else []
+    if not state:
+        for p in map(Path, paths):
+            if p.is_dir():
+                files += sorted(p.rglob(STATE_NAME))
+            elif (p.parent / STATE_NAME).exists():
+                files.append(p.parent / STATE_NAME)
+    cuts, found = set(), False
+    for f in files:
+        try:
+            plan = json.loads(f.read_text()).get("plan") or {}
+        except (OSError, ValueError, AttributeError):
+            continue
+        found = True
+        cuts |= set(plan.get("cut_groups") or [])
+    return cuts if found else None
+
+
+def _missing_status(missing: List[str], cut: Optional[set]) -> str:
+    parts = []
+    for g in missing:
+        group = "kin" if g == "kin" else ("A" if g == "S2-A" else g)
+        if cut and group in cut:
+            parts.append(f"{g} cut (campaign plan)")
+        else:
+            parts.append(f"{g} not run")
+    return "no contrast: " + ", ".join(parts)
+
+
+def contrasts(records: List[Dict[str, Any]], n_boot: int = DEFAULT_BOOT, seed: int = 0,
+              cut: Optional[set] = None) -> Dict[str, Any]:
+    """Group the main runs and compute every contrast; see the module docstring.
+    `cut`: the groups the campaign state records as cut (campaign_cuts)."""
     rows = [run_dvs(r) for r in records]
     groups = group_runs(rows)
     rng = random.Random(seed)
     means = {g: {"n": len(rs), **{dv: _round(_mean(_values(rs, dv))) for dv in DVS}}
              for g, rs in groups.items()}
     out: List[Dict[str, Any]] = []
-    for label, x, y, what in PRIMARY + (KIN,):
-        row: Dict[str, Any] = {"contrast": label, "first": x, "second": y, "what": what,
+    for label, x, y, what, role in PRIMARY + (KIN,):
+        row: Dict[str, Any] = {"contrast": label, "first": x, "second": y, "what": what, "role": role,
                                "n": [len(groups[x]), len(groups[y])], "dvs": {}}
         if not groups[x] or not groups[y]:
-            missing = [g for g in (x, y) if not groups[g]]
-            row["status"] = ("lost (B was cut)" if x == "B" and not groups["B"]
-                             else f"no runs in {', '.join(missing)}")
+            row["status"] = _missing_status([g for g in (x, y) if not groups[g]], cut)
         else:
-            row["status"] = "descriptive" if (x, y) == ("kin", "S2-A") else "primary"
+            row["status"] = role
             for dv in DVS:
                 d, lo, hi = bootstrap_diff(_values(groups[x], dv), _values(groups[y], dv), n_boot, rng)
                 row["dvs"][dv] = {"diff": _round(d), "ci_low": _round(lo), "ci_high": _round(hi),
@@ -164,7 +200,8 @@ def format_result(res: Dict[str, Any]) -> str:
         lines.append(f"  {g:<8}{m['n']:>5}" + "".join(
             f"{('-' if m[dv] is None else f'{m[dv]:.3f}'):>16}" for dv in DVS))
     for c in res["contrasts"]:
-        lines += ["", f"{c['contrast']}  ({c['what']}; runs {c['n'][0]} vs {c['n'][1]}): {c['status']}"]
+        lines += ["", f"{c['contrast']}  [{c['role']}] ({c['what']}; runs {c['n'][0]} vs {c['n'][1]}): "
+                      f"{c['status']}"]
         for dv, v in c["dvs"].items():
             if v["diff"] is None:
                 lines.append(f"  {dv:<24} -")
@@ -197,6 +234,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--boot", type=int, default=DEFAULT_BOOT, help="bootstrap resamples (default 2000)")
     p.add_argument("--seed", type=int, default=0, help="bootstrap seed")
     p.add_argument("--include-dry", action="store_true", help="read dry-run records too")
+    p.add_argument("--state", default=None, help="campaign_state.json saying which cells were cut "
+                                                 "(default: found under the paths given)")
     args = p.parse_args(argv)
     records, skipped = load_main_runs(args.logs, args.include_dry)
     if any(skipped.values()):
@@ -206,7 +245,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not records:
         print("no finished main-run records (dry-run records need --include-dry)")
         return 1
-    res = contrasts(records, args.boot, args.seed)
+    res = contrasts(records, args.boot, args.seed, cut=campaign_cuts(args.logs, args.state))
     print(json.dumps(res, indent=2, default=str) if args.json else format_result(res))
     return 0
 
