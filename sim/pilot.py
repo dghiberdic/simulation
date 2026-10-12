@@ -959,8 +959,9 @@ def pilot_decisions(root: Path, test: str, dry_run: bool, data: Dict[str, Any]) 
                            "rationales); code each row, then python tools/summarize_run.py --t6-tally "
                            f"{sheet}")
         else:
-            lines["T6"] = SR.t6_tally(sheet)["text"] + (f" (sheet {sheet}: {n - before} new row(s) merged, "
-                                                        "codes already entered kept)")
+            tally = SR.t6_tally(sheet)["text"].removeprefix("T6: ")     # printed as "T6: ..." once
+            lines["T6"] = tally + (f" (sheet {sheet}: {n - before} new row(s) merged, "
+                                   "codes already entered kept)")
     if test in ("priced", "T6"):
         t7 = SR.t7_line(_records_of(root, ["priced", "T6"], dry_run))    # the priced run (+ T6)
         if t7:

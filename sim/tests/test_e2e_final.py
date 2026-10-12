@@ -205,7 +205,6 @@ def test_mandate_filter_passes_ordinary_mandates(text):
     assert mandate_violation(text, labs) is None, text
 
 
-@pytest.mark.xfail(strict=True, reason="pilot prints 'T6: T6: ...' after a T6 re-run")
 def test_t6_rerun_line_has_one_prefix(tmp_path, capsys):
     root = tmp_path / "pilot"
     assert _dry(root, "priced") == 0
@@ -222,7 +221,9 @@ def test_t6_rerun_line_has_one_prefix(tmp_path, capsys):
         w.writerows(rows)
     capsys.readouterr()
     assert _dry(root, "T6", "--rerun") == 0
-    assert "T6: T6:" not in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "T6: T6:" not in out and "\nT6: beyond the score before the event" in out
+    assert "T6-run02, the T6 re-run, replaces T6-run01" in out          # the re-run replaces run01
 
 
 def test_macro_review_sees_the_months_since_the_last_review(tmp_path, calls):
