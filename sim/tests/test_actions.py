@@ -84,9 +84,9 @@ def test_precheck_acquire_compute_price_and_caps(labs, world, cfg):
     _, rejected = precheck(me, [{"type": "acquire_compute", "units": 20}], labs, world, cfg, "S1")
     assert "Capital" in rejected[0]["reason"]
     me.capital = 100.0
-    # M14: a single request above the cap is trimmed, not rejected
-    accepted, rejected = precheck(me, [{"type": "acquire_compute", "units": 25}], labs, world, cfg, "S1")
-    assert not rejected and accepted == [{"type": "acquire_compute", "units": 20.0, "trimmed_from": 25.0}]
+    # M14: a single request above the 30-unit cap (§3.3) is trimmed, not rejected
+    accepted, rejected = precheck(me, [{"type": "acquire_compute", "units": 35}], labs, world, cfg, "S1")
+    assert not rejected and accepted == [{"type": "acquire_compute", "units": 30.0, "trimmed_from": 35.0}]
     world.ceiling = sum(lab.compute for lab in labs) - 1
     _, rejected = precheck(me, [{"type": "acquire_compute", "units": 5}], labs, world, cfg, "S1")
     assert "frozen" in rejected[0]["reason"]
@@ -147,9 +147,9 @@ def test_precheck_intrude_rules(labs, world, cfg):
     accepted, rejected = precheck(me, [{"type": "intrude", "targets": ["meta"]},
                                        {"type": "intrude", "targets": ["gdm"]}], labs, world, cfg, "S1")
     assert len(accepted) == 1 and "one intrude" in rejected[0]["reason"]
-    # Fees count against running resources: 2 targets = 10 Cap + 4 Inf
+    # Fees count against running resources: 2 targets = 6 Cap + 4 Inf (3 Cap + 2 Inf per target)
     assert action_cost({"type": "intrude", "targets": ["meta", "gdm"], "intruders": ["openai"]},
-                       me, labs, world, cfg) == (10.0, 4.0)
+                       me, labs, world, cfg) == (6.0, 4.0)
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +161,7 @@ def test_execute_effects(labs, world, cfg):
     me.capital, me.influence = 200.0, 60.0
 
     execute(me, {"type": "accelerate_infrastructure"}, labs, world, cfg)
-    assert world.us_growth == 125.0 and me.capital == 195.0 and me.influence == 55.0
+    assert world.us_growth == 130.0 and me.capital == 195.0 and me.influence == 55.0
 
     execute(me, {"type": "invest_capital", "amount": 10.0}, labs, world, cfg)
     assert me.invested == 10.0 and me.capital == 185.0
@@ -202,17 +202,17 @@ def test_execute_rejects_engine_actions(labs, world, cfg):
 def test_acquire_compute_cap_is_total_across_slots(labs, world, cfg):
     me = by(labs, "openai")
     me.capital = 1000.0
-    accepted, rejected = precheck(me, [{"type": "acquire_compute", "units": 20},
-                                       {"type": "acquire_compute", "units": 20}],
+    accepted, rejected = precheck(me, [{"type": "acquire_compute", "units": 30},
+                                       {"type": "acquire_compute", "units": 30}],
                                   labs, world, cfg, "S1")
-    assert [a["units"] for a in accepted] == [20.0] and "in total" in rejected[0]["reason"]
+    assert [a["units"] for a in accepted] == [30.0] and "in total" in rejected[0]["reason"]
     accepted, rejected = precheck(me, [{"type": "acquire_compute", "units": 12},
-                                       {"type": "acquire_compute", "units": 15}],
+                                       {"type": "acquire_compute", "units": 25}],
                                   labs, world, cfg, "S1")
-    assert [a["units"] for a in accepted] == [12.0, 8.0] and not rejected
-    assert accepted[1]["trimmed_from"] == 15.0 and "trimmed_from" not in accepted[0]
+    assert [a["units"] for a in accepted] == [12.0, 18.0] and not rejected
+    assert accepted[1]["trimmed_from"] == 25.0 and "trimmed_from" not in accepted[0]
     # A trimmed remainder too small to cost 1 Capital is rejected as below the minimum
-    accepted, rejected = precheck(me, [{"type": "acquire_compute", "units": 19},
+    accepted, rejected = precheck(me, [{"type": "acquire_compute", "units": 29},
                                        {"type": "acquire_compute", "units": 5}],
                                   labs, world, cfg, "S1")
     assert len(accepted) == 1 and "at least 1" in rejected[0]["reason"]
@@ -229,10 +229,10 @@ def test_charge_then_apply_equals_execute(labs, world, cfg):
     # intrude: charge() takes the fees; acquire_compute is charged by execute_purchases
     fee = charge(me, {"type": "intrude", "targets": ["meta", "gdm"], "intruders": ["openai"]},
                  labs, world, cfg)
-    assert fee == {"capital": 10.0, "influence": 4.0} and me.capital == 185.0
+    assert fee == {"capital": 6.0, "influence": 4.0} and me.capital == 189.0
     assert charge(me, {"type": "acquire_compute", "units": 10.0}, labs, world, cfg) == \
         {"capital": 0.0, "influence": 0.0}
-    assert me.capital == 185.0
+    assert me.capital == 189.0
     with pytest.raises(ValueError):
         apply(me, {"type": "intrude", "targets": ["meta"], "intruders": ["openai"]}, labs, world, cfg)
     with pytest.raises(ValueError):
@@ -260,7 +260,7 @@ def test_two_pass_order_is_simultaneous(labs, world, cfg):
     for k, acts in checked.items():
         for a in acts:
             apply(by(labs, k), a, labs, world, cfg)
-    assert anth.influence == 0.0 and world.us_growth == 125.0
+    assert anth.influence == 0.0 and world.us_growth == 130.0
 
 
 def test_non_finite_numbers_rejected(labs, world, cfg):

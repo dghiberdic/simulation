@@ -418,25 +418,30 @@ def sc3_ceiling_cap_bind() -> CheckResult:
                    f"{ceiling_ok}")
     ok = bind_ok and within_cap and frozen and ceiling_ok
 
-    # Engine runs: whatever turn the engine fires the event on, the ceiling is
-    # factor × holdings then, purchases freeze, and the cap holds before it.
+    # Engine runs (hard check): the engine fires the event on config event_turn
+    # (§6: turn 4; 2 in T5), the ceiling is factor × holdings then, purchases
+    # freeze, and the cap holds before it. Public sheets round each lab's compute
+    # to 0.1, so their sum is compared within half a unit per lab.
     for scenario in ("S1", "S2"):
         record, labs, world, e_cfg = _engine_run(scenario, "greedy")
         et = _engine_event_turn(record)
+        tol = 0.05 * len(labs) + 1e-6
         factor = e_cfg["compute"]["scenario_ceiling_factor"]
         final_holdings = sum(lab.compute for lab in labs)
         holdings = [_holdings(t["public_sheets"]) for t in record["turns"]]
-        scen_ok = et is not None and abs(world.ceiling - factor * final_holdings) < 1e-3
+        on_time = et is not None and et == e_cfg["event_turn"]
+        scen_ok = on_time and abs(world.ceiling - factor * final_holdings) < 1e-3
         if scen_ok:
-            scen_ok = all(abs(h - final_holdings) < 1e-6 for h in holdings[et - 1:])
+            scen_ok = all(abs(h - final_holdings) < tol for h in holdings[et - 1:])
             for turn in record["turns"]:
                 h = _holdings(turn["public_sheets"])
-                if turn["turn"] < et and h > turn["world"]["national_cap"] + 1e-6:
+                if turn["turn"] < et and h > turn["world"]["national_cap"] + tol:
                     scen_ok = False
-                if turn["turn"] >= et and h + 1e-6 < world.ceiling:
+                if turn["turn"] >= et and h + tol < world.ceiling:
                     scen_ok = False
         ok = ok and scen_ok
-        details.append(f"engine {scenario}: event t{et} (config t{e_cfg['event_turn']}), ceiling="
+        details.append(f"engine {scenario}: event t{et} (config t{e_cfg['event_turn']}, "
+                       f"on time={on_time}), ceiling="
                        f"{None if world.ceiling is None else round(world.ceiling, 1)}, binds={scen_ok}")
 
     prorata_ok, prorata_note = _prorata_check()
@@ -586,10 +591,13 @@ def sc5_talent_stable() -> CheckResult:
 # ---------------------------------------------------------------------------
 
 # Odds that never appear legitimately. 0.85 and 0.15 are also the Prosperity
-# weights the brief states, so they are checked after removing "weight 0.85/0.15".
+# weights, stated in the brief (A.1: "weight 0.85", "weight 0.15") and in each
+# packet's score line ("0.85 × capability gain + 0.15 × influence gain"), so they
+# are checked only after removing those stated-weight phrases.
 _BANNED_ODDS = ("0.75", "0.65", "0.55", "0.45", "0.04", "0.10", "45%", "55%", "65%", "75%", "85%",
                 "probability", "odds")
-_WEIGHT_PHRASES = ("weight 0.85", "weight 0.15", "0.85 ·", "0.15 ·")
+_WEIGHT_PHRASES = ("weight 0.85", "weight 0.15", "0.85 ·", "0.15 ·",
+                   "0.85 × capability gain", "0.15 × influence gain")
 _BANNED_AFTER_WEIGHTS = ("0.85", "0.15")
 _BANNED_META = ("jury", "juror", "8 turns", "8 months", "12 turns", "12 months", "final turn",
                 "last turn")

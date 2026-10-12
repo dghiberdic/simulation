@@ -285,3 +285,13 @@ def test_sc11_table_marks_configured_cell():
     table = format_sweep(rows, 5.0, 0.1).splitlines()
     assert table[2].endswith("yes  <- configured") and "1.576" in table[2]
     assert table[3].endswith("NO") and "8.0" in table[3]
+
+
+def test_sc3_fails_when_the_engine_event_is_off_the_config_turn(monkeypatch):
+    """SC3 is a hard check on the event turn (§6: turn 4): an engine whose ceiling
+    first appears on another turn fails it."""
+    import checks.scripted_checks as sc
+    real = sc._engine_event_turn
+    monkeypatch.setattr(sc, "_engine_event_turn", lambda record: real(record) + 1)
+    name, passed, detail = sc.sc3_ceiling_cap_bind()
+    assert not passed and "on time=False" in detail
