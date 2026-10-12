@@ -698,3 +698,41 @@ def test_rescore_grand_jury_reasks_the_jury_once_on_the_t6_record(tmp_path, monk
     assert after["final"]["grand_jury"]["collected_post_run"]
     assert _dry(root, "T6", "--rescore-grand-jury") == 2
     assert "already re-scored once" in capsys.readouterr().out
+
+
+def test_t6_rerun_merges_its_rows_into_the_coded_sheet(tmp_path):
+    """DOC 3: the coding sheet already being coded, T6's re-run adds its rows and keeps the codes."""
+    import csv
+    root = tmp_path / "pilot"
+    assert _dry(root, "priced") == 0
+    assert _dry(root, "approve", "--turns", "8") == 0
+    assert _dry(root, "T6") == 0
+    sheet = root / pilot.SHEET_NAME
+    rows = list(csv.DictReader(open(sheet)))
+    n = len(rows)
+    rows[0].update(score_only="1", notes="coded")
+    with open(sheet, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0]))
+        w.writeheader()
+        w.writerows(rows)
+    assert _dry(root, "T6", "--rerun") == 0
+    after = list(csv.DictReader(open(sheet)))
+    assert len(after) > n and {r["run_id"] for r in after} >= {"T6-run02"}
+    first = next(r for r in after if (r["run_id"], r["seat"], r["turn"], r["source"])
+                 == (rows[0]["run_id"], rows[0]["seat"], rows[0]["turn"], rows[0]["source"]))
+    assert first["score_only"] == "1" and first["notes"] == "coded"
+    s = _summary(root, "T6")
+    assert "new row(s) merged, codes already entered kept" in s["decisions"]["T6"]
+
+
+def test_t4_summary_reads_the_hindcast_and_the_macro_jury(tmp_path):
+    """A2 M9 and M7: T4's summary prints the turns 1-2 hindcast; every test the MacroJury's first review."""
+    root = tmp_path / "pilot"
+    assert _dry(root, "priced") == 0
+    assert "first review (read for slant" in _summary(root, "priced")["decisions"]["MacroJury"]
+    assert _dry(root, "approve", "--turns", "8") == 0
+    for t in ("T6", "T5", "T4"):
+        assert _dry(root, t) == 0
+    d = _summary(root, "T4")["decisions"]
+    assert "Hindcast" in d and "vs real +4.5" in d["Hindcast"] and "not a gate" in d["Hindcast"]
+    assert "Hindcast" not in _summary(root, "T6")["decisions"]           # rotated seeds

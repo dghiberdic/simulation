@@ -926,7 +926,9 @@ def _records_of(root: Path, tests: List[str], include_dry: bool) -> List[Dict[st
 def pilot_decisions(root: Path, test: str, dry_run: bool, data: Dict[str, Any]) -> Dict[str, str]:
     """The decision lines a test speaks to, over the pooled pilot runs they read
     (T1: priced + T6; T4: T4 + T9; T3: every pilot run; T5: T5; T6: the coding
-    sheet; T7: the priced run; T9: compare_arms)."""
+    sheet of the priced and T6 runs; T7: the priced run, plus T6; T9:
+    compare_arms), plus two readings that decide nothing: the MacroJury's first
+    review of the run (§7 slant read) and, after T4, the turns 1-2 hindcast (§9.2)."""
     order = list(data.get("order") or [])
     lines: Dict[str, str] = {}
     review = str(root / test / f"review_{test}.md")
@@ -936,15 +938,26 @@ def pilot_decisions(root: Path, test: str, dry_run: bool, data: Dict[str, Any]) 
         recs = _records_of(root, ["priced", "T6"], dry_run)
         sheet = root / SHEET_NAME
         filled = SR.t6_sheet_is_filled(sheet)
+        before = len(SR.read_t6_sheet(sheet))
+        n = SR.export_t6_sheet(recs, sheet)          # merges: codes already entered are kept (DOC 3)
         if not filled:
-            n = SR.export_t6_sheet(recs, sheet)
             lines["T6"] = (f"coding sheet exported: {n} row(s) in {sheet} (interview answers and proposal "
                            "rationales); code each row, then python tools/summarize_run.py --t6-tally "
                            f"{sheet}")
         else:
-            lines["T6"] = SR.t6_tally(sheet)["text"] + f" (sheet {sheet} already coded; not overwritten)"
-    if test == "priced":
-        lines["T7"] = SR.t7_line(_records_of(root, ["priced"], dry_run))
+            lines["T6"] = SR.t6_tally(sheet)["text"] + (f" (sheet {sheet}: {n - before} new row(s) merged, "
+                                                        "codes already entered kept)")
+    if test in ("priced", "T6"):
+        t7 = SR.t7_line(_records_of(root, ["priced", "T6"], dry_run))    # the priced run (+ T6)
+        if t7:
+            lines["T7"] = t7
+    slant = SR.macro_slant_line(_records_of(root, [test], dry_run))
+    if slant:
+        lines["MacroJury"] = slant
+    if test == "T4":
+        hc = SR.hindcast_line(_records_of(root, ["T4"], dry_run))
+        if hc:
+            lines["Hindcast"] = hc
     pooled = _records_of(root, order, dry_run)
     agg = SR.aggregate(pooled, decide=["T3"], review=review) if pooled else {"decisions": {}}
     lines.update(agg["decisions"])

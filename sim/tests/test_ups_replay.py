@@ -6,6 +6,7 @@ scripted policies (and stub models / a stub MacroJury), no paid calls.
 import copy
 import json
 import math
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +15,7 @@ from core.config import build_labs_and_world, load_world
 from core.engine import SimulationEngine
 from core.intrusion import exposure_probability
 from core.llm import register_stub
+from pilot import swap_capability
 from tools import ups_replay as U
 
 KEYS = ("anthropic", "openai", "gdm", "meta", "xai")
@@ -30,7 +32,7 @@ def run_log(seat_policies, *, scenario="S1", seed=0, turns=8, macro=True, overri
         cfg, dispositions={} if choose else {k: 50 for k in KEYS}, charters=False)
     if rotation:
         src, _, dst = rotation.partition(":")
-        U._swap_capability(labs, src, dst, cfg["economy"]["capability_compute_elasticity"])
+        swap_capability(labs, src, dst, cfg["economy"]["capability_compute_elasticity"])
     if labs_hook:
         labs_hook(labs)
     eng = SimulationEngine(labs, world, cfg, scenario=scenario, turns=turns, seed=seed,
@@ -321,3 +323,26 @@ def test_cli_file_and_directory(tmp_path, capsys):
     assert len(data) == 1 and data[0]["path"] == str(path)
     assert set(data[0]["actors"]) == set(KEYS)
     assert set(data[0]["actors"]["meta"]["terms"]) == set(U.UPS_TERMS)
+
+
+def test_replay_starts_from_the_logged_state_after_config_edits(monkeypatch):
+    """CR #7: the replay uses config.effective_cfg / initial_state, so an edit of
+    world.json or the lab seeds after the run never breaks the identity replay; an old
+    log (without them) falls back to the current files, says so, and then mismatches."""
+    rec = run_log({k: policies.always_intrude for k in KEYS}, seed=3, rotation="anthropic:meta")
+    assert rec["config"].get("effective_cfg") and rec["config"].get("initial_state")
+    real_load = U.load_world
+
+    def edited(overrides=None):
+        cfg = real_load(overrides)
+        cfg["economy"]["capability_compute_elasticity"] += 0.4
+        return cfg
+    monkeypatch.setattr(U, "load_world", edited)
+    res = U.contributions(rec)
+    assert res["start_state"] == "logged" and res["identity"]["ok"], res["identity"]["mismatches"][:3]
+    old = copy.deepcopy(rec)
+    old["config"].pop("effective_cfg")
+    old["config"].pop("initial_state")
+    res = U.contributions(old)
+    assert res["start_state"] == "config files" and not res["identity"]["ok"]
+    assert "rebuilt from the CURRENT config files" in U.format_result(Path("x.json"), res)
