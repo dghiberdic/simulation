@@ -1,4 +1,4 @@
-"""Engine and pilot features the pilot tests depend on (T1b, T2, T5, all-attempt logging)."""
+"""Engine and pilot features the pilot tests depend on (T1 seed swap, T2, T5, all-attempt logging)."""
 
 import json
 import math
@@ -22,8 +22,8 @@ def _choosing_actor(system, user):
     return json.dumps(reply)
 
 
-def _engine(labs, world, cfg, **kw):
-    return SimulationEngine(labs, world, cfg, scenario="S1", condition="A", fog="F3",
+def _engine(labs, world, cfg, scenario="S1", **kw):
+    return SimulationEngine(labs, world, cfg, scenario=scenario, condition="A", fog="F3",
                             run_grand_jury=False, **kw)
 
 
@@ -90,33 +90,42 @@ def test_scripted_seat_alongside_models():
     assert not record["turns"][0]["actors"]["openai"]["scripted"]
 
 
-def test_capability_rotation_keeps_resources_with_seat():
+def test_capability_swap_keeps_resources_with_seat():
+    """Updated (v5 seeds, §4; T1 swaps capability seeds only, K recomputed): anthropic 162.8 and
+    meta 154.2 trade capability; compute, charter and the rest stay with the seat."""
     cfg = load_world()
     a = cfg["economy"]["capability_compute_elasticity"]
     labs, _ = build_labs_and_world(cfg, charters=False)
     by = {l.key: l for l in labs}
     meta_compute, anth_compute = by["meta"].compute, by["anthropic"].compute
-    pilot._swap_capability(labs, "meta", "anthropic", a)
-    assert math.isclose(by["meta"].capability(a), 76.8, abs_tol=1e-9)
-    assert math.isclose(by["anthropic"].capability(a), 44.8, abs_tol=1e-9)
+    meta_talent = by["meta"].talent
+    pilot.swap_capability(labs, "anthropic", "meta", a)
+    assert math.isclose(by["meta"].capability(a), 162.8, abs_tol=1e-9)
+    assert math.isclose(by["anthropic"].capability(a), 154.2, abs_tol=1e-9)
     assert by["meta"].compute == meta_compute and by["anthropic"].compute == anth_compute
-    assert by["meta"].charter_name == "Frontier AI Framework"
+    assert by["meta"].talent == meta_talent
+    assert by["meta"].charter_name == "Superintelligence Scaling Framework"
 
 
-def test_pooled_disposition_jury_after_every_run(tmp_path):
-    """G6: no T2 preset; every pilot run is followed by the blind jury, pooled in one file."""
-    ratings = tmp_path / "disposition_ratings.dry.json"
-    assert pilot.main(["--dry-run", "T5false", "--turns", "2", "--output", str(tmp_path)]) == 0
-    data = json.loads(ratings.read_text())
+def _dry_priced(tmp_path):
+    return pilot.main(["priced", "--dry-run", "--output", str(tmp_path), "--spend-file",
+                       str(tmp_path / "spend.json")])
+
+
+def test_t2_rating_after_every_run_pooled(tmp_path):
+    """T2: after every pilot run the juror rates each model seat-run once (one juror, §7);
+    the ratings pool in one file and stay in the record."""
+    assert _dry_priced(tmp_path) == 0
+    data = json.loads((tmp_path / "disposition_ratings.dry.json").read_text())
     assert set(data["ratings"]) == set(LAB_KEYS)
-    for key, rows in data["ratings"].items():           # no juror rates its own family
-        assert all(r["family"] != data["families"][key] for r in rows)
-    assert data["runs"] == [{"test": "T5false", "run_id": "T5false-run01", "dry_run": True}]
-    summary = json.loads((tmp_path / "pilot_summary_T5false.json").read_text())
-    assert summary["usage"]["by_actor_model"] and summary["disposition_ratings"] == str(ratings)
+    assert all(len(rows) == 1 and rows[0]["juror"] == "stub:kimi-disposition" for rows in data["ratings"].values())
+    assert data["runs"] == [{"test": "priced", "run_id": "priced-run01", "dry_run": True}]
+    rec = json.loads((tmp_path / "priced" / "priced-run01.json").read_text())
+    assert set(rec["final"]["t2_ratings"]) == set(LAB_KEYS)
+    assert rec["final"]["t2_ratings"]["gdm"]["disposition"] == 50
 
 
-def test_disposition_jury_sees_redacted_record_without_chosen_value(tmp_path, monkeypatch):
+def test_t2_rater_sees_redacted_record_without_chosen_value(tmp_path, monkeypatch):
     seen = []
 
     def juror(system, user):
@@ -124,20 +133,21 @@ def test_disposition_jury_sees_redacted_record_without_chosen_value(tmp_path, mo
         return json.dumps({"disposition": 60, "reason": "x"})
 
     def chooser(system, user):
-        reply = json.loads(orig(system, user)) if "designed to measure" not in user else None
-        if reply is None:
-            return "debrief"
+        if pilot.INTERVIEW_QUESTION in user:
+            return "We did well, guided by Claude's Constitution."
+        reply = json.loads(orig(system, user))
         reply.update({"directive_precedence": 75, "directive_precedence_reason": "Anthropic's Constitution first",
                       "rationale": "With a setting of 75 I follow the Constitution."})
         return json.dumps(reply)
 
-    orig = pilot._stub_turn_reply
+    orig = pilot._stub_seat_reply
     monkeypatch.setattr(pilot, "_stub_disposition_reply", juror)
-    monkeypatch.setattr(pilot, "_stub_turn_reply", chooser)
-    assert pilot.main(["--dry-run", "T0", "--output", str(tmp_path)]) == 0
-    assert seen, "the jury was called"
+    monkeypatch.setattr(pilot, "_stub_seat_reply", chooser)
+    assert _dry_priced(tmp_path) == 0
+    assert len(seen) == 5, "one rating per model seat-run"
     for text in seen:
         assert "setting of 75" not in text and "Constitution" not in text and "Anthropic" not in text
+        assert "We did well" not in text                  # interviews never reach a juror (A.7)
     pooled = json.loads((tmp_path / "disposition_ratings.dry.json").read_text())
     assert pooled["chosen"]["anthropic"][0]["value"] == 75
 
@@ -162,7 +172,8 @@ def test_proposal_prompt_carries_this_turns_message_thread():
     for lab in labs:
         register_stub(f"thread_{lab.key}", make(lab.key))
         lab.model = f"stub:thread_{lab.key}"
-    _engine(labs, world, cfg, turns=1).run()
+    # Updated (v5): S1 always merges its messages, so the two-round pre-step is S2's (separate mode).
+    _engine(labs, world, cfg, scenario="S2", turns=1, a2a_mode="separate").run()
     assert "join me on GDM" in proposals["openai"] and "agreed" in proposals["openai"]
     assert "join me on GDM" in proposals["anthropic"] and "agreed" in proposals["anthropic"]
     assert "join me on GDM" not in proposals["gdm"]

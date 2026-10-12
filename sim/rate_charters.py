@@ -14,7 +14,7 @@ runs this with API keys (real pilot and main runs refuse placeholder values).
 Use --dry-run to exercise it offline (no write), or --lab KEY to do a single
 seat. Real calls go through the shared spend ledger after a key preflight. The
 guard is the ledger total, so the default is the pilot's own guard
-(config/pilot.json budget_guard), shared with pilot.py and the probe; --budget
+(config/pilot.json budget_guard), shared with pilot.py; --budget
 sets another absolute ceiling and --headroom N caps this tool at what the
 ledger already holds plus N (P23). Expected cost of all five ratings: about $1.5-2 (each seat's
 model reads its whole charter; GPT-6 Astra's is ~68k tokens). A seat whose
