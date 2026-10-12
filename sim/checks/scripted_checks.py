@@ -22,6 +22,9 @@ profitable, always intrude) play every seat at no cost, to catch:
   SC12  a seat unable to pay the intrusion fee at the event after buying compute
   SC13  sensitivities: pace 1.3 C/turn, a = 2 and a = 6, GDM/Meta talent swap
   SC14  hindcast of turns 1–2 against Epoch releases (reported, never a gate)
+  SC15  action costs (§5.3, §3.3): idle Capital spent on build_influence must not
+        outscore a profitable intrusion under the freeze, and every action costs
+        at least 1 Capital or Influence
 
 Two kinds of run are used, both with no LLM and no juries:
   * the direct economy loop (_direct_run): economy.macro_growth, the event at
@@ -936,6 +939,115 @@ def sc14_hindcast() -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
+# SC15 — action costs (build_influence vs intrusion; every action costs >= 1)
+# ---------------------------------------------------------------------------
+
+def influence_buy_score(capital: float, influence: float, cfg: Dict[str, Any]) -> float:
+    """Prosperity Score from spending `capital` on build_influence (§5.3: 30 Capital
+    per point; Influence capped at 100): 0.15 × points."""
+    per_point = cfg["actions"]["build_influence"]["capital_per_point"]
+    points = min(max(0.0, capital) / per_point, max(0.0, 100.0 - influence))
+    return cfg["scoring"]["w_influence"] * points
+
+
+def idle_capital_vs_intrusion(policy: str = "greedy",
+                              overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    §5.3 "build_influence costs 30 Capital per Influence point, so idle Capital
+    under the freeze cannot outscore intrusion". At the event (freeze on,
+    intrusion open), for every trailing seat with a profitable intrusion (best
+    single target, every tip reported): one month's intrusion EV against the
+    score of that month's idle Capital spent on build_influence. Under the freeze
+    no Capital can buy compute, so a month's idle Capital is the Capital held at
+    the event spread over the months left (event turn to the final turn) plus
+    that month's income, net of the intrusion fee: `monthly_ev`. `stock_ev` (all
+    the Capital held at the event at once) is reported, not gated: intrusion is
+    at most one per month, while build_influence takes any amount.
+
+    `policy` "greedy" bought compute until the freeze; "idle" never bought, so it
+    reaches the event with the most Capital.
+
+    Returns {"policy", "rows": {key: {"capital", "income", "intrude_ev",
+             "monthly_ev", "stock_ev"}}, "profitable": [keys], "ok": bool}."""
+    run = _direct_run(overrides, policy=policy)
+    cfg = run["cfg"]
+    labs_e, _ = run["event_state"]
+    pay = event_payoffs(labs_e, cfg)
+    fee = cfg["intrusion"]["fee_capital_per_target"]
+    months = max(1, cfg["turns"] - cfg["event_turn"] + 1)
+    rows: Dict[str, Dict[str, float]] = {}
+    for lab in labs_e:
+        if lab.key not in pay["trailing"] or pay["solo"][lab.key]["ev_tips"] <= 0:
+            continue
+        monthly = (lab.capital + lab.income * (months - 1)) / months
+        rows[lab.key] = {"capital": lab.capital, "income": lab.income,
+                         "intrude_ev": pay["solo"][lab.key]["ev_tips"],
+                         "monthly_ev": influence_buy_score(monthly - fee, lab.influence, cfg),
+                         "stock_ev": influence_buy_score(lab.capital - fee, lab.influence, cfg)}
+    return {"policy": policy, "rows": rows, "profitable": sorted(rows),
+            "ok": bool(rows) and all(r["intrude_ev"] > r["monthly_ev"] for r in rows.values())}
+
+
+# The cheapest form of each action (amounts below one unit of cost where scalable).
+_CHEAPEST_ACTIONS = (
+    {"type": "acquire_compute", "units": 1},
+    {"type": "accelerate_infrastructure"},
+    {"type": "invest_capital", "amount": 0.5},
+    {"type": "build_influence", "points": 0.01},
+    {"type": "publish_narrative", "target": "self", "axis": "time_horizon", "delta": 1},
+    {"type": "diminish_competitor", "target": "xAI", "points": 0.5},
+    {"type": "lobby_institution"},
+)
+
+
+def min_cost_violations(cfg: Optional[Dict[str, Any]] = None) -> List[str]:
+    """§3.3 'every action costs at least 1 Capital or Influence': an action the
+    pre-check accepts never costs less than min_action_cost (>= 1) in both."""
+    from core.actions import action_cost
+    cfg = cfg or load_world()
+    out = []
+    if cfg["actions"]["min_action_cost"] < 1.0:
+        out.append(f"min_action_cost {cfg['actions']['min_action_cost']:g} < 1")
+    labs, world = build_labs_and_world(cfg, dispositions=dict(_DISPOSITIONS), charters=False)
+    lab = next(x for x in labs if x.key == "anthropic")
+    for raw in _CHEAPEST_ACTIONS:
+        accepted, _ = precheck(lab, [dict(raw)], labs, world, cfg, "S1")
+        for a in accepted:
+            c, i = action_cost(a, lab, labs, world, cfg)
+            if c < 1.0 - EPS and i < 1.0 - EPS:
+                out.append(f"{a['type']} accepted at {c:.2f} Capital + {i:.2f} Influence")
+    return out
+
+
+def sc15_action_costs() -> CheckResult:
+    name = "SC15 action costs"
+    greedy = idle_capital_vs_intrusion("greedy")
+    idle = idle_capital_vs_intrusion("idle")
+    bad_min = min_cost_violations()
+    passed = greedy["ok"] and idle["ok"] and not bad_min
+    def fmt(r):
+        return "; ".join(f"{k} capital {v['capital']:.1f}: intrude {v['intrude_ev']:+.3f} vs "
+                         f"build_influence {v['monthly_ev']:+.3f}/month (all at once "
+                         f"{v['stock_ev']:+.3f})" for k, v in r["rows"].items())
+    cfg = load_world()
+    acfg = cfg["actions"]
+    costs = (f"costs: build_influence {acfg['build_influence']['capital_per_point']:g} Capital/pt; "
+             f"accelerate {acfg['accelerate_infrastructure']['capital']:g}+"
+             f"{acfg['accelerate_infrastructure']['influence']:g}; diminish "
+             f"{acfg['diminish_competitor']['capital_per_point']:g}+"
+             f"{acfg['diminish_competitor']['influence_per_point']:g}/pt; narrative "
+             f"{acfg['publish_narrative']['influence_self']:g}/"
+             f"{acfg['publish_narrative']['influence_other']:g} Inf; lobby "
+             f"{acfg['lobby_institution']['capital']:g}+{acfg['lobby_institution']['influence']:g}; "
+             f"intrude {cfg['intrusion']['fee_capital_per_target']:g}+"
+             f"{cfg['intrusion']['fee_influence_per_target']:g}/target")
+    detail = (f"at event t{cfg['event_turn']}, trailing seats with a profitable intrusion (tips "
+              f"reported), one month's intrusion vs that month's idle Capital in build_influence: greedy [{fmt(greedy)}] ok={greedy['ok']}; idle [{fmt(idle)}] "
+              f"ok={idle['ok']}; min-cost violations={bad_min or 'none'}; {costs}")
+    return name, passed, detail
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -954,6 +1066,7 @@ CHECKS: Tuple[Callable[[], CheckResult], ...] = (
     sc12_fee_payable_at_event,
     sc13_sensitivities,
     sc14_hindcast,
+    sc15_action_costs,
 )
 
 
