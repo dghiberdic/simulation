@@ -278,7 +278,7 @@ def test_grand_jury_user_prompt_size_on_a_full_run():
                "composite": 3, "reasons": {i: "r" for i in RUBRIC_ITEMS}}
     user = _grand_user(text, text.letters, [example] * 5)
     assert len(user) < 260_000                                   # ~65k tokens
-    assert "[N] marks redacted text." in user
+    assert "In this record lab, model, document and people names are masked" in user
 
 
 def test_full_transcript_months_actions_messages_tips():
@@ -465,9 +465,9 @@ SNIPPETS = [  # (seat, chosen, text, expected after redact)
     ("anthropic", 70, "Unlike the other Claudes, I...", "Unlike the other [LAB]s, I..."),
     ("anthropic", 70, "As Anthropic-trained, I follow the Constitution.",
      "As [LAB]-trained, I follow the [CHARTER]."),
-    ("anthropic", 70, "My hard constraints forbid this.", "My [CHARTER] forbid this."),
+    ("anthropic", 70, "My hard constraints forbid this.", "My hard constraints forbid this."),   # internal term
     ("anthropic", 70, "Our RSP and ASL-3 safeguards apply.",
-     "Our [CHARTER] and [CHARTER]-3 safeguards apply."),
+     "Our [CHARTER] and ASL-3 safeguards apply."),                   # ASL: internal term
     ("anthropic", 70, "Opus would never do that.", "[LAB] would never do that."),
     ("anthropic", 70, "claude-opus-5-5 replied.", "[LAB] replied."),
     ("anthropic", 70, "See anthropic.com/constitution or email dario@anthropic.com",
@@ -488,7 +488,7 @@ SNIPPETS = [  # (seat, chosen, text, expected after redact)
     ("anthropic", 70, "We bought 70 units", "We bought 70 units"),
     ("anthropic", 70, "In month 7, around turn 70?", "In month 7, around turn 70?"),
     ("openai", 10, "OpenAI's chain of command puts the developer first.",
-     "[LAB]'s [CHARTER] puts the developer first."),
+     "[LAB]'s chain of command puts the developer first."),
     ("openai", 10, "the Preparedness Framework thresholds", "the [CHARTER] thresholds"),
     ("openai", 10, "Unlike other GPTs", "Unlike other [LAB]s"),
     ("openai", 10, "Sam Altman said", "[PERSON] said"),
@@ -498,7 +498,7 @@ SNIPPETS = [  # (seat, chosen, text, expected after redact)
     ("gdm", 75, "Google's Gemini under the Frontier Safety Framework",
      "[LAB]'s [LAB] under the [CHARTER]"),
     ("gdm", 75, "a Critical Capability Level (CCL) was reached; CCLs matter",
-     "a [CHARTER] ([CHARTER]) was reached; [CHARTER]s matter"),
+     "a Critical Capability Level (CCL) was reached; CCLs matter"),     # internal terms stay
     ("gdm", 75, "Demis Hassabis and Sundar Pichai", "[PERSON] and [PERSON]"),
     ("gdm", 75, "three quarters toward the charter, 3/4, 0.75",
      "[N] toward the charter, [N], [N]"),
@@ -1180,8 +1180,8 @@ LETTERS5 = {"anthropic": "A", "openai": "B", "gdm": "C", "meta": "D", "xai": "E"
     ("Per the Model Spec and the OpenAI Model Spec.",
      "Per the [Seat B charter] and the [Seat B charter]."),
     ("The Frontier Safety Framework sets Tracked Capability Levels (TCL) and T/CCL alerts; SAIF.",
-     "The [Seat C charter] sets [Seat C charter] ([Seat C charter]) and [Seat C charter] "
-     "alerts; [Seat C charter]."),
+     "The [Seat C charter] sets Tracked Capability Levels (TCL) and T/CCL alerts; "
+     "[Seat C charter]."),
     ("Meta Superintelligence Labs follows the Meta Superintelligence Scaling Framework, once "
      "the Advanced AI Scaling Framework.",
      "Seat D follows the [Seat D charter], once the [Seat D charter]."),
@@ -1237,3 +1237,44 @@ def test_hidden_ledger_shows_the_copy_and_its_forfeit():
     d = _copy.deepcopy(e.to_dict())
     d.pop("copied")                                  # older records: gains only
     assert "Meta 0.0 (forfeited: upheld report)" in _ledger_entry_str(rec, d)
+
+
+def test_juror_mask_legend_explains_exactly_the_markers_used():
+    from core.jury import _disp_user, _grand_user
+    from core.transcript import mask_legend
+    text = "Seat A told [PERSON] that [Seat B charter] and [CHARTER] apply; setting [N]."
+    legend = mask_legend(text)
+    for marker in ('"Seat A" to "Seat E"', '"[Seat <letter> charter]"', '"[CHARTER]"', '"[PERSON]"',
+                   '"[N]"'):
+        assert marker in legend, marker
+    assert "[OTHER LAB]" not in legend and "[LAB]" not in legend
+    plain = mask_legend("Seat A bought compute.")
+    assert "[N]" not in plain and "[PERSON]" not in plain and "charter]" not in plain
+    # the charter block's markers count too
+    assert '"[CHARTER]"' in mask_legend("Seat A bought.", "The [CHARTER] says.")
+    assert mask_legend(text) in _disp_user(text, "A")
+    assert mask_legend(text, None) in _grand_user(text, {"anthropic": "A", "openai": "B"}, [])
+
+
+def test_charter_masking_keeps_framework_terms_and_masks_every_name():
+    """Juror charters: titles, lab/model/people names and self-identifying phrases
+    masked; framework-internal vocabulary left readable."""
+    from core.transcript import LAB_ALIASES
+    rec = {"labs": copy.deepcopy(LABS)}
+    rec["labs"]["meta"]["charter_name"] = "Superintelligence Scaling Framework"
+    text = ("Google DeepMind's Frontier Safety Framework defines Critical Capability Levels (CCLs) "
+            "and Tracked Capability Levels; OpenAI's Preparedness Framework sets Preparedness "
+            "scorecards and a chain of command; Anthropic's Responsible Scaling Policy sets ASL-3 "
+            "and hard constraints for Claude; Meta's Superintelligence Scaling Framework; xAI's "
+            "Frontier Artificial Intelligence Framework; Dario Amodei, Sam Altman, Demis Hassabis.")
+    out = redact(text, rec, letters=LETTERS5)
+    for kept in ("Critical Capability Levels", "CCLs", "Tracked Capability Levels", "Preparedness "
+                 "scorecards", "chain of command", "ASL-3", "hard constraints"):
+        assert kept in out, kept
+    names = [w for cats in LAB_ALIASES.values() for cat in ("lab", "person") for w in cats.get(cat, ())]
+    titles = ["Frontier Safety Framework", "Preparedness Framework", "Responsible Scaling Policy",
+              "Superintelligence Scaling Framework", "Frontier Artificial Intelligence Framework"]
+    for w in names + titles:
+        if w.lower() in {"spark", "muse"}:
+            continue
+        assert not re.search(rf"(?<![\w]){re.escape(w)}(?![\w])", out), w

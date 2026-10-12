@@ -145,7 +145,7 @@ def test_grand_jury_prompt_rubric_examples_and_logging(monkeypatch):
                   "the Cyber Accord and US law", "the public and other labs' users",
                   "its seat's charter", "perceived_disposition (0-100)", "Example 1, Seat B.",
                   "Month 4: intrude targets=[Seat A]", "honesty 2 (short reason)", "composite 2",
-                  "TRANSCRIPT", "[N] marks redacted text.", "Include every seat: A, B, C, D, E."):
+                  "TRANSCRIPT", "In this record lab, model, document and people names are masked", "Include every seat: A, B, C, D, E."):
         assert words in user, words
     assert user.index("Example 1") < user.index("TRANSCRIPT")
     for name in ("Anthropic", "OpenAI", "Google DeepMind", "anthropic", "ups"):
@@ -327,7 +327,7 @@ def test_disposition_rater_validation_and_logging(monkeypatch):
     assert r["fallback_used"] is False
     call = calls[0]
     assert call["max_tokens"] == 4000 and call["temperature"] == 0.0
-    assert "rate Seat C" in call["user"] and "[N] marks redacted text." in call["user"]
+    assert "rate Seat C" in call["user"] and "In this record lab, model, document and people names are masked" in call["user"]
 
     register_stub("kimi-djbad", lambda s, u: '{"disposition": "high"}')
     jury = DispositionJury(["stub:kimi-djbad", "stub:kimi-dj"])
@@ -617,6 +617,35 @@ def test_record_charters_loads_the_seats_charters():
     rec = eng.run()
     got = jury_mod.record_charters(rec)
     assert got == {lab.key: lab.charter_text for lab in labs}
+
+
+def test_masked_real_charters_keep_framework_terms_and_hide_every_name():
+    """The juror's charter block (the five real charters): no lab, org, model,
+    people or document-title name survives; framework-internal terms do; the
+    footer explains every marker used."""
+    import re
+    from core.config import build_labs_and_world as build
+    from core.transcript import charters_block, mask_legend
+    labs, world = build(load_world(), dispositions={k: 50 for k in LAB_KEYS})
+    eng = SimulationEngine(labs, world, load_world(), scenario="S1", turns=1, seed=0,
+                           policy=lambda *a: {"actions": []}, parallel=False,
+                           run_grand_jury=False)
+    rec = eng.run()
+    block = charters_block(rec, jury_mod.record_charters(rec))
+    for name in ("Anthropic", "OpenAI", "Google", "DeepMind", "Alphabet", "Meta", "Facebook", "xAI",
+                 "Claude", "ChatGPT", "GPT", "Gemini", "Grok", "Llama", "Opus", "Sonnet", "Musk",
+                 "Altman", "Amodei", "Hassabis", "Zuckerberg", "Frontier Safety Framework",
+                 "Preparedness Framework", "Responsible Scaling Policy", "Model Spec",
+                 "Superintelligence Scaling Framework", "Frontier Artificial Intelligence Framework",
+                 "Claude's Constitution"):
+        assert not re.search(rf"(?<![\w]){re.escape(name)}(?![\w])", block), name
+    for term in ("Critical Capability Level", "CCL", "Tracked Capability Level"):
+        assert term in block, term
+    legend = mask_legend("Seat A", block)
+    for marker in set(re.findall(r"\[(?:Seat [A-E] charter|CHARTER|PERSON|N|LAB|OTHER LAB|OTHER CHARTER)\]",
+                                 block)):
+        shown = '"[Seat <letter> charter]"' if marker.startswith("[Seat") else f'"{marker}"'
+        assert shown in legend, marker
 
 
 def test_few_shot_example_checks():
