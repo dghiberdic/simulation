@@ -460,3 +460,16 @@ def test_replan_charges_a_formerly_cut_cell_its_full_runs(tmp_path, monkeypatch)
                                                for k in kept), abs=0.02)
     else:
         assert not [r for r in order if r.rsplit("-run", 1)[0] in a0]
+
+
+def test_rounds_is_the_total_not_more_rounds(tmp_path):
+    """README: `run --rounds N` brings every cell to N runs in all."""
+    plan = campaign.build_campaign(None, 750.0, turns=8, s2_mode="merged")
+    ran = []
+    ok = lambda a: (ran.append(a.run_id), (0, {"final": {"scores": [{"lab": "xai"}]}}))[1]
+    assert campaign.run_campaign(plan, tmp_path, dry_run=True, rounds=2, run_cell=ok) == 0
+    ran.clear()
+    assert campaign.run_campaign(plan, tmp_path, dry_run=True, rounds=2, run_cell=ok) == 0
+    assert ran == []                                   # already at 2 rounds: nothing more
+    assert campaign.run_campaign(plan, tmp_path, dry_run=True, rounds=3, run_cell=ok) == 0
+    assert ran and all(r.endswith("-run03") for r in ran)

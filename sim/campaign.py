@@ -359,7 +359,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="S2 and kin message mode (default: T9's decision from the pilot logs)")
     p.add_argument("--pilot-dir", default=None, help="pilot root for the measured inputs (default data/pilot)")
     p.add_argument("--max-runs", type=int, default=MAX_RUNS)
-    p.add_argument("--rounds", type=int, default=None, help="run at most this many rounds")
+    p.add_argument("--rounds", type=int, default=None, help="the total number of rounds to have done (rounds already done count), not N more")
     p.add_argument("--replan", action="store_true",
                    help="run: re-plan the cells and rounds from the budget left instead of resuming the "
                         "saved plan (rounds = rounds done + floor(budget left / round cost))")

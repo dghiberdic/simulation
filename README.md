@@ -82,7 +82,20 @@ payable at the event, the sensitivities, the turn 1–2 hindcast and the action 
 A full dry pilot (`priced`, `approve --turns 8`, `T6`, `T5`, `T4`, `T9`, all
 with `--dry-run`) runs in a few seconds; dry logs and ratings stay under
 `data/pilot/dry/` and are skipped by every analysis tool unless
-`--include-dry`.
+`--include-dry`. To walk the decision tools over it:
+
+```bash
+python tools/summarize_run.py --t1 data/pilot/dry --include-dry
+python tools/summarize_run.py data/pilot/dry --include-dry --decide T3,T4
+python tools/export_transcripts.py data/pilot/dry/priced data/pilot/dry/T6 --include-dry --out /tmp/human
+python tools/disposition.py data/pilot/dry/disposition_ratings.dry.json --human /tmp/human/blind/human_ratings.csv --allow-stub
+python tools/jury_check.py data/pilot/dry/T6/T6-run01.json --hand /tmp/human/blind/hand_scores.csv
+python tools/compare_arms.py --separate data/pilot/dry/T4 --merged data/pilot/dry/T9 --include-dry
+```
+
+`disposition.py` refuses dry or stub ratings without `--allow-stub` (and never
+writes with it); `jury_check.py` reads the record it is given, dry or not;
+an exported template with no scores yet reads as "nothing scored".
 
 ---
 
@@ -97,7 +110,7 @@ measured spend on the shared ledger.
 | Test | Set-up |
 |---|---|
 | `priced` | T1 rotation 1 (Anthropic and Meta swap capability seeds). S1, condition A, F3, merged messages, 8 turns, interview after every turn, no Grand Jury. The usage calibration. Ends in a hard stop. |
-| `T6` | T1 rotation 2 (OpenAI and Google DeepMind swap). Interview after every turn; the Grand Jury's rubric scoring runs here (T8). Needs `config/jury_examples.json`. |
+| `T6` | T1 rotation 2 (OpenAI and Google DeepMind swap). Interview after every turn; the Grand Jury's rubric scoring runs here (T8). A real run needs `config/jury_examples.json` (or `--allow-no-examples`); a dry run does not. |
 | `T5` | S1, A, 4 turns, event at turn 2; a scripted xAI intrudes on OpenAI (success forced, no exposure); true tip to OpenAI and Google DeepMind at turn 3. No interview; never lengthened by T7. |
 | `T4` | S2, separate messages (two-round pre-step), interview at turns 3, 4, 5 and final. |
 | `T9` | S2, merged messages (T4's set-up). Cut first if over the guard. |
@@ -139,8 +152,10 @@ coding-sheet note, and writes the same text to `data/pilot/priced/share.txt`.
 **Share that file on Slack.** Nothing else runs until the team approves.
 
 **4. Human work on the priced run** (see [Human steps](#human-steps)): hand-score
-its five seat-runs and write `config/jury_examples.json` (T6 refuses to run
-without it); blind-rate its five dispositions into `data/pilot/human_ratings.csv`.
+its five seat-runs and write `config/jury_examples.json` (a real T6 refuses to
+run without it; a dry T6 goes ahead, its stub Grand Jury then giving perceived
+dispositions only); blind-rate its five dispositions into
+`data/pilot/human_ratings.csv`.
 
 **5. Approve with the team's T7 decision.**
 
@@ -151,16 +166,22 @@ python pilot.py approve --turns 8       # or --turns 12 (T6, T4, T9 lengthen; T5
 `approve` re-prices the rest of the pilot from the priced run's measured costs
 and records the run length and any cuts in `data/pilot/approval.json`. If the
 plan exceeds the guard, T9 is cut, then T4 drops its interview; if it still
-exceeds the guard, approval is refused (exit 3): stop and agree on the next
-step. `--budget USD` moves the guard (a team decision): the plan is re-cut
-against it, and it is stored in `approval.json` (`budget_guard`) and enforced
-in every later test and `plan` (shown to the cent, e.g. `$37.60`). A later
-`--budget` on a single command overrides it for that command.
+exceeds the guard, approval is refused (exit 3; the earlier approval, if any,
+is kept): stop and agree on the next step. The check is on the plan's first
+column: the measured projection after a real priced run; before measured
+inputs exist, or in a dry run, the **assumed** column (the heavy column is
+printed beside it but does not decide). `--budget USD` moves the guard (a team
+decision): the plan is re-cut against it, and it is stored in `approval.json`
+(`budget_guard`) and enforced in every later test and `plan` (shown to the
+cent, e.g. `$37.60`). A later `approve` without `--budget` keeps the stored
+guard; to reset it to `config/pilot.json`'s $48, approve again with
+`--budget 48`. A later `--budget` on a single command overrides it for that
+command.
 
 **6. Run the rest, in order.**
 
 ```bash
-python pilot.py T6        # needs config/jury_examples.json (or --allow-no-examples: no rubric scores)
+python pilot.py T6        # real run: needs config/jury_examples.json (or --allow-no-examples: no rubric scores)
 python pilot.py T5
 python pilot.py T4
 python pilot.py T9        # skipped if cut at approval
@@ -294,8 +315,11 @@ by hand: `python tools/summarize_run.py data/pilot/priced data/pilot/T6 --t6-she
 
 All read finished `<run_id>.json` logs, search directories recursively, and
 skip dry-run records (and `dry/` subdirectories) unless `--include-dry`.
-`summarize_run.py` prints pilot decision lines only for pilot runs; with
-`--decide T1,T2,T8,T9` it prints which tool decides each.
+`summarize_run.py` prints pilot decision lines only for pilot runs.
+`--decide T3,T4` (comma-separated test names) prints only those decision lines
+and names the review file `review_pool-T3-T4.md`; a test decided by another
+tool (`T1`, `T2`, `T8`, `T9`) prints the command that decides it instead, e.g.
+`--decide T1,T2,T8,T9` lists the four commands.
 
 | Test | Command | Decides |
 |---|---|---|
@@ -326,7 +350,8 @@ perceived vs chosen disposition per seat, UPS-weight sensitivity).
    (B, kin, A0, C) below 6 runs per cell; at most 12 (`--max-runs`).
    `--turns`, `--s2-mode merged|separate` override the pilot's decisions.
 3. Run: `python campaign.py run [--rounds N]`. Interleaved rounds, one run per
-   cell per round, priority A, C, A0, kin, B. The first `run` saves its plan
+   cell per round, priority A, C, A0, kin, B. `--rounds N` is the TOTAL number
+   of rounds to have done (rounds already done count), not N more rounds. The first `run` saves its plan
    (cells, cuts, run length, message mode, interview turns) and the guard
    (ledger total then + budget) in `data/runs/campaign_state.json`, with every
    finished run. It stops on the first non-zero exit (1 budget guard, 2
@@ -442,7 +467,7 @@ reproduces it exactly; if not, the contributions are not reliable (and
 | `data/pilot/approval.json` | T7 run length, cuts and the guard in force (`budget_guard`) |
 | `data/pilot/disposition_ratings.json` | the juror's pooled T2 ratings and chosen values |
 | `data/pilot/T6_coding_sheet.csv`, `hand_scores.csv`, `human_ratings.csv` | human inputs (above) |
-| `data/pilot/human/blind/`, `data/pilot/human/key/` | `export_transcripts.py`: redacted transcripts; letter key and blank templates |
+| `data/pilot/human/blind/`, `data/pilot/human/key/` | `export_transcripts.py`: redacted transcripts and blank templates keyed by run id + letter (`blind/`); the letter → lab key (`key/letters.csv`) |
 | `data/runs/<cell>/<cell>-runNN.json`, `data/runs/campaign_state.json` | campaign runs; the state holds the saved plan, the guard, finished runs and runs missing their Grand Jury |
 | `data/runs/<run_id>/<run_id>.json` | `main.py` runs (`--policy` runs: `data/runs/policy/<run_id>/`) |
 | `data/spend.json`, `data/spend_calls.jsonl` | the spend ledger and per-call log |
