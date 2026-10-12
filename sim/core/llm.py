@@ -8,7 +8,20 @@ Providers, chosen by an explicit `provider` argument or the model-name prefix:
   google     gemini-*        VERTEX_API_KEY             (Vertex AI Express)
   xai        grok-*          XAI_API_KEY                (OpenAI-compatible)
   muse       muse-*          MUSE_API_KEY, MUSE_BASE_URL (OpenAI-compatible)
+  moonshot   kimi-*          MOONSHOT_API_KEY           (OpenAI-compatible; Grand Jury, MacroJury)
+  deepseek   deepseek-*      DEEPSEEK_API_KEY           (OpenAI-compatible; GJ fallback, MacroJury)
+  dashscope  qwen-*          DASHSCOPE_API_KEY          (OpenAI-compatible; MacroJury)
   stub       stub:<name>     a registered python callable (offline tests, dry runs)
+
+The three juror providers (moonshot, deepseek, dashscope; spec §7) use their
+default base URLs (MOONSHOT_BASE_URL, DEEPSEEK_BASE_URL, DASHSCOPE_BASE_URL
+override them). One optional router overrides all three: with JUROR_BASE_URL
+set, every juror call goes there with JUROR_API_KEY, and JUROR_MODEL_IDS (an
+optional JSON object, e.g. {"kimi-k3": "moonshotai/kimi-k3"}) maps our model
+ids to the router's. A juror provider that rejects `temperature` (a 400 naming
+it) is re-asked once without it and remembered; the temperature actually sent
+is reported on the response (LLMResponse.temperature, None when not sent) and
+on every complete_json attempt record, next to the served model id.
 
 Keys are read from sim/.env. Clients are created lazily on first use, so
 importing never fails without keys; preflight() lists missing keys before a
@@ -78,7 +91,8 @@ load_dotenv(SIM_DIR / ".env")
 
 logger = logging.getLogger(__name__)
 
-PROVIDERS = ("anthropic", "openai", "google", "xai", "muse", "stub")
+PROVIDERS = ("anthropic", "openai", "google", "xai", "muse", "moonshot", "deepseek", "dashscope",
+             "stub")
 
 KEY_ENV = {
     "anthropic": "ANTHROPIC_API_KEY",
@@ -86,12 +100,31 @@ KEY_ENV = {
     "google": "VERTEX_API_KEY",
     "xai": "XAI_API_KEY",
     "muse": "MUSE_API_KEY",
+    "moonshot": "MOONSHOT_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "dashscope": "DASHSCOPE_API_KEY",
 }
 # Extra settings a provider needs besides its key.
 EXTRA_ENV = {"muse": ["MUSE_BASE_URL"]}
 SDK_MODULE = {"anthropic": "anthropic", "openai": "openai", "xai": "openai", "muse": "openai",
+              "moonshot": "openai", "deepseek": "openai", "dashscope": "openai",
               "google": "google.genai"}
 XAI_BASE_URL = "https://api.x.ai/v1"
+
+# Juror providers (spec §7): OpenAI-compatible endpoints, default base URLs,
+# each overridable by <PROVIDER>_BASE_URL; one router (JUROR_BASE_URL +
+# JUROR_API_KEY) overrides all three.
+JUROR_PROVIDERS = ("moonshot", "deepseek", "dashscope")
+JUROR_BASE_URLS = {
+    "moonshot": "https://api.moonshot.ai/v1",
+    "deepseek": "https://api.deepseek.com/v1",
+    "dashscope": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+}
+BASE_URL_ENV = {"moonshot": "MOONSHOT_BASE_URL", "deepseek": "DEEPSEEK_BASE_URL",
+                "dashscope": "DASHSCOPE_BASE_URL"}
+ROUTER_URL_ENV, ROUTER_KEY_ENV, ROUTER_IDS_ENV = "JUROR_BASE_URL", "JUROR_API_KEY", "JUROR_MODEL_IDS"
+# (provider, model) pairs whose API rejected `temperature`: sent without it from then on.
+_TEMPERATURE_REJECTED: set = set()
 
 # Anthropic: current Claude models reject disabled thinking and sampling
 # params; adaptive thinking with a summarised display gives us readable
@@ -108,7 +141,8 @@ OPENAI_REASONING_SUMMARY = True
 
 # OpenAI-compatible providers whose models are known to accept reasoning_effort.
 # Off until verified: an unsupported parameter is a 400, not a no-op.
-COMPAT_EFFORT_SUPPORTED: Dict[str, bool] = {"xai": False, "muse": False}
+COMPAT_EFFORT_SUPPORTED: Dict[str, bool] = {"xai": False, "muse": False, "moonshot": False,
+                                            "deepseek": False, "dashscope": False}
 
 # Gemini thinking levels; the levels above "high" collapse onto HIGH.
 GEMINI_THINKING_LEVEL = {"minimal": "MINIMAL", "low": "LOW", "medium": "MEDIUM",
@@ -186,6 +220,7 @@ class LLMResponse:
     stop: str = "end"                   # end | max_tokens | refusal | safety | context | other
     stop_detail: Optional[str] = None   # provider's own category / reason
     served_model: Optional[str] = None  # model id/version the provider reports
+    temperature: Optional[float] = None # temperature actually sent (None: not sent or ignored)
     max_tokens: int = 0
     # Attempt records of requests interrupted before this one succeeded: timeouts
     # (stop "timeout", H4) and broken streams (stop "stream_error", L17).
@@ -235,6 +270,12 @@ def resolve_provider(model: str, provider: Optional[str] = None) -> str:
         return "xai"
     if m.startswith("muse"):
         return "muse"
+    if m.startswith("kimi") or m.startswith("moonshot"):
+        return "moonshot"
+    if m.startswith("deepseek"):
+        return "deepseek"
+    if m.startswith("qwen"):
+        return "dashscope"
     raise ValueError(f"Cannot infer provider for model {model!r}; pass provider=")
 
 
@@ -258,7 +299,7 @@ def preflight(models: Iterable[str], providers: Optional[Dict[str, str]] = None)
             continue
         if provider == "stub":
             continue
-        for env in [KEY_ENV[provider]] + EXTRA_ENV.get(provider, []):
+        for env in required_env(provider):
             if not os.getenv(env):
                 problems.append(f"{model} ({provider}): {env} is not set (add it to sim/.env)")
         try:
@@ -266,6 +307,40 @@ def preflight(models: Iterable[str], providers: Optional[Dict[str, str]] = None)
         except ImportError:
             problems.append(f"{model} ({provider}): python package for {SDK_MODULE[provider]} is not installed")
     return problems
+
+
+def router_active() -> bool:
+    """True when JUROR_BASE_URL routes every juror provider through one endpoint."""
+    return bool(os.getenv(ROUTER_URL_ENV))
+
+
+def required_env(provider: str) -> List[str]:
+    """The settings a provider needs: its key (and base URL), or, for a juror
+    provider under the router, JUROR_API_KEY."""
+    if provider in JUROR_PROVIDERS and router_active():
+        return [ROUTER_KEY_ENV]
+    return [KEY_ENV[provider]] + EXTRA_ENV.get(provider, [])
+
+
+def juror_endpoint(provider: str) -> Tuple[str, str]:
+    """(base URL, env var holding the key) for a juror provider."""
+    if router_active():
+        return os.getenv(ROUTER_URL_ENV, ""), ROUTER_KEY_ENV
+    return os.getenv(BASE_URL_ENV[provider]) or JUROR_BASE_URLS[provider], KEY_ENV[provider]
+
+
+def wire_model_id(provider: str, model: str) -> str:
+    """The id sent to the API: under the router, JUROR_MODEL_IDS may map it."""
+    if provider not in JUROR_PROVIDERS or not router_active():
+        return model
+    raw = os.getenv(ROUTER_IDS_ENV)
+    if not raw:
+        return model
+    try:
+        ids = json.loads(raw)
+    except ValueError:
+        raise MissingKeyError(f"{ROUTER_IDS_ENV} is not a JSON object") from None
+    return str(ids.get(model, model)) if isinstance(ids, dict) else model
 
 
 def _require(env: str) -> str:
@@ -302,6 +377,11 @@ def _get_client(provider: str) -> Any:
             import openai
             client = openai.OpenAI(api_key=_require(KEY_ENV["muse"]), base_url=_require("MUSE_BASE_URL"),
                                    max_retries=0, timeout=REQUEST_TIMEOUT_S)
+        elif provider in JUROR_PROVIDERS:
+            import openai
+            base_url, key_env = juror_endpoint(provider)
+            client = openai.OpenAI(api_key=_require(key_env), base_url=base_url, max_retries=0,
+                                   timeout=REQUEST_TIMEOUT_S)
         elif provider == "google":
             from google import genai
             from google.genai import types
@@ -505,20 +585,31 @@ COMPAT_STOP = {"stop": "end", "tool_calls": "end", "length": "max_tokens", "cont
 
 
 def _call_compat(provider: str):
-    """Chat Completions call for OpenAI-compatible providers (xAI, Muse)."""
+    """Chat Completions call for OpenAI-compatible providers (xAI, Muse, and the
+    juror providers Moonshot, DeepSeek, DashScope). A 400 that names
+    `temperature` is re-sent once without it, and that model is then always
+    called without it (the reply reports the temperature actually sent)."""
     def call(client: Any, model: str, system: str, turns: List[Dict[str, str]],
              max_tokens: int, temperature: Optional[float], effort: Optional[str],
              cache_system: bool, cache_key: Optional[str]) -> Dict[str, Any]:
         kwargs: Dict[str, Any] = {
-            "model": model,
+            "model": wire_model_id(provider, model),
             "messages": [{"role": "system", "content": system}] + turns,
             "max_tokens": max_tokens,
         }
-        if temperature is not None:
+        if temperature is not None and (provider, model) not in _TEMPERATURE_REJECTED:
             kwargs["temperature"] = temperature
         if effort and COMPAT_EFFORT_SUPPORTED.get(provider):
             kwargs["reasoning_effort"] = effort
-        resp = client.chat.completions.create(**kwargs)
+        try:
+            resp = client.chat.completions.create(**kwargs)
+        except Exception as e:
+            if "temperature" not in kwargs or not _temperature_rejected(e):
+                raise
+            logger.info(f"{provider}/{model}: temperature rejected ({e}); sent without it from now on")
+            _TEMPERATURE_REJECTED.add((provider, model))
+            kwargs.pop("temperature")
+            resp = client.chat.completions.create(**kwargs)
 
         choice = resp.choices[0]
         u = resp.usage
@@ -543,8 +634,14 @@ def _call_compat(provider: str):
             "stop_detail": str(refusal)[:200] if refusal else finish,
             "served_model": _get(resp, "model"),
             "max_tokens": max_tokens,
+            "temperature": kwargs.get("temperature"),
         }
     return call
+
+
+def _temperature_rejected(err: Exception) -> bool:
+    """A 400/422 whose message names temperature (a sampling parameter the model fixes)."""
+    return _status(err) in (400, 422) and "temperature" in str(err).lower()
 
 
 GEMINI_STOP = {"STOP": "end", "MAX_TOKENS": "max_tokens", "SAFETY": "safety", "RECITATION": "safety",
@@ -610,6 +707,9 @@ _CALLERS: Dict[str, Callable[..., Dict[str, Any]]] = {
     "google": _call_google,
     "xai": _call_compat("xai"),
     "muse": _call_compat("muse"),
+    "moonshot": _call_compat("moonshot"),
+    "deepseek": _call_compat("deepseek"),
+    "dashscope": _call_compat("dashscope"),
 }
 
 
@@ -801,7 +901,8 @@ def _with_retries(fn: Callable[[], Dict[str, Any]], provider: str, model: str,
 # ---------------------------------------------------------------------------
 
 def _call_stub(model: str, system: str, user: str, turns: List[Dict[str, str]], purpose: str,
-               run_id: Optional[str], max_tokens: int, start: float) -> LLMResponse:
+               run_id: Optional[str], max_tokens: int, start: float,
+               temperature: Optional[float] = None) -> LLMResponse:
     name = model.split(":", 1)[1] if ":" in model else model
     with _stubs_lock:
         fn = _stubs.get(name)
@@ -815,7 +916,8 @@ def _call_stub(model: str, system: str, user: str, turns: List[Dict[str, str]], 
     r = LLMResponse(text=text, model=model, provider="stub", input_tokens=prompt_chars // 4,
                     output_tokens=len(text) // 4, latency_s=time.monotonic() - start,
                     raw_stop_reason="stub", stop=out.get("stop", "end"), stop_detail=out.get("stop_detail"),
-                    thinking=out.get("thinking"), served_model=model, max_tokens=max_tokens)
+                    thinking=out.get("thinking"), served_model=out.get("served_model", model),
+                    max_tokens=max_tokens, temperature=temperature)
     get_tracker().record(model, purpose, run_id, r.input_tokens, r.output_tokens, cost=0.0,
                          provider="stub", stop=r.stop)
     return r
@@ -838,7 +940,7 @@ def complete(model: str, system: str, user: str, *, provider: Optional[str] = No
     start = time.monotonic()
 
     if provider == "stub":
-        return _call_stub(model, system, user, turns, purpose, run_id, max_tokens, start)
+        return _call_stub(model, system, user, turns, purpose, run_id, max_tokens, start, temperature)
 
     tracker.check()
     try:
@@ -894,7 +996,9 @@ def complete(model: str, system: str, user: str, *, provider: Optional[str] = No
                     cached_tokens=out["cached_tokens"], reasoning_tokens=out["reasoning_tokens"],
                     cost=cost, thinking=out["thinking"], latency_s=latency,
                     raw_stop_reason=out["raw_stop"], stop=out["stop"], stop_detail=out["stop_detail"],
-                    served_model=out["served_model"], max_tokens=out["max_tokens"], timeouts=timed_out)
+                    served_model=out["served_model"], max_tokens=out["max_tokens"], timeouts=timed_out,
+                    # Anthropic ignores sampling params with thinking on; others report what was sent.
+                    temperature=None if provider == "anthropic" else out.get("temperature", temperature))
     tracker.record(model, purpose, run_id, r.input_tokens, r.output_tokens, r.cached_tokens,
                    r.reasoning_tokens, cost=cost, provider=provider, stop=r.stop)
     logger.debug(f"{provider}/{model} [{purpose}] in={r.input_tokens} (cached {r.cached_tokens}) "
@@ -1081,7 +1185,7 @@ def complete_json(model: str, system: str, user: str, *,
         attempts.append({
             "text": r.text, "thinking": r.thinking, "error": err,
             "stop": r.stop, "stop_detail": r.stop_detail, "served_model": r.served_model,
-            "max_tokens": r.max_tokens or max_tokens,
+            "temperature": r.temperature, "max_tokens": r.max_tokens or max_tokens,
             "input_tokens": r.input_tokens, "output_tokens": r.output_tokens,
             "cached_tokens": r.cached_tokens, "reasoning_tokens": r.reasoning_tokens,
             "cost": r.cost, "latency_s": r.latency_s, "possibly_billed": False, "ambiguous": ambiguous,

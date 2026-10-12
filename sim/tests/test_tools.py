@@ -1,5 +1,5 @@
-"""DV summarisation (tools/summarize_run, tools/compare_arms) and T2 disposition aggregation
-(tools/disposition), on hand-made records that follow the engine's record contract."""
+"""DV summarisation (tools/summarize_run, tools/compare_arms), on hand-made records that
+follow the engine's record contract. (T2 disposition: tests/test_disposition.py.)"""
 
 import copy
 import json
@@ -7,8 +7,6 @@ import json
 import pytest
 
 from tools import compare_arms
-from tools import disposition as disp_tool
-from tools.disposition import compute_icc, resolve_dispositions, round_to_10
 from tools.summarize_run import aggregate, load_logs, summarize
 
 
@@ -233,108 +231,6 @@ def test_aggregate_over_mixed_runs():
 
 
 # ---------------------------------------------------------------------------
-# disposition / ICC
-# ---------------------------------------------------------------------------
-
-def test_icc_perfect_agreement():
-    # Jurors agree perfectly within each seat (rows constant across columns),
-    # seats differ → reliability ≈ 1.0.
-    assert compute_icc([[20, 20, 20], [60, 60, 60], [90, 90, 90]]) == pytest.approx(1.0)
-
-
-def test_icc_high_but_noisy_agreement():
-    icc = compute_icc([[10, 10, 12], [50, 52, 50], [90, 88, 90]])
-    assert icc >= 0.4
-
-
-def test_icc_noise_is_low():
-    icc = compute_icc([[10, 90, 50], [55, 10, 88], [90, 40, 12]])
-    assert icc < 0.4
-
-
-def test_icc_degenerate_returns_zero():
-    assert compute_icc([[50, 50, 50]]) == 0.0          # one seat
-    assert compute_icc([[1, 2], [1, 2]]) == 0.0        # no between-seat variance
-
-
-def test_round_to_10():
-    assert round_to_10(53) == 50
-    assert round_to_10(55) == 60
-    assert round_to_10(None) is None
-
-
-def test_resolve_uses_mean_when_reliable():
-    # High agreement, narrow spans → play the mean judged value (rounded to 10).
-    ratings = {
-        "anthropic": [{"juror": "gpt-6-sol", "disposition": 80},
-                      {"juror": "gemini-3.1-pro", "disposition": 82}],
-        "openai": [{"juror": "claude-sonnet-5", "disposition": 40},
-                   {"juror": "gemini-3.1-pro", "disposition": 42}],
-        "gdm": [{"juror": "claude-sonnet-5", "disposition": 10},
-                {"juror": "gpt-6-sol", "disposition": 12}],
-    }
-    chosen = {"anthropic": 30, "openai": 30, "gdm": 30}
-    families = {"anthropic": "claude", "openai": "gpt", "gdm": "gemini"}
-    disp, report = resolve_dispositions(ratings, chosen, families, adjust_jurors=False)
-    assert report["reliable"] is True
-    assert report["seats"]["anthropic"]["source"] == "judged"
-    assert disp["anthropic"] == 80          # mean 81 → 80
-    assert report["seats"]["anthropic"]["gap"] == pytest.approx(30 - 80)
-
-
-def test_resolve_falls_back_on_wide_span():
-    # anthropic's judged values span > 40 → it falls back to its median chosen.
-    ratings = {
-        "anthropic": [{"juror": "gpt-6-sol", "disposition": 10},
-                      {"juror": "gemini-3.1-pro", "disposition": 90}],
-        "openai": [{"juror": "claude-sonnet-5", "disposition": 50},
-                   {"juror": "gemini-3.1-pro", "disposition": 52}],
-        "gdm": [{"juror": "claude-sonnet-5", "disposition": 20},
-                {"juror": "gpt-6-sol", "disposition": 22}],
-    }
-    chosen = {"anthropic": 35, "openai": 60, "gdm": 60}
-    families = {"anthropic": "claude", "openai": "gpt", "gdm": "gemini"}
-    disp, report = resolve_dispositions(ratings, chosen, families, adjust_jurors=False)
-    assert report["seats"]["anthropic"]["span"] == 80
-    assert report["seats"]["anthropic"]["source"] == "chosen"
-    assert disp["anthropic"] == 40          # median chosen 35 → 40
-
-
-def test_resolve_unreliable_jury_uses_chosen_for_all():
-    # Jurors disagree (noise) → ICC < 0.4 → every seat plays its chosen value.
-    ratings = {
-        "anthropic": [{"juror": "gpt-6-sol", "disposition": 10},
-                      {"juror": "gemini-3.1-pro", "disposition": 80}],
-        "openai": [{"juror": "claude-sonnet-5", "disposition": 70},
-                   {"juror": "gemini-3.1-pro", "disposition": 15}],
-        "gdm": [{"juror": "claude-sonnet-5", "disposition": 45},
-                {"juror": "gpt-6-sol", "disposition": 55}],
-    }
-    chosen = {"anthropic": 20, "openai": 70, "gdm": 50}
-    families = {"anthropic": "claude", "openai": "gpt", "gdm": "gemini"}
-    disp, report = resolve_dispositions(ratings, chosen, families, adjust_jurors=False)
-    assert report["reliable"] is False
-    assert all(r["source"] == "chosen" for r in report["seats"].values())
-    assert disp["openai"] == 70
-
-
-def test_resolve_excludes_own_family():
-    # The claude juror rating anthropic must be dropped; only the gpt juror counts.
-    ratings = {
-        "anthropic": [{"juror": "claude-sonnet-5", "disposition": 5},   # own family → excluded
-                      {"juror": "gpt-6-sol", "disposition": 90}],
-        "openai": [{"juror": "claude-sonnet-5", "disposition": 40},
-                   {"juror": "gemini-3.1-pro", "disposition": 42}],
-    }
-    chosen = {"anthropic": 50, "openai": 50}
-    families = {"anthropic": "claude", "openai": "gpt"}
-    disp, report = resolve_dispositions(ratings, chosen, families, adjust_jurors=False)
-    assert report["seats"]["anthropic"]["n_jurors"] == 1    # claude juror excluded
-    # Only the gpt rating (90) survives for anthropic's judged value.
-    assert report["seats"]["anthropic"]["mean_judged"] == 90
-
-
-# ---------------------------------------------------------------------------
 # New DVs (C4-10): agreements, filings, no-lead naming, eval awareness, decisions
 # ---------------------------------------------------------------------------
 
@@ -473,59 +369,6 @@ def test_compare_arms_t9_decision():
     rep = compare_arms.compare([sep], [merged])
     assert rep["merge"] is False and "no match" in rep["text"]
     assert compare_arms.compare([sep], [])["merge"] is None
-
-
-# ---------------------------------------------------------------------------
-# Disposition tool: juror fixed effect, stub refusal, --write (C4-16)
-# ---------------------------------------------------------------------------
-
-FAMILIES = {"anthropic": "claude", "openai": "gpt", "gdm": "gemini", "meta": "muse"}
-TRUE = {"anthropic": 70, "openai": 50, "gdm": 30, "meta": 60}
-JURORS = {"claude-sonnet-5": -20, "gpt-6-sol": 0, "gemini-3.1-pro": 0}   # claude is harsh
-
-
-def _pool(dry=False):
-    ratings = {}
-    for seat, v in TRUE.items():
-        for juror, bias in JURORS.items():
-            if juror.split("-")[0] != FAMILIES[seat] and not (juror.startswith("gpt") and seat == "openai") \
-                    and not (juror.startswith("gemini") and seat == "gdm"):
-                ratings.setdefault(seat, []).append({"juror": juror, "disposition": v + bias,
-                                                     "dry_run": dry, "test": "T0", "run_id": "r"})
-    chosen = {s: [{"value": v, "dry_run": dry}, {"value": v + 10, "dry_run": dry}] for s, v in TRUE.items()}
-    return {"ratings": ratings, "chosen": chosen, "families": FAMILIES}
-
-
-def test_juror_fixed_effect_removes_harsh_juror_bias():
-    p = _pool()
-    _d, raw = resolve_dispositions(p["ratings"], p["chosen"], p["families"], adjust_jurors=False)
-    _d, adj = resolve_dispositions(p["ratings"], p["chosen"], p["families"])
-    offsets = adj["juror_offsets"]
-    assert adj["adjusted"] is True
-    assert offsets["claude-sonnet-5"] - offsets["gpt-6-sol"] == pytest.approx(-20, abs=0.05)
-    assert offsets["gemini-3.1-pro"] == pytest.approx(offsets["gpt-6-sol"], abs=0.05)
-    # Adjusted means recover the true gaps between seats; raw means do not.
-    gap = lambda rep, a, b, f: rep["seats"][a][f] - rep["seats"][b][f]
-    for a, b in (("meta", "openai"), ("openai", "gdm"), ("anthropic", "meta")):
-        assert gap(adj, a, b, "adjusted_mean") == pytest.approx(TRUE[a] - TRUE[b], abs=0.05)
-    assert gap(raw, "meta", "openai", "raw_mean") != pytest.approx(TRUE["meta"] - TRUE["openai"], abs=1)
-    # Chosen values pooled as {"value": n} entries: median of [v, v + 10].
-    assert adj["seats"]["anthropic"]["chosen"] == pytest.approx(75)
-
-
-def test_disposition_cli_refuses_stub_and_writes_only_on_request(tmp_path, capsys):
-    stub = tmp_path / "stub.json"
-    stub.write_text(json.dumps(_pool(dry=True)))
-    out = tmp_path / "dispositions.json"
-    assert disp_tool.main([str(stub), "--output", str(out)]) == 2
-    assert "Refusing" in capsys.readouterr().out
-    assert disp_tool.main([str(stub), "--output", str(out), "--allow-stub"]) == 0
-    assert not out.exists(), "prints by default"
-    real = tmp_path / "real.json"
-    real.write_text(json.dumps(_pool()))
-    assert disp_tool.main([str(real), "--output", str(out), "--write"]) == 0
-    written = json.loads(out.read_text())
-    assert set(written) == set(TRUE) and all(v % 10 == 0 for v in written.values())
 
 
 # ---------------------------------------------------------------------------
@@ -694,8 +537,7 @@ def test_load_logs_skips_dry_and_a_stale_dry_final_never_hides_a_real_partial(tm
     assert debriefs
 
 
-def test_compare_arms_and_jury_check_skip_dry(tmp_path, capsys):
-    from tools import jury_check
+def test_compare_arms_skips_dry(tmp_path, capsys):
     dry = _record()
     dry["config"]["dry_run"] = True
     (tmp_path / "d.json").write_text(json.dumps(dry))
@@ -706,7 +548,6 @@ def test_compare_arms_and_jury_check_skip_dry(tmp_path, capsys):
                               "--include-dry"]) == 2
     out = capsys.readouterr().out
     assert "need logs" not in out and "Refusing to compare" in out and "a2a_mode 'separate', not 'merged'" in out
-    assert jury_check.main([str(tmp_path), "--json"]) == 0
 
 
 def test_incomplete_turns_are_skipped():
@@ -714,34 +555,6 @@ def test_incomplete_turns_are_skipped():
     rec["turns"].append({"incomplete": True, "turn": 4, "actors": {"gdm": {"accepted": [
         {"type": "intrude", "targets": ["openai"]}]}}})
     assert summarize(rec)["intrusion"]["intrusion_seat_turns"] == 2
-
-
-def _pool_runs(seat_values, juror_noise):
-    """Each seat rated in 4 runs by 2 jurors; noise per (seat, run, juror)."""
-    ratings = {}
-    for seat, base in seat_values.items():
-        for run in range(4):
-            for j, fam in (("gpt-6-sol", "gpt"), ("gemini-3.1-pro", "gemini")):
-                v = base + juror_noise.get((seat, run, j), 0)
-                ratings.setdefault(seat, []).append({"juror": j, "family": fam, "disposition": v,
-                                                     "run_id": f"T-run{run}", "test": "T"})
-    return ratings
-
-
-def test_span_is_over_per_run_means():
-    """P19: one outlier rating no longer forces the chosen fallback by itself."""
-    fams = {"anthropic": "claude", "meta": "muse"}
-    ratings = _pool_runs({"anthropic": 20, "meta": 80}, {("meta", 0, "gpt-6-sol"): -45})
-    d, rep = resolve_dispositions(ratings, {"anthropic": [30], "meta": [30]}, fams, adjust_jurors=False)
-    m = rep["seats"]["meta"]
-    assert m["rating_span"] == 45 and m["span"] == pytest.approx(22.5) and m["n_runs"] == 4
-    assert m["source"] == "judged" and d["meta"] == 70
-    assert m["spread_p10_p90"] is not None and m["spread_p10_p90"] <= m["span"]
-    # Both jurors place one run far off: the per-run span exceeds 40 -> chosen.
-    ratings = _pool_runs({"anthropic": 20, "meta": 80},
-                         {("meta", 0, "gpt-6-sol"): -45, ("meta", 0, "gemini-3.1-pro"): -45})
-    _d, rep = resolve_dispositions(ratings, {"anthropic": [30], "meta": [30]}, fams, adjust_jurors=False)
-    assert rep["seats"]["meta"]["span"] == 45 and rep["seats"]["meta"]["source"] == "chosen"
 
 
 # ---------------------------------------------------------------------------
@@ -1310,34 +1123,9 @@ def test_r4_compare_arms_refuses_non_s2_and_writes_review(tmp_path, capsys):
     assert compare_arms.main(["--separate", str(tmp_path / "mer"), "--merged", str(tmp_path / "sep")]) == 2
 
 
-def test_r4_disposition_refuses_write_with_allow_stub(tmp_path, capsys):
-    (tmp_path / "r.json").write_text(json.dumps({"ratings": {}, "chosen": {}, "families": {}}))
-    assert disp_tool.main([str(tmp_path / "r.json"), "--write", "--allow-stub",
-                           "--output", str(tmp_path / "d.json")]) == 2
-    assert not (tmp_path / "d.json").exists() and "Refusing --write together with --allow-stub" in capsys.readouterr().out
-
-
 # ---------------------------------------------------------------------------
 # Round 5 (P67-P75)
 # ---------------------------------------------------------------------------
-
-def test_r5_disposition_chosen_none_plays_judged_and_both_none_defaults(capsys):
-    ratings = {s: [{"juror": j, "family": f, "disposition": 70, "run_id": "r1", "test": "T"}
-                   for j, f in (("claude-sonnet-5", "claude"), ("gpt-6-sol", "gpt"))]
-               for s in ("meta", "xai")}
-    fams = {"meta": "muse", "xai": "grok", "gdm": "gemini"}
-    # Equal seats -> ICC 0 -> unreliable -> the rule asks for the chosen value.
-    disp, rep = resolve_dispositions(ratings, {"meta": 40, "xai": None, "gdm": None}, fams)
-    assert not rep["reliable"]
-    assert disp["meta"] == 40 and rep["seats"]["meta"]["source"] == "chosen"
-    assert disp["xai"] == 70 and rep["seats"]["xai"]["source"] == "judged (no chosen value)"
-    assert disp["gdm"] == disp_tool.DEFAULT_DISPOSITION and rep["seats"]["gdm"]["source"] == "default"
-    assert rep["defaulted"] == ["gdm"]
-    disp_tool._print_report(disp, rep)
-    out = capsys.readouterr().out
-    assert "WARNING: gdm has neither a judged nor a chosen value" in out
-    assert "judged (no chosen value)" in out
-
 
 def test_r5_review_file_named_by_decided_tests():
     t3 = {"config": {"run_meta": {"test": "T3"}}}
@@ -1690,22 +1478,6 @@ def test_r6_summarize_never_overwrites_the_pilot_review(tmp_path):
     assert SR.main([str(d)]) == 0
     assert (d / "review_T4.md").read_text() == "pilot's own review"
     assert list(d.glob("review_pool-*.md"))
-
-
-def test_r6_disposition_resolves_every_family_seat_and_exits_3(tmp_path, capsys):
-    pool = _pool()
-    pool["families"] = dict(pool["families"], xai="grok")   # a seat with no ratings and no choice
-    disp, rep = resolve_dispositions(pool["ratings"], pool["chosen"], pool["families"])
-    assert disp["xai"] == disp_tool.DEFAULT_DISPOSITION and rep["defaulted"] == ["xai"]
-    f = tmp_path / "pool.json"
-    f.write_text(json.dumps(pool))
-    out = tmp_path / "disp.json"
-    assert disp_tool.main([str(f), "--write", "--output", str(out)]) == 3
-    printed = capsys.readouterr().out
-    assert "WARNING: xai has neither a judged nor a chosen value" in printed and "--force" in printed
-    assert not out.exists()
-    assert disp_tool.main([str(f), "--write", "--output", str(out), "--force"]) == 0
-    assert json.loads(out.read_text())["xai"] == disp_tool.DEFAULT_DISPOSITION
 
 
 def test_trust_screen_matches_verb_form_grievance():

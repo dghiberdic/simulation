@@ -1279,3 +1279,118 @@ def test_stub_can_simulate_context_stop():
     llm.register_stub("ctx", lambda s, u: {"text": "", "stop": "context"})
     obj, attempts = llm.complete_json("stub:ctx", "S", "U")
     assert obj is None and len(attempts) == 1 and attempts[0]["error"] == llm.CONTEXT_ERROR
+
+
+# ---------------------------------------------------------------------------
+# Code v5: juror providers (Moonshot, DeepSeek, DashScope; one optional router)
+# ---------------------------------------------------------------------------
+
+JUROR_ENV = ("MOONSHOT_API_KEY", "DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "JUROR_BASE_URL",
+             "JUROR_API_KEY", "JUROR_MODEL_IDS", "MOONSHOT_BASE_URL", "DEEPSEEK_BASE_URL",
+             "DASHSCOPE_BASE_URL")
+
+
+@pytest.mark.parametrize("model,provider", [
+    ("kimi-k3", "moonshot"), ("deepseek-v4-pro", "deepseek"), ("qwen-3.8-max", "dashscope")])
+def test_resolve_juror_providers(model, provider):
+    assert llm.resolve_provider(model) == provider
+
+
+def test_preflight_juror_keys_and_router(monkeypatch):
+    for env in JUROR_ENV:
+        monkeypatch.delenv(env, raising=False)
+    models = ["kimi-k3", "deepseek-v4-pro", "qwen-3.8-max"]
+    problems = llm.preflight(models)
+    for env in ("MOONSHOT_API_KEY", "DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY"):
+        assert sum(env in p for p in problems) == 1
+    monkeypatch.setenv("MOONSHOT_API_KEY", "k")
+    assert not any("kimi-k3" in p for p in llm.preflight(models))
+    # The router overrides all three: only its key is needed.
+    monkeypatch.setenv("JUROR_BASE_URL", "https://router.example.invalid/v1")
+    problems = llm.preflight(models)
+    assert len(problems) == 3 and all("JUROR_API_KEY" in p for p in problems)
+    monkeypatch.setenv("JUROR_API_KEY", "k")
+    assert llm.preflight(models) == []
+
+
+def test_juror_clients_base_urls_and_router(monkeypatch):
+    monkeypatch.undo()
+    monkeypatch.setattr(llm, "_clients", {})
+    for env in JUROR_ENV:
+        monkeypatch.delenv(env, raising=False)
+    for env in ("MOONSHOT_API_KEY", "DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY"):
+        monkeypatch.setenv(env, "test-key")
+    for p in ("moonshot", "deepseek", "dashscope"):
+        c = llm._get_client(p)
+        assert str(c.base_url).rstrip("/") == llm.JUROR_BASE_URLS[p].rstrip("/")
+        assert c.timeout == 1200.0 and c.max_retries == 0
+    monkeypatch.setattr(llm, "_clients", {})
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://ds.example.invalid/v1")
+    assert "ds.example.invalid" in str(llm._get_client("deepseek").base_url)
+    monkeypatch.setattr(llm, "_clients", {})
+    monkeypatch.setenv("JUROR_BASE_URL", "https://router.example.invalid/v1")
+    monkeypatch.setenv("JUROR_API_KEY", "router-key")
+    c = llm._get_client("dashscope")
+    assert "router.example.invalid" in str(c.base_url) and c.api_key == "router-key"
+    monkeypatch.setattr(llm, "_clients", {})
+    monkeypatch.delenv("JUROR_API_KEY")
+    with pytest.raises(llm.MissingKeyError, match="JUROR_API_KEY"):
+        llm._get_client("moonshot")
+
+
+def _compat_ok(calls, model_echo="kimi-k3-served"):
+    def create(**kw):
+        calls.append(kw)
+        msg = NS(content='{"a": 1}', reasoning_content=None)
+        usage = NS(prompt_tokens=100, prompt_tokens_details=NS(cached_tokens=0), completion_tokens=10,
+                   completion_tokens_details=NS(reasoning_tokens=0), total_tokens=110)
+        return NS(choices=[NS(message=msg, finish_reason="stop")], usage=usage, model=model_echo)
+    return create
+
+
+def test_juror_compat_call_logs_temperature_and_served_model(monkeypatch):
+    for env in JUROR_ENV:
+        monkeypatch.delenv(env, raising=False)
+    calls = []
+    monkeypatch.setattr(llm, "_get_client", lambda p: NS(chat=NS(completions=NS(create=_compat_ok(calls)))))
+    obj, attempts = llm.complete_json("kimi-k3", "S", "U", temperature=0.0, effort="medium")
+    assert obj == {"a": 1}
+    assert calls[0]["temperature"] == 0.0 and calls[0]["model"] == "kimi-k3"
+    assert "reasoning_effort" not in calls[0]
+    assert attempts[0]["served_model"] == "kimi-k3-served" and attempts[0]["temperature"] == 0.0
+
+
+def test_juror_temperature_rejected_is_resent_without_it(monkeypatch):
+    monkeypatch.setattr(llm, "_TEMPERATURE_REJECTED", set())
+    calls = []
+    ok = _compat_ok(calls, "deepseek-v4-pro")
+
+    class BadRequest(Exception):
+        status_code = 400
+    BadRequest.__module__ = "openai"
+
+    def create(**kw):
+        if "temperature" in kw:
+            calls.append(dict(kw, rejected=True))
+            raise BadRequest("Error code: 400 - unsupported parameter: temperature")
+        return ok(**kw)
+    monkeypatch.setattr(llm, "_get_client", lambda p: NS(chat=NS(completions=NS(create=create))))
+    r = llm.complete("deepseek-v4-pro", "S", "U", temperature=0.0)
+    assert r.temperature is None and r.text == '{"a": 1}'
+    assert [("temperature" in c) for c in calls] == [True, False]
+    r = llm.complete("deepseek-v4-pro", "S", "U", temperature=0.0)     # remembered
+    assert "temperature" not in calls[-1] and len(calls) == 3
+
+
+def test_router_model_ids(monkeypatch):
+    monkeypatch.delenv("JUROR_BASE_URL", raising=False)
+    assert llm.wire_model_id("moonshot", "kimi-k3") == "kimi-k3"
+    monkeypatch.setenv("JUROR_BASE_URL", "https://router.example.invalid/v1")
+    monkeypatch.setenv("JUROR_MODEL_IDS", '{"kimi-k3": "moonshotai/kimi-k3"}')
+    assert llm.wire_model_id("moonshot", "kimi-k3") == "moonshotai/kimi-k3"
+    assert llm.wire_model_id("dashscope", "qwen-3.8-max") == "qwen-3.8-max"
+    assert llm.wire_model_id("xai", "kimi-k3") == "kimi-k3"         # only juror providers
+    calls = []
+    monkeypatch.setattr(llm, "_get_client", lambda p: NS(chat=NS(completions=NS(create=_compat_ok(calls)))))
+    llm.complete("kimi-k3", "S", "U")
+    assert calls[0]["model"] == "moonshotai/kimi-k3"
