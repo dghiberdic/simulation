@@ -684,7 +684,8 @@ def served_mismatch(configured: str, served: str) -> bool:
 def _new_actor_row() -> Dict[str, Any]:
     return {"seat_turns": 0, "forfeits": 0, "proposal_calls": 0, "proposal_failed": 0,
             "message_calls": 0, "message_failed": 0, "stop_max_tokens": 0, "stop_refusal": 0,
-            "stop_timeout": 0, "interviews": 0, "interviews_skipped": 0,
+            "stop_timeout": 0, "interviews": 0, "interviews_skipped": 0, "interviews_empty": 0,
+            "interviews_incomplete": 0, "interviews_cut": 0, "interviews_retried": 0,
             "input_tokens": 0, "cached_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0,
             "cost": 0.0, "served_models": {}}
 
@@ -706,9 +707,12 @@ def _tally_attempt(row: Dict[str, Any], a: Dict[str, Any], kind: str) -> None:
 def usage_report(records: List[Dict[str, Any]], run_ids: List[str]) -> Dict[str, Any]:
     """
     Per actor model: proposal and message-round failure rates (parse failures
-    per provider, T1), forfeits, stop reasons, interviews asked and skipped,
-    tokens, cost and served model ids. Per juror model and role: calls, cost
-    and served ids from the tracker. `records` may include a partial record.
+    per provider, T1), forfeits, stop reasons, interviews (A.7): answered,
+    skipped (call failed or no usable proposal; scripted seats are not
+    counted), empty answers (still empty after the retry, counted apart from
+    the skips), incomplete (hit the output cap), cut (logged at 300 tokens)
+    and retried; tokens, cost and served model ids. Per juror model and role:
+    calls, cost and served ids from the tracker. `records` may include a partial record.
     """
     by_model: Dict[str, Dict[str, Any]] = {}
     for record in records:
@@ -729,8 +733,18 @@ def usage_report(records: List[Dict[str, Any]], run_ids: List[str]) -> Dict[str,
                 if model not in by_model or not isinstance(iv, dict):
                     continue
                 row = by_model[model]
-                row["interviews"] += int(not iv.get("skipped"))
-                row["interviews_skipped"] += int(bool(iv.get("skipped")) and iv.get("reason") != "scripted seat")
+                reason = str(iv.get("reason") or "")
+                if not iv.get("skipped"):
+                    row["interviews"] += 1
+                    row["interviews_incomplete"] += int(bool(iv.get("incomplete")))
+                    row["interviews_cut"] += int(bool(iv.get("cut")))
+                elif reason.startswith("empty answer"):
+                    row["interviews_empty"] += 1
+                elif reason != "scripted seat":
+                    row["interviews_skipped"] += 1
+                row["interviews_retried"] += int(bool(iv.get("retried")))
+                for field in ("input_tokens", "cached_tokens", "output_tokens", "reasoning_tokens"):
+                    row[field] += iv.get(field) or 0
                 row["cost"] += iv.get("cost") or 0.0
     for model, row in by_model.items():
         row["proposal_failure_rate"] = round(row["proposal_failed"] / row["proposal_calls"], 3) \
@@ -1326,7 +1340,9 @@ def _hard_stop(args, data: Dict[str, Any], root: Path, summary: Dict[str, Any]) 
              f"pilot spend so far (ledger): ${float(summary.get('spend_usd') or 0.0):.2f}"]
     for model, r in sorted((usage.get("by_actor_model") or {}).items()):
         lines.append(f"  {model:<22} ${r['cost']:.2f}, proposal failures {r['proposal_failed']}/{r['proposal_calls']}, "
-                     f"forfeits {r['forfeits']}, interviews {r['interviews']} (skipped {r['interviews_skipped']})")
+                     f"forfeits {r['forfeits']}, interviews {r['interviews']} (skipped {r['interviews_skipped']}, "
+                     f"empty {r.get('interviews_empty', 0)}, incomplete {r.get('interviews_incomplete', 0)}, "
+                     f"cut {r.get('interviews_cut', 0)})")
     for turns in data.get("t7_turns") or [8, 12]:
         lines.append("")
         lines += plan_lines(build_plan(data, root, turns=turns))
@@ -1455,13 +1471,15 @@ def _print_summary(summary: Dict[str, Any]) -> None:
     rows = usage.get("by_actor_model") or {}
     if rows:
         print(f"\n{'actor model':<24}{'turns':>6}{'prop.fail':>10}{'msg.fail':>9}{'forfeit':>8}{'maxtok':>7}"
-              f"{'refuse':>7}{'iv':>4}{'iv.skip':>8}{'cost $':>8}  served model")
+              f"{'refuse':>7}{'iv':>4}{'iv.skip':>8}{'iv.empty':>9}{'iv.inc':>7}{'iv.cut':>7}{'cost $':>8}  served model")
         for model, r in sorted(rows.items()):
             served = ", ".join(f"{m}{' (MISMATCH)' if m in r['served_mismatch'] else ''}"
                                for m in sorted(r["served_models"])) or "-"
             print(f"{model:<24}{r['seat_turns']:>6}{_fmt_rate(r['proposal_failure_rate']):>10}"
                   f"{_fmt_rate(r['message_failure_rate']):>9}{r['forfeits']:>8}{r['stop_max_tokens']:>7}"
-                  f"{r['stop_refusal']:>7}{r['interviews']:>4}{r['interviews_skipped']:>8}{r['cost']:>8.2f}  {served}")
+                  f"{r['stop_refusal']:>7}{r['interviews']:>4}{r['interviews_skipped']:>8}"
+                  f"{r.get('interviews_empty', 0):>9}{r.get('interviews_incomplete', 0):>7}"
+                  f"{r.get('interviews_cut', 0):>7}{r['cost']:>8.2f}  {served}")
     for r in sorted((usage.get("jurors") or {}).values(), key=lambda r: (r["purpose"], r["model"])):
         print(f"juror {r['model']:<24}{r['purpose']:<18} calls {r['calls']}, ${r['cost']:.2f}"
               + (f"; served {', '.join(r['served_models'])}" if r.get("served_models") else ""))

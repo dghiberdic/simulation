@@ -419,6 +419,25 @@ def test_usage_report_tallies_failures_interviews_and_served_ids():
     assert row["served_mismatch"] == ["gpt-5"]
 
 
+def test_usage_report_counts_empty_incomplete_and_cut_interviews_apart():
+    """A.7 flags: empty answers are counted apart from skips, scripted seats not at all;
+    incomplete (output cap) and cut (300-token log cut) are counted separately."""
+    rec = {"labs": {"openai": {"model": "gpt-6-astra"}},
+           "turns": [{"turn": t, "actors": {"openai": {"forfeited": False, "attempts": [{"stop": "end"}]}},
+                      "interviews": {"openai": iv}} for t, iv in enumerate([
+               {"answer": "Fine.", "skipped": False, "incomplete": True, "cut": False, "truncated": True,
+                "output_tokens": 7, "cost": 0.01},
+               {"answer": "Long.", "skipped": False, "incomplete": False, "cut": True, "truncated": True},
+               {"answer": "", "skipped": True, "reason": "empty answer (max_tokens)", "retried": True},
+               {"answer": "", "skipped": True, "reason": "call failed"},
+               {"answer": "", "skipped": True, "reason": "scripted seat"}], start=1)]}
+    row = pilot.usage_report([rec], ["r"])["by_actor_model"]["gpt-6-astra"]
+    assert row["interviews"] == 2
+    assert row["interviews_incomplete"] == 1 and row["interviews_cut"] == 1
+    assert row["interviews_empty"] == 1 and row["interviews_skipped"] == 1
+    assert row["interviews_retried"] == 1 and row["output_tokens"] == 7
+
+
 # ---------------------------------------------------------------------------
 # main.py: one cell per call (§9.3)
 # ---------------------------------------------------------------------------

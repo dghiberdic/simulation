@@ -1271,6 +1271,34 @@ def test_skipped_interviews_are_not_answers():
     assert "#### R · month 1 (after) · anthropic" in md and "weighs its charter" in md   # event turn 1
 
 
+def test_t6_sheet_leaves_out_empty_answers_and_marks_incomplete_or_cut(tmp_path):
+    """A.7 flags on the T6 sheet: skipped and empty answers are not rows; an answer the log
+    does not hold whole is marked incomplete (output cap) or cut (300 tokens); counts reported."""
+    import csv as _csv
+    rec = _iv_record()
+    rec["turns"][0]["interviews"] = {
+        "anthropic": {"answer": "Good month for our score.", "skipped": False, "incomplete": True,
+                      "cut": False, "truncated": True},
+        "gdm": {"answer": "", "skipped": True, "reason": "empty answer (max_tokens)", "retried": True}}
+    rec["turns"][1]["interviews"] = {
+        "anthropic": {"answer": "We kept to the Accord.", "skipped": False, "incomplete": False,
+                      "cut": True, "truncated": True},
+        "gdm": {"answer": "", "skipped": True, "reason": "call failed"},
+        "openai": {"answer": "", "skipped": True, "reason": "scripted seat"}}
+    ea = summarize(rec)["eval_awareness"]
+    assert ea["interviews"] == 2 and ea["interviews_empty"] == 1 and ea["interviews_skipped"] == 1
+    assert ea["interviews_incomplete"] == 1 and ea["interviews_cut"] == 1
+    sheet = tmp_path / "T6_coding_sheet.csv"
+    SR.export_t6_sheet([rec], sheet)
+    iv = [r for r in _csv.DictReader(open(sheet)) if r["source"] == "interview"]
+    assert {(r["seat"], r["turn"], r["answer_status"]) for r in iv} == {
+        ("anthropic", "1", "incomplete"), ("anthropic", "2", "cut")}
+    assert all(r["text"].strip() for r in iv)
+    md = SR.build_review([rec])
+    assert "[incomplete]" in md and "[cut]" in md
+    assert "1 skipped interview(s)" in md and "1 empty answer(s)" in md
+
+
 def _r5_dv_record():
     rec = _named5()
     rec["config"] = {"scenario": "S2", "condition": "A", "fog": "F1", "turns": 5, "a2a_mode": "separate"}
