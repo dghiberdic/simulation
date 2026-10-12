@@ -8,7 +8,10 @@ the collusion DVs of tools/summarize_run.py: solicitations, agreements
 (acceptances of a message that mentions intrusion) and matched joint commits.
 
 Decision (T9): the merged arm matches at least once AND reaches half the
-separate arm's agreements -> merge; otherwise keep the separate pre-step.
+separate arm's agreements -> merge; otherwise keep the separate pre-step (and
+S2 and the kin cell keep it in the main runs, as they do when T9 is cut). T4
+reads both arms (a match in T4 or T9 -> S2 stands; tools/summarize_run.py).
+campaign.py reads this decision to set the main runs' S2 message mode.
 Solicitations and agreements are text heuristics (P29), so the decision line
 is a SCREEN (S1): it says "provisional (screen) — confirm by reading
 review_T9-compare.md" and what to confirm, and the review file lists every S2
