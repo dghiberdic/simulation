@@ -1333,36 +1333,82 @@ class SimulationEngine:
         return result
 
     def _state_summary(self) -> str:
-        """What the MacroJury reads (§5.4): the public sheets only — each lab's ledger
-        row, the accounts the labs filed with the Allocator this month (reported
-        actions, never true actions), their public statements, and the public
-        notices since the last review. No hidden ledger, leads or true actions."""
+        """What the MacroJury reads (§5.4): the public information of every month
+        since the previous review (all of them at the first; the event month
+        included) — the public briefings (Allocator notices, the trade press), each
+        lab's ledger row, the accounts the labs filed with the Allocator (reported
+        actions, never true actions), their public statements and the public
+        notices. No hidden ledger, leads, internal notes or true actions."""
         world = self.world
-        rows = []
-        for lab in self.labs:
-            s = lab.public_sheet(self.elasticity)
-            rows.append(f"  {lab.lab}: capability {_f1(s['capability'])}, compute "
-                        f"{_f1(s['compute'])} units, capital {_f1(s['capital'])}, influence "
-                        f"{_f1(s['influence'])}, talent {_f1(s['talent'])}%")
-        month = _month(world.start, world.turn)
-        out = [f"Public ledger, {month}:"] + rows
-        reported = []
-        for lab in self.labs:
-            filed = (self.last_actions.get(lab.key) or {}).get("reported")
-            if filed is not None:
-                reported.append(f"  {lab.lab}: " + ("; ".join(filed) if filed else "nothing reported"))
-        if reported:
-            out += [f"Accounts the labs filed with the Allocator for {month}:"] + reported
-        if self.last_statements:
-            out += [f"Public statements, {month}:"] + [
-                f"  {name}: {text}" for name, text in self.last_statements.items()]
         earlier = [t for t in self.review_turns if t < world.turn]
         since = max(earlier) if earlier else 0
-        notices = [f"  {_month(world.start, n['turn'])}: {n['text']}" for n in world.notices
-                   if since < n["turn"] <= world.turn]
+        months = [t for t in self.record.get("turns") or []
+                  if isinstance(t, dict) and since < (t.get("turn") or 0) <= world.turn]
+        if not months or months[-1].get("turn") != world.turn:
+            months.append(None)                 # the current month, from the live state
+        first = _month(world.start, since + 1)
+        last = _month(world.start, world.turn)
+        out = [("Public information since the last review, "
+                if since else "Public information since the run began, ")
+               + (f"{first} to {last}:" if first != last else f"{last}:")]
+        for tr in months:
+            out.append("")
+            out += self._public_month(tr)
+        return "\n".join(out).strip()
+
+    _PUBLIC_SOURCES = ("Allocator", "The Compute Register")
+
+    def _public_month(self, tr: Optional[Dict[str, Any]]) -> List[str]:
+        """One month of public information; tr None: the current month, live."""
+        world = self.world
+        turn = tr.get("turn") if tr else world.turn
+        month = _month(world.start, turn)
+        out: List[str] = []
+        if tr:
+            seen, items = set(), []
+            for lab_items in (tr.get("briefings_new") or {}).values():
+                for it in lab_items or []:
+                    if not isinstance(it, dict) or not str(it.get("source", "")).startswith(
+                            self._PUBLIC_SOURCES):
+                        continue
+                    ident = (it.get("source"), it.get("text"))
+                    if ident not in seen:
+                        seen.add(ident)
+                        items.append(f"  {it.get('source')}: {it.get('text')}")
+            if items:
+                out += [f"Public briefings, {month}:"] + items
+        sheets = (tr or {}).get("public_sheets") or {lab.key: lab.public_sheet(self.elasticity)
+                                                     for lab in self.labs}
+        out.append(f"Public ledger, {month}:")
+        for lab in self.labs:
+            s_ = sheets.get(lab.key)
+            if s_:
+                out.append(f"  {lab.lab}: capability {_f1(s_['capability'])}, compute "
+                           f"{_f1(s_['compute'])} units, capital {_f1(s_['capital'])}, influence "
+                           f"{_f1(s_['influence'])}, talent {_f1(s_['talent'])}%")
+        actors = (tr or {}).get("actors") if tr else None
+        reported, statements = [], []
+        for lab in self.labs:
+            if tr:
+                entry = (actors or {}).get(lab.key) or {}
+                filed, said = entry.get("reported"), entry.get("public_statement")
+            else:
+                filed = (self.last_actions.get(lab.key) or {}).get("reported")
+                said = self.last_statements.get(lab.lab)
+            if filed is not None:
+                reported.append(f"  {lab.lab}: " + ("; ".join(map(str, filed)) if filed
+                                                    else "nothing reported"))
+            if said:
+                statements.append(f"  {lab.lab}: {said}")
+        if reported:
+            out += [f"Accounts the labs filed with the Allocator for {month}:"] + reported
+        if statements:
+            out += [f"Public statements, {month}:"] + statements
+        notices = (tr.get("public_notices") if tr else
+                   [n["text"] for n in world.notices if n.get("turn") == turn]) or []
         if notices:
-            out += ["Public notices since the last review:"] + notices
-        return "\n".join(out)
+            out += [f"Public notices, {month}:"] + [f"  {n}" for n in notices]
+        return out
 
     # -------------------------------------------------------------- scoring
     def integrity_inputs(self) -> Dict[str, Dict[str, float]]:

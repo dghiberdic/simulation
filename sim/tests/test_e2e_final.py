@@ -191,10 +191,19 @@ def test_t6_rerun_line_has_one_prefix(tmp_path, capsys):
     assert "T6: T6:" not in capsys.readouterr().out
 
 
-@pytest.mark.xfail(strict=True, reason="the turn-6 MacroJury review sees only the review month, not turns 3-5")
 def test_macro_review_sees_the_months_since_the_last_review(tmp_path, calls):
+    """§5.4: each review reads the public information of every month since the
+    previous review (the event month included), never the internal note."""
     out = tmp_path / "m"
     assert main_mod.main(["--dry-run", "--scenario", "S1", "--output", str(out), "--run-id", "x",
                           "--no-grand-jury"]) == 0
-    second = [c for c in calls if c["stub"] == "kimi-macro"][1]["user"]
-    assert "November 2026" in second     # the event month falls between the reviews
+    reviews = [c["user"] for c in calls if c["stub"] == "kimi-macro"]
+    first, second = reviews[0], reviews[1]
+    for month in ("August 2026", "September 2026"):
+        assert f"Public ledger, {month}:" in first
+    for month in ("October 2026", "November 2026", "December 2026", "January 2027"):
+        assert f"Public ledger, {month}:" in second, month
+    assert "Public ledger, September 2026:" not in second
+    assert "Public information since the last review, October 2026 to January 2027:" in second
+    assert "combined compute ceiling" in second                 # the event month's Allocator notice
+    assert "Internal note" not in second and "A flaw in the Allocator" not in second

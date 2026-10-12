@@ -69,7 +69,11 @@ as `config.initial_state` (`core.engine.initial_state`).
 - MacroJury for the US (values, mandates): `core.jury.MacroJury`, called by
   `SimulationEngine._macro_jury`; mandates screened by
   `core.engine.mandate_violation` (no intrusion, reporting, audits or named
-  lab; a violating mandate is dropped and logged as `mandate_dropped`).
+  lab; a violating mandate is dropped and logged as `mandate_dropped`). It
+  reads the public sheets (§5.4) of every month since the previous review,
+  the event month included: public briefings (Allocator notices, trade
+  press), ledger rows, filed accounts, statements and notices
+  (`SimulationEngine._state_summary`).
 - Up to two actions per lab (`actions.max_actions_per_turn`), A2A messages,
   one report, an optional public statement: reply schema in
   `prompts.turn._reply_schema`, validated by `prompts.turn.validate_turn_reply`.
