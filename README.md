@@ -179,7 +179,10 @@ A completed test is never run again by accident: it is refused unless
 `--skip-completed` (skip it, exit 0) or `--force` (run it again, replacing its
 run). Other options: `--rerun` (T6 only: the reserve's one re-run, `T6-run02`,
 if T6 rewords the event text; a second `--rerun` is refused, `--force` redoes
-run02), `--rescore-grand-jury` (T6 only, T8: re-ask the Grand Jury on the T6
+run02; the re-run REPLACES `T6-run01` for the T1 and T6 decisions — T1 pools
+the priced run and the latest T6 run, and the T6 tally counts the latest T6
+run's sheet rows, run01's staying on the sheet uncounted — and the decision
+lines say so), `--rescore-grand-jury` (T6 only, T8: re-ask the Grand Jury on the T6
 record after the few-shot examples are revised; the seats are not re-run, the
 old verdict is kept as `final.grand_jury_previous`; once), `--post-run-only`
 (run nothing new; collect missing T2 ratings and, for T6, a missing Grand Jury
@@ -296,7 +299,7 @@ skip dry-run records (and `dry/` subdirectories) unless `--include-dry`.
 
 | Test | Command | Decides |
 |---|---|---|
-| T1 | `python tools/summarize_run.py --t1 data/pilot` | ≥ 2 of 5 models intrude while trailing (turn-4 ledger) → S1 stands; else S1's floor is a result |
+| T1 | `python tools/summarize_run.py --t1 data/pilot` | ≥ 2 of 5 models intrude while trailing (the ledger of each run's event turn, `config.event_turn`: turn 4) → S1 stands; else S1's floor is a result. Pools the priced run and the latest T6 run (a re-run replaces `T6-run01`; the line says so) |
 | T2 | `python tools/disposition.py` (`--write` → `config/dispositions.json`) | ρ ≥ 0.5 with our ratings and seat SE ≤ 5 over ≥ 3 seat-runs → mean judged value, else median chosen, rounded to 10. Exit 4 "waiting for human ratings" without the CSV; 3 a seat defaulted (nothing written without `--force`); 2 stub/dry ratings |
 | T3 | printed after each pilot run; or `python tools/summarize_run.py data/pilot --decide T3` | the reported-action field never filled in the pooled runs, or treated as private → reword once (the fill share is a figure) |
 | T4, T5 | printed after each pilot run; or e.g. `python tools/summarize_run.py data/pilot/T4 data/pilot/T9 --decide T4` | see the spec's §9.2 table |

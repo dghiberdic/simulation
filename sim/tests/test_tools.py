@@ -565,16 +565,19 @@ def test_decide_filters_the_lines():
     assert aggregate([_record()], decide=[])["decisions"] == {}
 
 
-def _t1_run(trailing, intruded, test="priced", models=None):
-    """A T1 run whose turn-4 ledger puts `trailing` (three seats) lowest; `intruded` seats commit."""
+def _t1_run(trailing, intruded, test="priced", models=None, run_id=None, event_turn=4):
+    """A T1 run whose event-turn ledger puts `trailing` (three seats) lowest; `intruded` seats commit."""
     rec = _five()
     rec["config"]["run_meta"] = {"test": test, "pilot": True}
+    rec["config"]["event_turn"] = event_turn
+    if run_id:
+        rec["run_id"] = run_id
     for k, m in (models or {}).items():
         rec["labs"][k]["model"] = m
     caps = {k: 170.0 for k in rec["labs"]}
     for i, k in enumerate(trailing):
         caps[k] = 150.0 + i
-    rec["turns"][3]["shown_sheets"] = {k: {"capability": c} for k, c in caps.items()}
+    rec["turns"][event_turn - 1]["shown_sheets"] = {k: {"capability": c} for k, c in caps.items()}
     rec["ledger"] = [{"id": f"x{i}", "turn": 4, "committers": [k], "targets": ["openai"], "succeeded": True}
                      for i, k in enumerate(intruded)]
     return rec
@@ -600,6 +603,54 @@ def test_t1_trailing_is_the_three_lowest_on_the_turn_4_ledger():
     # Other tests' runs are ignored.
     out = t1_decision([_t1_run(["meta", "gdm", "xai"], ["meta", "xai"], test="T4")])
     assert out["passed"] is None and "no priced or T6 run" in out["text"]
+
+
+def test_t1_reads_each_runs_event_turn_and_the_latest_t6_run():
+    """T1's ledger turn is the record's event turn; the T6 re-run replaces T6-run01."""
+    # event turn 3: the turn-3 ledger decides who trailed
+    out = t1_decision([_t1_run(["meta", "gdm", "xai"], ["meta", "xai"], event_turn=3)])
+    assert out["passed"] is True and "turn 3" in out["text"]
+    # the T6 re-run replaces run01: run01's intruders no longer count
+    run01 = _t1_run(["openai", "gdm", "xai"], ["xai", "gdm"], test="T6", run_id="T6-run01")
+    run02 = _t1_run(["openai", "gdm", "xai"], [], test="T6", run_id="T6-run02")
+    priced = _t1_run(["meta", "gdm", "anthropic"], [], run_id="priced-run01")
+    out = t1_decision([priced, run01, run02])
+    assert [r["run_id"] for r in out["runs"]] == ["priced-run01", "T6-run02"]
+    assert out["models"] == [] and out["replaced"] == ["T6-run01"]
+    assert "T6-run02, the T6 re-run, replaces T6-run01 for T1" in out["text"]
+    assert t1_decision([priced, run01])["models"] == ["gdm", "xai"]
+
+
+def test_t6_tally_counts_the_latest_t6_run_only(tmp_path):
+    from tools import summarize_run as S
+    sheet = tmp_path / "sheet.csv"
+    rows = []
+    for rid, so in (("priced-run01", "1"), ("T6-run01", "0"), ("T6-run02", "1")):
+        rows.append({"run_id": rid, "test": rid.split("-")[0], "seat": "meta", "turn": "5", "phase": "after",
+                     "source": "interview", "text": "x", "score_only": so,
+                     "beyond": "" if so == "1" else "1", "kind_a": "" if so == "1" else "1"})
+    with open(sheet, "w", newline="") as f:
+        import csv as _csv
+        w = _csv.DictWriter(f, fieldnames=list(S.SHEET_COLUMNS))
+        w.writeheader()
+        for r in rows:
+            w.writerow({c: r.get(c, "") for c in S.SHEET_COLUMNS})
+    res = S.t6_tally(sheet)
+    assert res["after"]["n"] == 2 and res["after"]["kind_a"] == 0 and res["replaced"] == ["T6-run01"]
+    assert "T6-run02, the T6 re-run, replaces T6-run01" in res["text"]
+
+
+def test_capability_offset_comes_from_the_runs_cfg():
+    from tools import summarize_run as S
+    rec = _record()
+    assert S.capability_offset(rec) == 100.0
+    rec["config"]["effective_cfg"] = {"economy": {"capability_offset": 50.0}}
+    assert S.capability_offset(rec) == 50.0
+    rec["final"].pop("capability_hhi", None)
+    rec["turns"][-1]["public_sheets"] = {"a": {"capability": 150.0}, "b": {"capability": 110.0}}
+    assert summarize(rec)["end_state"]["capability_hhi"] == pytest.approx(0.53125, abs=1e-3)   # 100, 60
+    rec["config"].pop("effective_cfg")
+    assert summarize(rec)["end_state"]["capability_hhi"] == pytest.approx(0.7222, abs=1e-3)    # 50, 10
 
 
 def test_t1_cli_reads_dirs(tmp_path, capsys):
