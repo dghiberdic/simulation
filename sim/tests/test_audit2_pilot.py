@@ -16,6 +16,7 @@ import pytest
 import campaign
 import pilot
 from core import costs as costs_mod
+from core import records
 from core.config import build_labs_and_world, load_world
 from core.engine import SimulationEngine
 from core.llm import register_stub
@@ -524,7 +525,7 @@ def test_final_record_is_on_disk_before_the_grand_jury(tmp_path, monkeypatch):
     seen = {}
 
     def gj(self):
-        rec = SR.load_logs([str(tmp_path)], include_dry=True)[0]
+        rec = records.load_records([str(tmp_path)], include_dry=True)
         seen["finished"] = any((r.get("final") or {}).get("scores") for _p, r in rec)
 
     monkeypatch.setattr(SimulationEngine, "_grand_jury", gj)

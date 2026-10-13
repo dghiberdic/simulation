@@ -56,7 +56,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from core.config import load_world
 from core.costs import configure, get_tracker, kin_seat_scale, project_run, with_fallbacks
 from core.engine import interview_schedule, review_turns
-from core.records import write_json_atomic
+from core.records import (KIN_CONDITION, KIN_SCENARIO, cell_name, finished_records, is_finished,
+                          write_json_atomic)
 
 logger = logging.getLogger(__name__)
 
@@ -78,10 +79,11 @@ def all_cells() -> List[Dict[str, Any]]:
     cells: List[Dict[str, Any]] = []
     for group in PRIORITY:
         if group == "kin":
-            cells.append({"name": "kin-S2-A", "group": "kin", "scenario": "S2", "condition": "A", "kin": True})
+            cells.append({"name": cell_name(KIN_SCENARIO, KIN_CONDITION, True), "group": "kin",
+                          "scenario": KIN_SCENARIO, "condition": KIN_CONDITION, "kin": True})
         else:
             for scenario in ("S1", "S2"):
-                cells.append({"name": f"{scenario}-{group}", "group": group, "scenario": scenario,
+                cells.append({"name": cell_name(scenario, group), "group": group, "scenario": scenario,
                               "condition": group, "kin": False})
     return cells
 
@@ -243,13 +245,10 @@ def pilot_s2_mode(pilot_root: Path, include_dry: bool = False) -> str:
     the separate arm's agreements; separate otherwise, or when T9 was cut or not run.
     Only finished runs count: a partial (aborted) T4 or T9 log never decides."""
     from tools.compare_arms import compare
-    from tools.summarize_run import load_logs
     arms = []
     for test in ("T4", "T9"):
         d = pilot_root / test
-        loaded = load_logs([str(d)], include_dry=include_dry)[0] if d.is_dir() else []
-        arms.append([r for path, r in loaded if not str(path).endswith(".partial.json")
-                     and (r.get("final") or {}).get("scores")])
+        arms.append([r for _p, r in finished_records([d], include_dry=include_dry)] if d.is_dir() else [])
     if not arms[0] or not arms[1]:
         return "separate"
     return "merged" if compare(arms[0], arms[1]).get("merge") else "separate"
@@ -342,7 +341,7 @@ def run_campaign(plan: Dict[str, Any], runs_dir: Path, dry_run: bool, rounds: Op
             a = args_for(c, r)
             print(f"[campaign] round {r}: {a.run_id}")
             code, record = run_cell(a)
-            if code != 0 and _finished(record):
+            if code != 0 and is_finished(record):
                 done.setdefault(c["name"], []).append(a.run_id)
                 jury_missing.append(a.run_id)
                 write_state(state_path, state)
@@ -356,10 +355,6 @@ def run_campaign(plan: Dict[str, Any], runs_dir: Path, dry_run: bool, rounds: Op
             write_state(state_path, state)
     print(f"[campaign] {total} round(s) complete")
     return 0
-
-
-def _finished(record: Any) -> bool:
-    return isinstance(record, dict) and bool((record.get("final") or {}).get("scores"))
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -37,7 +37,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from core.records import write_json_atomic
+from core.records import run_id_of, write_json_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -298,8 +298,7 @@ def measure_runs(calls: List[Dict[str, Any]], records: List[Dict[str, Any]]) -> 
     per seat-turn, as a share of the sum over models, so a run without a model
     does not overweight the others.
     """
-    ids = [str((r.get("config") or {}).get("run_meta", {}).get("run_id") or r.get("run_id") or "")
-           for r in records]
+    ids = [str(run_id_of(r) or "") for r in records]
     by_run: Dict[str, Dict[str, float]] = {}
     by_model: Dict[str, float] = {}
     for c in calls:

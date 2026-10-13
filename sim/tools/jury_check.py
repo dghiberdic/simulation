@@ -43,6 +43,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.jury import RUBRIC_ITEMS
+from core.records import run_id_of
 
 SIM_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_HAND = SIM_DIR / "data" / "pilot" / "hand_scores.csv"
@@ -114,9 +115,7 @@ def spearman(xs: Sequence[float], ys: Sequence[float]) -> Optional[float]:
 # ---------------------------------------------------------------------------
 
 def _run_id(record: Dict[str, Any], default: str) -> str:
-    cfg = record.get("config") or {}
-    return str(record.get("run_id") or (cfg.get("run_meta") or {}).get("run_id") or cfg.get("run_id")
-               or default)
+    return str(run_id_of(record) or default)
 
 
 def run_keys(records: Sequence[Dict[str, Any]], paths: Optional[Sequence[Optional[str]]] = None

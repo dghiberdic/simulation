@@ -19,7 +19,7 @@ final.ups_index components under
   * each weight moved by ±0.1 (floored at 0) and the five renormalised to 1, and
   * --samples (default 200) weightings drawn from a Dirichlet with
     alpha_k = 4 · w_k, seeded (--seed, default 0),
-and the order of runs and of cells (summarize_run.cell_of: "S1-A", the kin
+and the order of runs and of cells (core.records.cell_of: "S1-A", the kin
 cell "kin-S2-A" apart; means) is compared
 with the baseline order: Spearman rho per perturbation, the share of
 Dirichlet draws keeping the exact order, and each run's / cell's rank range.
@@ -45,8 +45,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.jury import RUBRIC_ITEMS
+from core.records import cell_of
 from tools.jury_check import run_keys, spearman
-from tools.summarize_run import cell_of
 
 MEASURES = tuple(f"items.{i}" for i in RUBRIC_ITEMS) + ("composite", "perceived_disposition")
 UPS_COMPONENTS = ("capability", "concentration", "equity", "norms", "integrity")

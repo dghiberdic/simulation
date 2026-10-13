@@ -90,7 +90,8 @@ from core import jury as jury_mod
 from core.jury import GRAND_JURY_MODELS, DispositionJury, GrandJury
 from core.llm import FatalAPIError, preflight, register_stub
 from core.policies import POLICIES
-from core.records import write_json_atomic
+from core.records import (finished_records, grand_jury_usable, is_finished, read_json,
+                          write_json_atomic)
 from core.state import VALUE_AXES
 from core.transcript import charters_block, disposition_transcript, full_transcript, seat_letters
 from prompts.interview import QUESTION as INTERVIEW_QUESTION
@@ -240,14 +241,6 @@ def load_pilot() -> Dict[str, Any]:
         return json.load(f)
 
 
-def _read_json(path: Path) -> Optional[Any]:
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return None
-
-
 def _write_json(path: Path, data: Any) -> None:
     """Write-then-rename so an interrupted pilot never leaves a half-written file."""
     write_json_atomic(path, data)
@@ -265,7 +258,7 @@ def ratings_path(root: Path, dry_run: bool) -> Path:
 
 
 def read_approval(root: Path) -> Optional[Dict[str, Any]]:
-    a = _read_json(root / APPROVAL_NAME)
+    a = read_json(root / APPROVAL_NAME)
     return a if isinstance(a, dict) and a.get("turns") else None
 
 
@@ -276,7 +269,7 @@ def summary_path(root: Path, test: str, rerun: bool = False) -> Path:
 
 
 def read_summary(root: Path, test: str, rerun: bool = False) -> Optional[Dict[str, Any]]:
-    s = _read_json(summary_path(root, test, rerun))
+    s = read_json(summary_path(root, test, rerun))
     return s if isinstance(s, dict) else None
 
 
@@ -298,7 +291,7 @@ def test_done(root: Path, test: str) -> bool:
     """
     s = read_summary(root, test)
     if s and test == "T6" and s.get("run_id") == "T6-run02":
-        s = _read_json(summary_path(root, test).with_name("pilot_summary_T6.prev.json"))
+        s = read_json(summary_path(root, test).with_name("pilot_summary_T6.prev.json"))
     if _completed(s):
         return True
     ids = dict.fromkeys(i for i in ((s or {}).get("run_id"), base_run_id(test)) if i)
@@ -307,8 +300,8 @@ def test_done(root: Path, test: str) -> bool:
 
 def _post_run_collected(root: Path, test: str, run_id: str) -> bool:
     """True when <run_id>.json is a finished run with no post-run stage missing."""
-    record = _read_json(root / test / f"{run_id}.json")
-    if not SR.is_finished(record):
+    record = read_json(root / test / f"{run_id}.json")
+    if not is_finished(record):
         return False
     preset = resolve_preset(load_pilot(), test)
     dry = bool((record.get("config") or {}).get("dry_run"))
@@ -625,7 +618,7 @@ def append_ratings(path: Path, rows: Dict[str, Any], test: str, run_id: str, dry
     """
     if dry_run and not path.name.endswith(".dry.json"):
         raise ValueError(f"dry-run ratings may only go to a *.dry.json file, not {path}")
-    pooled = _read_json(path) or {}
+    pooled = read_json(path) or {}
     for field in RATING_FIELDS + ("families",):
         pooled.setdefault(field, {})
     pooled.setdefault("runs", [])
@@ -646,7 +639,7 @@ def append_ratings(path: Path, rows: Dict[str, Any], test: str, run_id: str, dry
 
 def unrated_seats(path: Optional[Path], record: Dict[str, Any], test: str, run_id: str) -> List[str]:
     """Model seats of this run with no rating in the pooled file."""
-    pooled = _read_json(Path(path)) if path else None
+    pooled = read_json(Path(path)) if path else None
     pooled = pooled if isinstance(pooled, dict) else {}
     rated = {seat for seat, items in (pooled.get("ratings") or {}).items()
              for r in items if isinstance(r, dict) and r.get("run_id") == run_id and r.get("test") == test}
@@ -825,7 +818,7 @@ def stale_conflict(output_dir: Path, run_id: str, expect: Optional[Dict[str, Any
     set-up), or None when there is no final, it cannot be read, or it matches."""
     if not expect:
         return None
-    old = _read_json(output_dir / f"{run_id}.json")
+    old = read_json(output_dir / f"{run_id}.json")
     if not isinstance(old, dict):
         return None
     cfg = old.get("config") or {}
@@ -849,7 +842,7 @@ def claim_run_id(output_dir: Path, run_id: str, expect: Optional[Dict[str, Any]]
         logger.warning(f"[stale] {run_id}.json in {output_dir} holds a different run; saving as {candidate}")
     path = output_dir / f"{candidate}.json"
     if path.exists():
-        if SR.is_finished(_read_json(path)):
+        if is_finished(read_json(path)):
             if not force:
                 logger.warning(f"[stale] {path} is a finished run; kept (pass --force to replace it)")
                 return None
@@ -860,7 +853,7 @@ def claim_run_id(output_dir: Path, run_id: str, expect: Optional[Dict[str, Any]]
             path.unlink()
             logger.info(f"[stale] removed {path}")
         if ratings_file and Path(ratings_file).exists():
-            pooled = _read_json(Path(ratings_file)) or {}
+            pooled = read_json(Path(ratings_file)) or {}
             for field in RATING_FIELDS:
                 for seat in list((pooled.get(field) or {})):
                     pooled[field][seat] = [r for r in pooled[field][seat] if r.get("run_id") != candidate]
@@ -873,8 +866,8 @@ def completed_record(output_dir: Path, run_id: str, expect: Optional[Dict[str, A
                      dry_run: bool) -> Optional[Dict[str, Any]]:
     """The finished record at <run_id>.json when it is this same run (same set-up, same
     dry or real mode), else None."""
-    rec = _read_json(output_dir / f"{run_id}.json")
-    if not SR.is_finished(rec) or not isinstance(rec.get("turns"), list):
+    rec = read_json(output_dir / f"{run_id}.json")
+    if not is_finished(rec) or not isinstance(rec.get("turns"), list):
         return None
     if bool((rec.get("config") or {}).get("dry_run")) != bool(dry_run):
         return None
@@ -887,15 +880,10 @@ def completed_record(output_dir: Path, run_id: str, expect: Optional[Dict[str, A
 # Post-run stages: the Grand Jury (T6 run only, re-ask) and the T2 rating
 # ---------------------------------------------------------------------------
 
-def _gj_usable(record: Dict[str, Any]) -> bool:
-    gj = (record.get("final") or {}).get("grand_jury")
-    return isinstance(gj, dict) and bool(gj.get("juror")) and not gj.get("error")
-
-
 def missing_post_run(record: Dict[str, Any], run_id: str, test: str, ratings_file: Path,
                      preset: Dict[str, Any]) -> List[str]:
     out = []
-    if preset.get("grand_jury") and not _gj_usable(record):
+    if preset.get("grand_jury") and not grand_jury_usable(record):
         gj = (record.get("final") or {}).get("grand_jury")
         out.append(f"Grand Jury verdict ({(gj or {}).get('error') or 'none'})")
     if preset.get("disposition_rating", True):
@@ -920,7 +908,7 @@ def collect_grand_jury(record: Dict[str, Any], jurors: List[str], run_id: str, o
         raise
     record.setdefault("final", {})["grand_jury"] = dict(result, collected_post_run=time.strftime("%Y-%m-%d %H:%M:%S"))
     _write_json(output_dir / f"{run_id}.json", record)
-    return f"Grand Jury: {'usable verdict' if _gj_usable(record) else 'no usable verdict'}"
+    return f"Grand Jury: {'usable verdict' if grand_jury_usable(record) else 'no usable verdict'}"
 
 
 def run_post_stages(record: Dict[str, Any], run_id: str, test: str, output_dir: Path, ratings_file: Path,
@@ -935,7 +923,7 @@ def run_post_stages(record: Dict[str, Any], run_id: str, test: str, output_dir: 
     post: Dict[str, Any] = {"errors": [], "done": [], "rated": 0}
     stage = "Grand Jury"
     try:
-        if only_missing and preset.get("grand_jury") and not _gj_usable(record):
+        if only_missing and preset.get("grand_jury") and not grand_jury_usable(record):
             try:
                 post["done"].append(collect_grand_jury(record, jurors["grand"], run_id, output_dir))
             except BudgetExceeded:
@@ -984,8 +972,7 @@ def _records_of(root: Path, tests: List[str], include_dry: bool) -> List[Dict[st
     for t in tests:
         d = root / t
         if d.is_dir():
-            loaded, _ = SR.load_logs([str(d)], include_dry=include_dry)
-            out += [rec for _p, rec in loaded if SR.is_finished(rec)]
+            out += [rec for _p, rec in finished_records([d], include_dry=include_dry)]
     return out
 
 
@@ -1234,7 +1221,7 @@ def _refusal(args, data, root: Path, test: str, preset: Dict[str, Any], approval
 
 def rerun_done(root: Path, dry_run: bool) -> bool:
     """True when T6's one re-run (T6-run02) has a finished record."""
-    rec = _read_json(root / "T6" / "T6-run02.json")
+    rec = read_json(root / "T6" / "T6-run02.json")
     return isinstance(rec, dict) and bool((rec.get("final") or {}).get("scores")) \
         and bool((rec.get("config") or {}).get("dry_run")) == bool(dry_run)
 
@@ -1331,7 +1318,7 @@ def run_test(args, data: Dict[str, Any], root: Path, test: str) -> int:
         status, aborted = "halted_budget", _failure(run_id, e, output_dir)
         post = getattr(e, "post_run", None) or post
         if record is None:
-            fin = _read_json(output_dir / f"{run_id}.json")
+            fin = read_json(output_dir / f"{run_id}.json")
             record = fin if isinstance(fin, dict) and fin.get("final") else None
     except (RunAborted, FatalAPIError) as e:
         status, aborted = "aborted", _failure(run_id, e, output_dir)
@@ -1339,7 +1326,7 @@ def run_test(args, data: Dict[str, Any], root: Path, test: str) -> int:
         logger.exception(f"[crash] {run_id}: {type(e).__name__}: {e}")
         status, aborted = "crashed", _failure(run_id, e, output_dir)
     if record is None and aborted and aborted.get("record_path"):
-        partial = _read_json(Path(aborted["record_path"]))
+        partial = read_json(Path(aborted["record_path"]))
     return _write_summary(args, data, root, test, run_id, preset, budget, record, partial, status,
                           aborted, post)
 
@@ -1482,7 +1469,7 @@ def rescore_grand_jury(args, data: Dict[str, Any], root: Path, test: str) -> int
         return EXIT_ABORTED
     run_id = (read_summary(root, "T6") or {}).get("run_id") or "T6-run01"
     output_dir = root / "T6"
-    record = _read_json(output_dir / f"{run_id}.json")
+    record = read_json(output_dir / f"{run_id}.json")
     if not isinstance(record, dict) or not (record.get("final") or {}).get("scores"):
         print(f"Refusing: no finished T6 record at {output_dir / (run_id + '.json')}.")
         return EXIT_ABORTED
@@ -1491,7 +1478,7 @@ def rescore_grand_jury(args, data: Dict[str, Any], root: Path, test: str) -> int
               f"{'--dry-run' if not args.dry_run else 'no --dry-run'} to re-score it.")
         return EXIT_ABORTED
     final = record["final"]
-    if "grand_jury_previous" in final and _gj_usable(record):
+    if "grand_jury_previous" in final and grand_jury_usable(record):
         print(f"Refusing: {run_id} was already re-scored once (final.grand_jury_previous exists; T8 revises "
               "the examples once).")
         return EXIT_ABORTED
@@ -1531,7 +1518,7 @@ def rescore_grand_jury(args, data: Dict[str, Any], root: Path, test: str) -> int
         print(f"Grand Jury failed: {type(e).__name__}: {e}; the re-score is not used up "
               "(the verdict is unchanged): run --rescore-grand-jury again")
         return EXIT_ABORTED
-    if not _gj_usable(record):
+    if not grand_jury_usable(record):
         print(f"  {line}; {retry}")
         return EXIT_ABORTED
     print(f"  {line}; compare with our hand scores: python tools/jury_check.py {output_dir / (run_id + '.json')}")

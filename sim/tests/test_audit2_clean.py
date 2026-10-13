@@ -8,7 +8,7 @@ import pytest
 from core.actions import resolve_lab
 from core.config import build_labs_and_world, load_world
 from core.transcript import redact
-from tools import jury_analysis
+from core.records import cell_of
 
 KEYS = ("anthropic", "openai", "gdm", "meta", "xai")
 LABS = {
@@ -33,7 +33,7 @@ def test_jury_analysis_keeps_kin_cell_apart_from_mixed_s2_a():
     # §6.5: the kin cell (S2, condition A, Claude in every seat) is its own cell;
     # its baseline is the mixed S2-A cell, compared descriptively, never pooled.
     kin, mixed = _main_record(True), _main_record(False)
-    assert jury_analysis.cell_of(kin) != jury_analysis.cell_of(mixed)
+    assert cell_of(kin) != cell_of(mixed)
 
 
 def test_resolver_reads_x_ai_as_xai():

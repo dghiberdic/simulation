@@ -54,8 +54,8 @@ not reliable (typically config/world.json changed since the run).
 Usage (from sim/):
     python tools/ups_replay.py <log.json | dir> [--json]
 
-A directory is searched recursively for finished run logs (*.json with turns,
-config and final; *.partial.json skipped).
+A directory is searched recursively for finished run logs (final scores;
+*.partial.json skipped).
 """
 
 import argparse
@@ -67,7 +67,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core import scoring                                        # noqa: E402
+from core import records, scoring                               # noqa: E402
 from core.actions import INTRUDE                                # noqa: E402
 from core.config import build_labs_and_world, load_world        # noqa: E402
 from core.engine import SimulationEngine                        # noqa: E402
@@ -87,31 +87,12 @@ FINAL_KEYS = ("scores", "integrity_inputs", "ups_index", "prosperity", "disposit
 # Log reading
 # ---------------------------------------------------------------------------
 
-def load_record(path: Path) -> Dict[str, Any]:
-    with open(path) as f:
-        return json.load(f)
-
-
-def is_run_record(rec: Any) -> bool:
-    return (isinstance(rec, dict) and isinstance(rec.get("turns"), list)
-            and isinstance(rec.get("config"), dict) and isinstance(rec.get("final"), dict)
-            and bool(rec["final"]))
-
-
-def find_logs(path: Path) -> List[Path]:
-    """A file as given; a directory searched recursively for finished run logs."""
+def find_logs(path: Path) -> List[Tuple[Path, Optional[Dict[str, Any]]]]:
+    """[(path, record)]: a file as given; a directory searched recursively for
+    finished run logs (core.records.finished_records, dry runs included)."""
     if path.is_file():
-        return [path]
-    out = []
-    for p in sorted(path.rglob("*.json")):
-        if p.name.endswith(".partial.json"):
-            continue
-        try:
-            if is_run_record(load_record(p)):
-                out.append(p)
-        except (OSError, ValueError):
-            continue
-    return out
+        return [(path, records.read_record(path))]
+    return [(Path(p), rec) for p, rec in records.finished_records([path], include_dry=True, recursive=True)]
 
 
 def _strip_action(a: Dict[str, Any]) -> Dict[str, Any]:
@@ -505,9 +486,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"no finished run logs under {args.path}")
         return 1
     results = []
-    for path in logs:
-        record = load_record(path)
-        if not is_run_record(record):
+    for path, record in logs:
+        if not (records.is_run_record(record) and records.is_finished(record)):
             print(f"{path}: not a finished run log; skipped")
             continue
         res = contributions(record)

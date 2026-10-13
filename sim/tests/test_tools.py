@@ -6,8 +6,10 @@ import json
 
 import pytest
 
+from core import records
+from core.records import load_records
 from tools import compare_arms
-from tools.summarize_run import aggregate, load_logs, summarize
+from tools.summarize_run import aggregate, summarize
 
 
 # ---------------------------------------------------------------------------
@@ -425,9 +427,8 @@ def test_load_logs_skips_side_files(tmp_path):
     (tmp_path / "T6-run02.partial.json").write_text(json.dumps(rec))     # crashed run: kept
     (tmp_path / "pilot_summary_T6.json").write_text(json.dumps({"test": "T6"}))
     (tmp_path / "approval.json").write_text(json.dumps({"turns": 8}))
-    loaded, extra = load_logs(sorted(str(p) for p in tmp_path.iterdir()))
+    loaded = load_records(sorted(str(p) for p in tmp_path.iterdir()))
     assert sorted(r["run_id"] for _p, r in loaded) == ["T6-run01", "T6-run02"]
-    assert extra == {}
 
 
 def test_compare_arms_t9_decision():
@@ -672,9 +673,9 @@ def test_load_logs_skips_dry_and_a_stale_dry_final_never_hides_a_real_partial(tm
     real["config"]["condition"] = "B"
     (tmp_path / "T4-run02.json").write_text(json.dumps(dry))
     (tmp_path / "T4-run02.partial.json").write_text(json.dumps(real))
-    loaded, _ = load_logs([str(tmp_path)])
+    loaded = load_records([str(tmp_path)])
     assert [r["config"]["condition"] for _p, r in loaded] == ["B"]
-    loaded, _ = load_logs([str(tmp_path)], include_dry=True)
+    loaded = load_records([str(tmp_path)], include_dry=True)
     assert [r["config"]["condition"] for _p, r in loaded] == ["C"]
 
 
@@ -1157,13 +1158,13 @@ def test_r4_t1_recurses_and_skips_dry(tmp_path):
         rec = _t1_run(trailing, intruded, test=test)
         rec["config"]["dry_run"] = dry
         (d / f"{test}-run01.json").write_text(json.dumps(rec))
-    loaded, _ = load_logs([str(base)], recursive=True)
+    loaded = load_records([str(base)], recursive=True)
     # Lowest first on the turn-4 ledger.
     assert sorted(SR.trailing_seats(r, 4) for _p, r in loaded) == [["meta", "gdm", "xai"],
                                                                     ["openai", "gdm", "xai"]]
-    loaded, _ = load_logs([str(base)], recursive=True, include_dry=True)
+    loaded = load_records([str(base)], recursive=True, include_dry=True)
     assert len(loaded) == 3
-    out = SR.t1_decision([r for _p, r in load_logs([str(base)], recursive=True)[0]])
+    out = SR.t1_decision([r for _p, r in load_records([str(base)], recursive=True)])
     assert out["passed"] is True and out["models"] == ["gdm", "meta"]       # dry run not read
 
 
@@ -1707,7 +1708,7 @@ def test_main_analyses_exclude_scripted_and_dry_runs(tmp_path, capsys):
     dry["config"]["dry_run"] = True
     pilot_run = copy.deepcopy(main_run)
     pilot_run["config"]["run_meta"] = {"pilot": True, "test": "T4", "run_id": "T4-run01"}
-    assert [SR.run_kind(r) for r in (main_run, scripted, dry, pilot_run)] == ["main", "policy", "dry", "pilot"]
+    assert [records.run_kind(r) for r in (main_run, scripted, dry, pilot_run)] == ["main", "policy", "dry", "pilot"]
     kept, dropped = SR.main_analysis_records([main_run, scripted, dry, pilot_run])
     assert kept == [main_run] and dropped == 3
     assert SR.main_analysis_records([scripted])[0] == [scripted]        # a scripted run alone: summarised

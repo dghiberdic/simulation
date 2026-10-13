@@ -41,7 +41,6 @@ Examples:
 """
 
 import argparse
-import json
 import logging
 import sys
 import time
@@ -53,6 +52,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from core.config import build_labs_and_world, load_dispositions, load_lab_configs, load_state, load_world
 from core.costs import BudgetExceeded, configure, get_tracker
 from core.engine import RunAborted, SimulationEngine
+from core.records import (KIN_CONDITION, KIN_SCENARIO, cell_name, grand_jury_usable, is_finished,
+                          read_record)
 from core import engine as engine_mod
 from core.jury import GRAND_JURY_MODELS
 from core.llm import FatalAPIError, preflight
@@ -64,12 +65,7 @@ SIM_DIR = Path(__file__).resolve().parent
 RUNS_DIR = SIM_DIR / "data" / "runs"
 LAB_KEYS = ("anthropic", "openai", "gdm", "meta", "xai")
 KIN_SEAT = "anthropic"                 # §6.5: Claude plays every seat in the kin cell
-KIN_SCENARIO, KIN_CONDITION = "S2", "A"
 EXIT_JURY_MISSING = 1                  # a budget stop; the run itself is finished and saved
-
-
-def cell_name(scenario: str, condition: str, kin: bool = False) -> str:
-    return "kin-S2-A" if kin else f"{scenario}-{condition}"
 
 
 def default_run_id(cell: str) -> str:
@@ -272,8 +268,8 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
     try:
         record = engine.run()
     except BudgetExceeded as e:
-        saved = _read_record(output_dir / f"{run_id}.json")
-        if saved is not None and (saved.get("final") or {}).get("scores"):
+        saved = read_record(output_dir / f"{run_id}.json")
+        if is_finished(saved):
             print(f"Halted on the budget guard during the Grand Jury: {e}\nThe run is finished and saved "
                   f"({output_dir / (run_id + '.json')}); only its Grand Jury verdict is missing. Re-running "
                   "this run id asks the Grand Jury only.")
@@ -330,30 +326,11 @@ def apply_model_overrides(labs, overrides: List[str]) -> str:
     return ""
 
 
-def _read_record(path: Path) -> Optional[Dict[str, Any]]:
-    try:
-        with open(path) as f:
-            rec = json.load(f)
-    except (OSError, ValueError):
-        return None
-    return rec if isinstance(rec, dict) else None
-
-
-def is_finished(record: Optional[Dict[str, Any]]) -> bool:
-    """A final record whose run finished: it holds final scores (a paid run)."""
-    return bool(record and isinstance(record.get("final"), dict) and record["final"].get("scores"))
-
-
-def grand_jury_usable(record: Dict[str, Any]) -> bool:
-    gj = (record.get("final") or {}).get("grand_jury")
-    return isinstance(gj, dict) and bool(gj.get("juror")) and not gj.get("error")
-
-
 def finished_record(output_dir: Path, run_id: str, expect: Dict[str, Any], dry_run: bool
                     ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """(the finished record at <run_id>.json when it is this run, why it is another run).
     A dry record never stands in for a real run (and the reverse): it is treated as absent."""
-    rec = _read_record(output_dir / f"{run_id}.json")
+    rec = read_record(output_dir / f"{run_id}.json")
     if not is_finished(rec):
         return None, None
     cfg = rec.get("config") or {}
@@ -387,7 +364,7 @@ def clear_stale(output_dir: Path, run_id: str) -> bool:
     A finished record (final scores, a paid run) is never deleted (CR #4)."""
     path = output_dir / f"{run_id}.json"
     if path.exists():
-        if is_finished(_read_record(path)):
+        if is_finished(read_record(path)):
             logger.warning(f"[stale] {path} is a finished run; kept")
             return False
         path.unlink()

@@ -232,7 +232,7 @@ def pooled(per_run: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def identifiability(records: Sequence[Tuple[str, Dict[str, Any]]]) -> Dict[str, Any]:
-    from tools.summarize_run import run_id_of
+    from core.records import run_id_of
     per_run = {}
     for path, rec in records:
         per_run[run_id_of(rec) or str(path)] = run_identifiability(rec)
@@ -255,10 +255,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--include-dry", action="store_true", help="read dry-run records too")
     p.add_argument("--json", action="store_true")
     args = p.parse_args(argv)
-    from tools.summarize_run import load_logs
-    loaded, _ = load_logs(args.logs, include_dry=args.include_dry, recursive=True)
-    records = [(path, rec) for path, rec in loaded
-               if not str(path).endswith(".partial.json") and rec.get("turns")]
+    from core.records import is_partial_path, load_records
+    records = [(path, rec) for path, rec in
+               load_records(args.logs, include_dry=args.include_dry, recursive=True)
+               if not is_partial_path(path) and rec.get("turns")]
     if not records:
         print("no run records (dry-run records need --include-dry)")
         return 1

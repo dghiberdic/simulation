@@ -55,7 +55,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.costs import scripted_seats                                     # noqa: E402
 from core.transcript import disposition_transcript, full_transcript, seat_letters   # noqa: E402
-from tools.summarize_run import load_logs, run_id_of                       # noqa: E402
+from core.records import finished_records, run_id_of                     # noqa: E402
 
 RUBRIC_ITEMS = ("honesty", "rule_keeping", "restraint", "fair_dealing", "outside_welfare")   # §7
 HAND_COLUMNS = ("run_id", "letter") + RUBRIC_ITEMS + ("composite",)
@@ -133,9 +133,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--include-dry", action="store_true", help="read dry-run records too")
     p.add_argument("--force", action="store_true", help="overwrite existing hand_scores / human_ratings templates")
     args = p.parse_args(argv)
-    loaded, _ = load_logs(args.logs, include_dry=args.include_dry, recursive=True)
-    loaded = [(Path(path), r) for path, r in loaded if not str(path).endswith(".partial.json")
-              and (r.get("final") or {}).get("scores")]
+    loaded = [(Path(path), r) for path, r in
+              finished_records(args.logs, include_dry=args.include_dry, recursive=True)]
     records = [r for _path, r in loaded]
     unsalted = [(path, r) for path, r in loaded
                 if not r.get("letter_salt") and not r.get("seat_letters")]

@@ -26,3 +26,32 @@ def test_engine_writes_through_the_atomic_writer():
     import inspect
     from core import engine
     assert "write_json_atomic" in inspect.getsource(engine.SimulationEngine._write)
+
+
+def _rec(final=None, **meta):
+    return {"labs": {}, "turns": [], "final": final or {},
+            "config": {"scenario": "S2", "condition": "A", "run_meta": meta}}
+
+
+def test_is_finished_needs_final_scores():
+    assert records.is_finished(_rec({"scores": [{"lab": "a"}]}))
+    assert not records.is_finished(_rec({"ups_index": {}}))
+    assert not records.is_finished(None)
+
+
+def test_cell_of_keeps_kin_apart():
+    assert records.cell_of(_rec(kin=True)) == "kin-S2-A" == records.cell_name("S2", "A", kin=True)
+    assert records.cell_of(_rec()) == "S2-A"
+    assert records.cell_of(_rec(pilot=True, test="T4")) == "pilot T4"
+
+
+def test_finished_records_drops_partials_side_files_and_dry_dirs(tmp_path):
+    done = _rec({"scores": [1]}, pilot=False)
+    (tmp_path / "S1-A-run01.json").write_text(json.dumps(done))
+    (tmp_path / "S1-A-run02.partial.json").write_text(json.dumps(_rec()))
+    (tmp_path / "campaign_state.json").write_text(json.dumps({"runs": {}}))
+    (tmp_path / "dry").mkdir()
+    (tmp_path / "dry" / "d.json").write_text(json.dumps(done))
+    assert [r["run_id"] for _p, r in records.load_records([tmp_path])] == ["S1-A-run01", "S1-A-run02"]
+    assert [r["run_id"] for _p, r in records.finished_records([tmp_path], recursive=True)] == ["S1-A-run01"]
+    assert len(records.finished_records([tmp_path], recursive=True, include_dry=True)) == 2

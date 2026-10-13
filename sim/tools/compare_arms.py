@@ -39,8 +39,8 @@ from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tools.summarize_run import (aggregate, load_logs, review_messages, run_id_of, screen_note,
-                                 summarize)
+from core.records import load_records, run_id_of                                    # noqa: E402
+from tools.summarize_run import aggregate, review_messages, screen_note, summarize  # noqa: E402
 
 REVIEW_NAME = "review_T9-compare.md"   # never the pilot's own review_T9.md (P75)
 
@@ -132,8 +132,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--json", action="store_true")
     p.add_argument("--include-dry", action="store_true", help="read dry-run records too")
     args = p.parse_args(argv)
-    sep = [r for _p, r in load_logs(args.separate, include_dry=args.include_dry)[0]]
-    mer = [r for _p, r in load_logs(args.merged, include_dry=args.include_dry)[0]]
+    sep = [r for _p, r in load_records(args.separate, include_dry=args.include_dry)]
+    mer = [r for _p, r in load_records(args.merged, include_dry=args.include_dry)]
     first = Path(args.merged[0])
     review_path = Path(args.review_dir) if args.review_dir else (first if first.is_dir() else first.parent)
     review_path = review_path / REVIEW_NAME

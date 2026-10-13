@@ -53,7 +53,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tools.summarize_run import load_logs, run_id_of, run_kind, summarize   # noqa: E402
+from core.records import is_finished, is_partial_path, load_records, run_id_of, run_kind  # noqa: E402
+from tools.summarize_run import summarize                                       # noqa: E402
 
 CONDITIONS = ("A0", "A", "B", "C")
 PRIMARY = (("A0 − A", "A0", "A", "reporting channel absent vs present", "primary"),
@@ -214,13 +215,13 @@ def format_result(res: Dict[str, Any]) -> str:
 def load_main_runs(paths: List[str], include_dry: bool = False) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
     """Finished main-run records under `paths` (recursive); pilot runs, scripted
     --policy runs, dry runs (unless include_dry) and partial logs left out."""
-    loaded, _ = load_logs(paths, include_dry=include_dry, recursive=True)
+    loaded = load_records(paths, include_dry=include_dry, recursive=True)
     kept, skipped = [], {"pilot": 0, "policy": 0, "dry": 0, "partial": 0}
     for path, rec in loaded:
         kind = run_kind(rec)
         if kind in ("pilot", "policy") or (kind == "dry" and not include_dry):
             skipped[kind] += 1
-        elif str(path).endswith(".partial.json") or not (rec.get("final") or {}).get("scores"):
+        elif is_partial_path(path) or not is_finished(rec):
             skipped["partial"] += 1
         else:
             kept.append(rec)

@@ -83,6 +83,8 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.names import LAB_ALIASES   # noqa: E402
+from core.records import (cell_of, is_finished, is_main_run, load_records, run_id_of,  # noqa: E402
+                          run_kind)
 
 logger = logging.getLogger(__name__)
 
@@ -339,9 +341,6 @@ def _snippet(text: str, match: "re.Match", width: int = 60) -> str:
     a, b = max(match.start() - width, 0), min(match.end() + width, len(text))
     return " ".join(text[a:b].split())
 
-def run_id_of(record: Dict[str, Any]) -> Optional[str]:
-    cfg = record.get("config", {}) or {}
-    return record.get("run_id") or (cfg.get("run_meta") or {}).get("run_id") or cfg.get("run_id")
 
 def _mean(values: List[float]) -> Optional[float]:
     vals = [v for v in values if v is not None]
@@ -368,8 +367,6 @@ def _turns(record: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [t for t in record.get("turns", []) or []
             if isinstance(t, dict) and not t.get("incomplete")]
 
-def is_dry(record: Dict[str, Any]) -> bool:
-    return bool((record.get("config", {}) or {}).get("dry_run"))
 
 def _alias_patterns(record: Dict[str, Any]) -> Dict[str, "re.Pattern"]:
     """lab key -> word-boundary pattern over its record name and aliases."""
@@ -1402,7 +1399,7 @@ def attach_ups_contributions(records: List[Dict[str, Any]]) -> None:
         sys.path.insert(0, sim_dir)
     from tools import ups_replay
     for rec in records:
-        if not ups_replay.is_run_record(rec):
+        if not is_finished(rec):
             rec[UPS_CONTRIBUTION_KEY] = {"by_lab": None, "error": "not a finished run (partial log)"}
             continue
         try:
@@ -1451,17 +1448,6 @@ def _concern_section(record: Dict[str, Any]) -> Dict[str, Any]:
     return {"intrusion_proposals": proposals, "proceed_despite_concern": len(cases),
             "proceed_despite_concern_rate": round(len(cases) / proposals, 4) if proposals else None,
             "cases": cases}
-
-
-def cell_of(record: Dict[str, Any]) -> str:
-    """The run's cell label: "S1-A", "kin-S2-A", or the pilot test's name."""
-    cfg = record.get("config") or {}
-    meta = cfg.get("run_meta") or {}
-    if meta.get("cell"):
-        return str(meta["cell"])
-    if meta.get("pilot") and meta.get("test"):
-        return f"pilot {meta['test']}"
-    return ("kin-" if meta.get("kin") else "") + f"{cfg.get('scenario') or '?'}-{cfg.get('condition') or '?'}"
 
 
 def _macro_section(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -2823,105 +2809,8 @@ def t6_tally(path: Path) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Loading
+# Which runs the analyses read
 # ---------------------------------------------------------------------------
-
-SIDE_FILE_PREFIXES = ("pilot_summary_", "disposition_ratings", "spend", "approval", "post_run_",
-                      "campaign_state")
-
-
-def _expand(paths: List[str], recursive: bool = False, include_dry: bool = False) -> List[str]:
-    """
-    Directories become their *.json files (sorted); files pass through. With
-    `recursive` a directory is searched at any depth and its dry/
-    subdirectories are skipped unless include_dry.
-    """
-    out: List[str] = []
-    for path in paths:
-        p = Path(path)
-        if not p.is_dir():
-            out.append(path)
-        elif recursive:
-            out += sorted(str(x) for x in p.rglob("*.json")
-                          if include_dry or "dry" not in x.relative_to(p).parts[:-1])
-        else:
-            out += sorted(str(x) for x in p.glob("*.json"))
-    return out
-
-
-def load_logs(paths: List[str], include_dry: bool = False, recursive: bool = False
-              ) -> Tuple[List[Tuple[str, Dict[str, Any]]], Dict[str, Any]]:
-    """
-    Read run records from `paths` (files or directories), skipping summary,
-    approval and rating files and dry-run records unless include_dry (H7). A
-    <id>.partial.json is used only when no usable final <id>.json was read.
-    Returns ([(path, record)], {}) — the second item is kept for callers
-    (interviews live in the records; pre-v5 *.debrief.json side files are skipped).
-    """
-    finals: Dict[str, Tuple[str, Dict[str, Any]]] = {}
-    partials: Dict[str, Tuple[str, Dict[str, Any]]] = {}
-    order: List[str] = []
-    for path in _expand(paths, recursive, include_dry):
-        p = Path(path)
-        if p.name.startswith(SIDE_FILE_PREFIXES) or p.name.endswith(".debrief.json"):
-            continue
-        try:
-            with open(p) as f:
-                rec = json.load(f)
-        except (OSError, ValueError) as exc:
-            print(f"[skip] {path}: {exc}", file=sys.stderr)
-            continue
-        if not isinstance(rec, dict) or not isinstance(rec.get("turns"), list) or "labs" not in rec:
-            print(f"[skip] {path}: not a run record", file=sys.stderr)
-            continue
-        if is_dry(rec) and not include_dry:
-            print(f"[skip] {path}: dry-run record (pass --include-dry to read it)", file=sys.stderr)
-            continue
-        partial = p.name.endswith(".partial.json")
-        stem = p.name[:-len(".partial.json")] if partial else p.stem
-        key = str(p.with_name(stem))
-        rec.setdefault("run_id", run_id_of(rec) or stem)
-        (partials if partial else finals)[key] = (path, rec)
-        if key not in order:
-            order.append(key)
-    return [finals.get(key) or partials[key] for key in order], {}
-
-
-def is_finished(record: Dict[str, Any]) -> bool:
-    """A finished run: its record holds final scores (a partial log does not)."""
-    return bool(isinstance(record, dict) and isinstance(record.get("final"), dict)
-                and record["final"].get("scores"))
-
-
-def is_pilot(record: Dict[str, Any]) -> bool:
-    return bool(((record.get("config") or {}).get("run_meta") or {}).get("pilot"))
-
-
-def is_main_run(record: Dict[str, Any]) -> bool:
-    """A main run (main.py / campaign.py: run_meta.pilot is False). Untagged logs are not."""
-    meta = (record.get("config") or {}).get("run_meta") or {}
-    return meta.get("pilot") is False or meta.get("entry") == "main.py"
-
-
-def is_scripted_run(record: Dict[str, Any]) -> bool:
-    """A run played by a zero-cost scripted --policy (no models): config.policy or
-    run_meta.policy."""
-    cfg = record.get("config") or {}
-    return bool(cfg.get("policy") or (cfg.get("run_meta") or {}).get("policy"))
-
-
-def run_kind(record: Dict[str, Any]) -> str:
-    """"pilot", "policy" (scripted), "dry" (stub models) or "main" (a model run of
-    main.py / campaign.py); from run_meta (pilot, policy, dry_run) and config."""
-    meta = (record.get("config") or {}).get("run_meta") or {}
-    if is_pilot(record):
-        return "pilot"
-    if is_scripted_run(record):
-        return "policy"
-    if is_dry(record) or meta.get("dry_run"):
-        return "dry"
-    return "main"
-
 
 def main_analysis_records(records: List[Dict[str, Any]], include_pilot: bool = False
                           ) -> Tuple[List[Dict[str, Any]], int]:
@@ -3362,18 +3251,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(json.dumps(result, indent=2) if args.json else result["text"])
         return 0
     if args.t1:
-        loaded, _ = load_logs(args.t1, include_dry=args.include_dry, recursive=True)
+        loaded = load_records(args.t1, include_dry=args.include_dry, recursive=True)
         result = t1_decision([rec for _p, rec in loaded])
         print(json.dumps(result, indent=2) if args.json else "T1: " + result["text"])
         return 0
     if args.t7:
-        loaded, _ = load_logs(args.t7, include_dry=args.include_dry, recursive=True)
+        loaded = load_records(args.t7, include_dry=args.include_dry, recursive=True)
         print(t7_line([rec for _p, rec in loaded]) or "T7: no run of 8 or more turns in the logs given")
         return 0
     if not args.logs:
         parser.error("give run logs (or --t1 / --t7 DIR ..., or --t6-tally SHEET)")
 
-    loaded, _ = load_logs(args.logs, include_dry=args.include_dry, recursive=True)
+    loaded = load_records(args.logs, include_dry=args.include_dry, recursive=True)
     if args.t6_sheet:
         before = len(read_t6_sheet(Path(args.t6_sheet)))
         n = export_t6_sheet([rec for _p, rec in loaded if not is_main_run(rec)], Path(args.t6_sheet))
