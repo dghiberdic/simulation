@@ -121,7 +121,8 @@ def _engine(out, scenario="S2", a2a="separate", turns=6, **kw):
         grand_jurors=["stub:rs_grand"], macro_jurors=["stub:rs_kimi", "stub:rs_deepseek", "stub:rs_qwen"],
         seat_policies={"xai": POLICIES["t5_scripted"]}, choose_disposition=True, run_grand_jury=True,
         run_id=RUN_ID, output_dir=out, run_meta={"test": "resume", "run_id": RUN_ID}, rotation="openai:gdm",
-        interview_turns=[2, 4, "final"], event_turn=min(3, turns - 1), **kw)
+        interview_turns=[2, 4, "final"], event_turn=min(3, turns - 1),
+        **{"letter_salt": "resume-test-salt", **kw})
     STATE["engine"] = eng
     return eng
 
@@ -184,6 +185,7 @@ def test_kill_mid_turn_resume_equals_an_uninterrupted_run(harness, parallel):
     resume_cost = round(_ledger(root / "k_spend.json") - killed_cost, 6)
 
     assert _same(got) == _same(want)
+    assert got["letter_salt"] == json.loads(snap["partial"])["letter_salt"]
     assert got["resumed"][-1]["replayed_turns"] == 3 and got["resumed"][-1]["live_from_turn"] == 4
     assert json.loads((out / f"{RUN_ID}.json").read_text()) == json.loads(json.dumps(got, default=str))
     assert not (out / f"{RUN_ID}.partial.json").exists()
@@ -305,3 +307,24 @@ def test_measured_inputs_of_a_resumed_run_divide_by_its_live_turns():
     got = costs_mod.measure_runs(calls, [rec])
     assert got["a2a_per_turn"] == 1.0                   # turns 4-6 were called in this process
     assert got["interview_per_turn"] == 0.5             # one interview turn (5) among them
+
+
+def test_resumed_run_keeps_the_partial_logs_letter_salt(harness):
+    """With no explicit salt, a resumed run keeps the seat letters of its partial log,
+    so blind views made before and after the crash name the same seats."""
+    root = harness
+    out = root / "salt"
+    costs_mod.configure(spend_file=root / "salt_spend.json")
+    snap = {}
+
+    def kill():
+        snap["partial"] = (out / f"{RUN_ID}.partial.json").read_bytes()
+        raise Killed()
+    STATE.update(calls=[], fault={"kind": "actor", "turn": 3, "n": 1, "do": kill})
+    with pytest.raises(Killed):
+        _engine(out, letter_salt=None).run()
+    (out / f"{RUN_ID}.partial.json").write_bytes(snap["partial"])
+    salt = json.loads(snap["partial"])["letter_salt"]
+    got = _engine(out, letter_salt=None).run()
+    assert salt and got["letter_salt"] == salt
+    assert got["resumed"][-1]["replayed_turns"] == 2

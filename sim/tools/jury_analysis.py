@@ -19,13 +19,15 @@ final.ups_index components under
   * each weight moved by ±0.1 (floored at 0) and the five renormalised to 1, and
   * --samples (default 200) weightings drawn from a Dirichlet with
     alpha_k = 4 · w_k, seeded (--seed, default 0),
-and the order of runs and of cells (scenario/condition means) is compared
+and the order of runs and of cells (summarize_run.cell_of: "S1-A", the kin
+cell "kin-S2-A" apart; means) is compared
 with the baseline order: Spearman rho per perturbation, the share of
 Dirichlet draws keeping the exact order, and each run's / cell's rank range.
 Runs without all five components are left out of the sensitivity.
 
-Runs are keyed by run id; two records sharing one are kept apart by path
-with a WARNING.
+Only finished main runs are read (contrasts.load_main_runs: directories are
+searched recursively; pilot, scripted --policy, dry and partial logs left out).
+Runs are keyed by run id; two records sharing one are kept apart with a WARNING.
 
 CLI:
   python tools/jury_analysis.py <log.json|dir> [...] [--samples 200] [--seed 0] [--json]
@@ -44,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.jury import RUBRIC_ITEMS
 from tools.jury_check import run_keys, spearman
+from tools.summarize_run import cell_of
 
 MEASURES = tuple(f"items.{i}" for i in RUBRIC_ITEMS) + ("composite", "perceived_disposition")
 UPS_COMPONENTS = ("capability", "concentration", "equity", "norms", "integrity")
@@ -69,11 +72,6 @@ def _mean(vals: Sequence[Optional[float]]) -> Optional[float]:
 
 def _r(x: Optional[float], nd: int = 2) -> Optional[float]:
     return None if x is None else round(x, nd)
-
-
-def cell_of(record: Dict[str, Any]) -> str:
-    cfg = record.get("config") or {}
-    return f"{cfg.get('scenario') or '?'}/{cfg.get('condition') or '?'}"
 
 
 def extract_rows(record: Dict[str, Any], run: str,
@@ -302,13 +300,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--json", action="store_true")
     p.add_argument("--include-dry", action="store_true", help="read dry-run records too")
     args = p.parse_args(argv)
-    from tools.summarize_run import load_logs
-    loaded = load_logs(args.logs, include_dry=args.include_dry)[0]
-    if not loaded:
-        print("no run records (dry-run records need --include-dry)")
+    from tools.contrasts import load_main_runs
+    records, skipped = load_main_runs(args.logs, args.include_dry)
+    if any(skipped.values()):
+        print(f"[jury_analysis] left out: {skipped['pilot']} pilot run(s), {skipped['policy']} "
+              f"scripted --policy run(s), {skipped['dry']} dry run(s), {skipped['partial']} "
+              "unfinished log(s)", file=sys.stderr)
+    if not records:
+        print("no finished main-run records (dry-run records need --include-dry)")
         return 0
-    rep = analyse([rec for _p, rec in loaded], samples=max(args.samples, 0), seed=args.seed,
-                  paths=[p for p, _rec in loaded])
+    rep = analyse(records, samples=max(args.samples, 0), seed=args.seed)
     if args.json:
         print(json.dumps(rep, indent=2))
     else:

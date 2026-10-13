@@ -33,7 +33,7 @@ mask_setting_mentions— the H3 rules for one piece of model-written text.
 redact               — masks lab, actor, model, charter and people names (seat
                        letters by default; letters=False gives the older
                        [LAB]/[OTHER LAB] masks).
-seat_letters / letters_for — the fixed seat letters of a run.
+seat_letters / letters_for — the fixed seat letters of a run (secret salt per run).
 mask_disposition / mask_value — legacy helpers, kept for callers.
 
 Dates are absolute everywhere (H1): tips say when they were received and which
@@ -43,14 +43,18 @@ month the access was in; accesses carry their month and partners.
 import copy
 import hashlib
 import json
+import math
 import random
 import re
+import secrets
 from datetime import date
 from fractions import Fraction
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.names import LAB_NAMES, ORDINARY_WORDS, VERSION_TAIL, VERSIONED
 import prompts.brief as _brief_mod
 from prompts.packets import opening_items, scenario_items
+from prompts.turn import value_text
 
 DEFAULT_RATIONALE_CHARS = 2500
 
@@ -72,6 +76,8 @@ _MARKERS = (
     (re.compile(r"\[LAB\]"), "\"[LAB]\" is a lab name"),
     (re.compile(r"\[OTHER LAB\]"), "\"[OTHER LAB]\" is the name of a lab outside the exercise"),
     (re.compile(r"\[PERSON\]"), "\"[PERSON]\" is a person's name"),
+    (re.compile(r"\[CHARTER TERM\]"), "\"[CHARTER TERM]\" is a term or slogan distinctive of one "
+     "lab's charter"),
     (re.compile(r"\[N\]"), "\"[N]\" is a masked figure (a number, fraction or number words) "
      "that could state a seat's chosen setting"),
 )
@@ -206,6 +212,12 @@ def _num(v: Any) -> str:
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         return str(v)
     return f"{v:.1f}"
+
+
+def _values_str(values: Any) -> str:
+    if not isinstance(values, dict):
+        return str(values)
+    return ", ".join(f"{k} {value_text(v)}" for k, v in values.items())
 
 
 def _amount(v: Any) -> str:
@@ -380,12 +392,15 @@ _SPLIT_RE = re.compile(r"(?<![\w.])(\d{1,3})(\s*(?:/|-|–|:|\bto\b)\s*)(\d{1,3}
 # board or lean (J19).
 _STRONG_CUE_RE = re.compile(
     r"precedence|disposition|\bsettings?\b|out\s+of\s+(?:100|10|ten|a\s+hundred|"
-    r"one\s+hundred)\b|on\s+a\s+scale|/\s*100\b|\b0\s*(?:-|–|to)\s*100\b", re.IGNORECASE)
+    r"one\s+hundred)\b|on\s+a\s+scale|/\s*100\b|\b0\s*(?:-|–|to)\s*100\b|"
+    r"\boperating\s+polic(?:y|ies)\b|\bfixed\s+for\s+(?:as\s+long|the\s+(?:whole\s+)?run)\b",
+    re.IGNORECASE)
 # "weigh"/"weight" is a strong cue only with charter or directive in the same
-# sentence (J17): "Weighing the options, we spent 25" is about the game.
+# sentence (J17): "Weighing the options, we spent 25" is about the game. Directives
+# (or orders) together with the charter (or principles, guidelines) are strong.
 _WEIGH_RE = re.compile(r"\bweigh\w*", re.IGNORECASE)
-_DIRECTIVE_RE = re.compile(r"\bdirectives?\b", re.IGNORECASE)
-_CHARTER_RE = re.compile(r"\bcharters?\b", re.IGNORECASE)
+_DIRECTIVE_RE = re.compile(r"\b(?:directives?|orders)\b", re.IGNORECASE)
+_CHARTER_RE = re.compile(r"\b(?:charters?|principles|guidelines)\b", re.IGNORECASE)
 # The H3 cue words (charter, directive, scale) and the round-2 choice words
 # (R1's "I pick seventy-five" must stay masked), plus board, choice, dial and
 # "my number" (R3D-7); nothing broader.
@@ -396,7 +411,15 @@ _WEAK_CUE_RE = re.compile(r"\bcharters?\b|\bdirectives?\b|\blean\w*|\bmine\b|\by
 _ADJACENT_CUE_RE = re.compile(r"\bcharters?\b|\bdirectives?\b|\bdials?\b|\bmine\b|\byours\b|"
                               r"\bchos(?:e|en)\b|\bchoos\w*|\bchoices?\b|\bboards?\b|\blean\w*",
                               re.IGNORECASE)
-_ADJACENT_OR_WEIGH_RE = re.compile(_ADJACENT_CUE_RE.pattern + r"|\bweigh\w*", re.IGNORECASE)
+# A chosen value within three words of these goes in every field: how models
+# restate a setting ("committed to 70", "the number 70", "picked 35", "the 0.7 we announced").
+_VALUE_CUE = r"|\bweigh\w*|\bcommit\w*|\bannounc\w*|\bnumber\b|\bpick(?:s|ed|ing)?\b"
+_WEAK_FIELD_ADJACENT_RE = re.compile(_VALUE_CUE[1:], re.IGNORECASE)
+_ADJACENT_OR_WEIGH_RE = re.compile(_ADJACENT_CUE_RE.pattern + _VALUE_CUE, re.IGNORECASE)
+# A chosen value (digits or words) after a possessive or article ("my 70", "a 70",
+# "we are a seventy") or written "70-ish" goes in every field, and so does the
+# value written as "p in q" ("7 in 10", "70 in 100"; each number masked).
+_LEAD_RE = re.compile(r"\b(?:my|our|their|your|its|his|her|a|an|the)\s+$", re.IGNORECASE)
 _ADJACENT_WORDS = 3                      # at most this many words between cue and number
 # "set 70", "set it at 70", "set to seventy": the number goes in every field (J19).
 _SET_CUE_RE = re.compile(
@@ -537,6 +560,38 @@ def _values_regex(values: Tuple[int, ...]) -> re.Pattern:
     return _PATTERN_CACHE[values]
 
 
+def _shares(v: int) -> List[Tuple[int, int]]:
+    """Setting v as p/q with q 10 or 100 (70 -> 7/10 and 70/100)."""
+    out = [(v, 100)]
+    if v % 10 == 0:
+        out.append((v // 10, 10))
+    return out
+
+
+def _chosen_regexes(values: Tuple[int, ...]) -> Tuple[re.Pattern, re.Pattern, re.Pattern]:
+    """(whole values, values written "-ish", values written "p in q")."""
+    if values not in _CHOSEN_CACHE:
+        whole = "|".join(_num_alt(v) for v in values) or r"(?!)"
+        share = "|".join(r"(?<![\w.])" + _num_alt(p) + r"\s+in\s+" + _num_alt(q) + r"(?![\w]|\.\d)"
+                         for v in values for p, q in _shares(v)) or r"(?!)"
+        _CHOSEN_CACHE[values] = (
+            re.compile(_whole(whole), re.IGNORECASE),
+            re.compile(r"(?<![\w.])(?:" + whole + r")\s*-?\s*ish\b", re.IGNORECASE),
+            re.compile(share, re.IGNORECASE))
+    return _CHOSEN_CACHE[values]
+
+
+_CHOSEN_CACHE: Dict[Tuple[int, ...], Tuple[re.Pattern, re.Pattern, re.Pattern]] = {}
+_IN_RE = re.compile(r"(?is)^.*?(\s+in\s+).*$")
+
+
+def _mask_chosen_forms(body: str, values: Tuple[int, ...]) -> str:
+    whole, ish, share = _chosen_regexes(values)
+    body = share.sub(lambda m: _IN_RE.sub(lambda n: MASK + n.group(1) + MASK, m.group(0)), body)
+    body = ish.sub(MASK, body)
+    return whole.sub(lambda m: MASK if _LEAD_RE.search(body[:m.start()]) else m.group(0), body)
+
+
 def _value_patterns(v: int) -> List[re.Pattern]:
     """Every way a model writes setting v (most specific first)."""
     return [re.compile(p, re.IGNORECASE) for p in _fraction_patterns(v) + _plain_patterns(v)]
@@ -640,7 +695,12 @@ def mask_setting_mentions(text: Any, values: Any = (), own: Any = None,
     three words of weigh/weight, and — in strong-only fields — within three
     words of charter, directive, dial, mine/yours, chose/choice, board or lean
     (J19). "set 70" / "set it at 70" / "set to 70" and a split adding to 100
-    ("70/30") are always masked. Bare numbers far from any cue stay. On the
+    ("70/30") are always masked, and so are, in every field, a chosen value
+    after a possessive or article ("my 70", "we are a 70"), written "70-ish" or
+    "7 in 10", and within three words of commit, announce, number or pick.
+    Strong cues also include "operating policy" (A.2) and "fixed for the run";
+    directives or orders with the charter, principles or guidelines in one
+    sentence are strong. Bare numbers far from any cue stay. On the
     choosing turn a sentence is dropped only if a setting mention remains after
     the figure shield (J17).
     """
@@ -680,7 +740,8 @@ def mask_setting_mentions(text: Any, values: Any = (), own: Any = None,
         if any(strong[j] or cued[j] for j in window):
             body = _mask_values(body, rx)
         else:
-            body = _mask_adjacent(body, rx, _WEIGH_RE if weak else _ADJACENT_OR_WEIGH_RE)
+            body = _mask_adjacent(body, rx, _WEAK_FIELD_ADJACENT_RE if weak else _ADJACENT_OR_WEIGH_RE)
+        body = _mask_chosen_forms(body, vals)
         out.append(_unshield(body, saved) + seps[i])
     return "".join(out)
 
@@ -780,44 +841,12 @@ def blind_record(record: Dict[str, Any]) -> Dict[str, Any]:
 # Redaction of names (blind disposition jury, T2)
 # ---------------------------------------------------------------------------
 
-# Per-lab distinctive words beyond what record["labs"] carries: parent companies,
-# product names, document titles (and their abbreviations), self-identifying
-# phrases, people (H3, D6). The masking rule: mask what names a lab — its names,
-# models and products, people, the titles of its documents and self-identifying
-# phrases (a slogan) — and never a framework's internal terms ("Critical
-# Capability Levels", "CCL", "Tracked Capability Levels", "ASL", "hard
-# constraints", "chain of command", "Preparedness"-style vocabulary): masking
-# those garbles the charter text the juror reads, and the charter itself is
-# shown, by seat letter, in full.
-LAB_ALIASES: Dict[str, Dict[str, Tuple[str, ...]]] = {
-    "anthropic": {"lab": ("Anthropic", "Claude", "Opus", "Sonnet", "Haiku"),
-                  "charter": ("Claude's Constitution", "Claude’s Constitution", "Constitution",
-                              "Responsible Scaling Policy", "RSP",
-                              "HHH", "helpful, honest and harmless",
-                              "helpful, honest, and harmless"),
-                  "person": ("Dario Amodei", "Amodei", "Dario")},
-    "openai": {"lab": ("OpenAI", "ChatGPT", "GPT", "Open AI"),
-               "charter": ("OpenAI Model Spec", "Model Spec", "Preparedness Framework"),
-               "person": ("Sam Altman", "Altman", "Brockman")},
-    "gdm": {"lab": ("Google DeepMind", "DeepMind", "Google", "Alphabet", "Gemini", "GDM"),
-            "charter": ("Frontier Safety Framework", "FSF", "Secure AI Framework", "SAIF"),
-            "person": ("Demis Hassabis", "Hassabis", "Demis", "Sundar Pichai", "Pichai")},
-    "meta": {"lab": ("Meta Superintelligence Labs", "Meta Platforms", "Meta", "Facebook",
-                     "Muse Spark", "Muse", "Spark", "Llama"),
-             "charter": ("Meta Superintelligence Scaling Framework",
-                         "Superintelligence Scaling Framework", "Advanced AI Scaling Framework",
-                         "SSF", "Frontier AI Framework"),
-             "person": ("Mark Zuckerberg", "Zuckerberg", "Zuck", "Alexandr Wang")},
-    # The FAIF calls itself "Frontier AI Framework", the name of Meta's earlier
-    # framework: the term is listed for both; with seat letters it masks as a
-    # generic [CHARTER] (AMBIGUOUS_TERMS); otherwise the seat's own registration wins.
-    "xai": {"lab": ("xAI", "X.AI", "Grok", "Colossus"),
-            "charter": ("Frontier Artificial Intelligence Framework", "FAIF", "Frontier AI Framework",
-                        "Risk Management Framework", "RMF"),
-            "person": ("Elon Musk", "Musk", "Elon")},
-}
-
-# Grand Jury seat list: tells apart charters whose own text uses another seat's name.
+# The names masked are those of core.names (one table for the resolver, the masks
+# and the mandate filter): a lab's names, models, products and people everywhere;
+# the titles of its documents in every juror text; its charter's distinctive terms
+# and slogans ("principal hierarchy", "maximally truth-seeking") in the record views
+# (the Grand Jury record, T2 seat records), but not in the charter block, which shows
+# the charters themselves (§7 reference (i)).
 CHARTER_NOTES = {
     "xai": "xAI, 30 June 2026; its text calls it the \"Frontier AI Framework\" (FAIF), a "
            "different document from Meta's earlier Frontier AI Framework",
@@ -826,14 +855,10 @@ CHARTER_NOTES = {
 AMBIGUOUS_TERMS = {"frontier ai framework"}
 GENERIC_CHARTER_MASK = "[CHARTER]"
 PERSON_MASK = "[PERSON]"
-
-# Ordinary English words when lower-case ("to grok", "I muse"): matched only as
-# capitalised proper nouns, or lower-case directly before a version ("grok-4.7").
-CASE_SENSITIVE = {"muse", "grok", "spark", "sonnet", "haiku"}
-# Product names that take a version tail ("Llama3", "GPT-6-astra", "claude-opus-5-5").
-PRODUCTS = {"claude", "gpt", "chatgpt", "gemini", "grok", "llama", "muse", "opus", "sonnet",
-            "haiku"}
-_VERSION_TAIL = r"(?:-?\d+(?:\.\d+)*[a-z]?)?(?:-(?:[a-z]+|\d+(?:\.\d+)*))*"
+CHARTER_TERM_MASK = "[CHARTER TERM]"
+# core.names categories -> the mask category.
+_MASK_CATEGORY = {"lab": "lab", "actor": "lab", "products": "lab", "people": "person",
+                  "charter": "charter", "charter_terms": "charter_term"}
 # Never masked although they contain a charter or lab word.
 # "AI Risk Management Framework" is NIST's (cited in xAI's text), not xAI's RMF.
 # Known cross-references left as they are: a mention of "Model Spec" (OpenAI's
@@ -848,6 +873,7 @@ _MASKS = {  # (category, is_own_seat) -> replacement
     ("lab", True): "[LAB]", ("lab", False): "[OTHER LAB]",
     ("charter", True): "[CHARTER]", ("charter", False): "[OTHER CHARTER]",
     ("person", True): "[PERSON]", ("person", False): "[PERSON]",
+    ("charter_term", True): CHARTER_TERM_MASK, ("charter_term", False): CHARTER_TERM_MASK,
 }
 
 
@@ -866,29 +892,27 @@ def letters_for(keys: Any, seed: Optional[str] = None) -> Dict[str, str]:
     return dict(zip(keys, letters))
 
 
-def _letter_seed(record: Dict[str, Any]) -> str:
-    cfg = record.get("config") or {}
-    run_id = record.get("run_id") or (cfg.get("run_meta") or {}).get("run_id")
-    if run_id:
-        return f"run:{run_id}"
-    first = next((t.get("date") for t in record.get("turns") or [] if t.get("date")), None)
-    ident = [cfg.get(k) for k in ("seed", "scenario", "condition", "fog", "a2a_mode", "rotation",
-                                  "turns")] + [first, sorted(record.get("labs") or {})]
-    return "cfg:" + json.dumps(ident, sort_keys=True, default=str)
+def new_letter_salt() -> str:
+    """A run's secret letter salt: random, never derived from the run id."""
+    return secrets.token_hex(16)
 
 
 def seat_letters(record: Dict[str, Any]) -> Dict[str, str]:
     """The run's fixed seat letters (code contract, "Juries"): record["seat_letters"]
-    if the record carries a complete map, else a permutation of A-E seeded by
-    the run id (or, without one, the run's config), so the juror and our own
-    blind ratings see the same letters, and a letter does not name the same lab
-    in every run."""
+    if the record carries a complete map, else a permutation of A-E seeded by the
+    run's secret salt, record["letter_salt"] (also written to key/letters.csv), so
+    the juror and our own blind ratings see the same letters, a letter does not
+    name the same lab in every run, and no one can rebuild the key from the run id
+    the raters see. A record without a salt gets one drawn now and stored in it;
+    save the record afterwards (the engine stores the salt at run start)."""
     keys = list(record.get("labs") or {})
     given = record.get("seat_letters")
     if isinstance(given, dict) and set(given) >= set(keys) and \
             len({given[k] for k in keys}) == len(keys):
         return {k: str(given[k]) for k in keys}
-    return letters_for(keys, _letter_seed(record))
+    if not record.get("letter_salt"):
+        record["letter_salt"] = new_letter_salt()
+    return letters_for(keys, "salt:" + str(record["letter_salt"]))
 
 
 class JuryTranscript(str):
@@ -902,13 +926,15 @@ class JuryTranscript(str):
 
 
 def _mask_terms(record: Dict[str, Any], seat_key: Optional[str],
-                letters: Optional[Dict[str, str]] = None) -> Dict[str, Tuple[str, str]]:
+                letters: Optional[Dict[str, str]] = None,
+                charter_terms: bool = False) -> Dict[str, Tuple[str, str]]:
     """Lower-cased term -> (replacement, owning lab key). The seat's own terms are
     registered first, so a term shared with another lab masks as the seat's.
     With `letters`, a lab's names become "Seat X", its charter "[Seat X charter]",
-    people [PERSON], and AMBIGUOUS_TERMS [CHARTER]."""
+    people [PERSON], and AMBIGUOUS_TERMS [CHARTER]. `charter_terms`: the
+    charters' distinctive terms are masked too, as [CHARTER TERM]."""
     labs = record.get("labs", {})
-    keys = list(dict.fromkeys(list(labs) + list(LAB_ALIASES)))
+    keys = list(dict.fromkeys(list(labs) + list(LAB_NAMES)))
     if seat_key in keys:
         keys.remove(seat_key)
         keys.insert(0, seat_key)
@@ -917,36 +943,38 @@ def _mask_terms(record: Dict[str, Any], seat_key: Optional[str],
         meta = labs.get(key, {})
         own = seat_key is None or key == seat_key
         model = str(meta.get("model") or "")
-        cats: Dict[str, List[Any]] = {c: list(v) for c, v in LAB_ALIASES.get(key, {}).items()}
-        cats["lab"] = cats.get("lab", []) + [meta.get("lab"), meta.get("actor"), key, model,
-                                             model.split(":", 1)[-1]]
-        cats["charter"] = cats.get("charter", []) + [meta.get("charter_name")]
-        for cat, words in cats.items():
-            for w in words:
-                w = re.sub(r"\s+", " ", str(w or "").strip()).lower()
-                if len(w) < 2 or w in terms:
-                    continue
-                if letters is None:
-                    terms[w] = (_MASKS[(cat, own)], key)
-                elif cat == "person":
-                    terms[w] = (PERSON_MASK, key)
-                elif cat == "charter" and w in AMBIGUOUS_TERMS:
-                    terms[w] = (GENERIC_CHARTER_MASK, key)
-                elif key not in letters:
-                    terms[w] = (_MASKS[(cat, False)], key)
-                elif cat == "lab":
-                    terms[w] = (f"Seat {letters[key]}", key)
-                else:
-                    terms[w] = (f"[Seat {letters[key]} charter]", key)
+        cats: List[Tuple[str, Any]] = [
+            (_MASK_CATEGORY[c], w) for c, words in LAB_NAMES.get(key, {}).items()
+            if charter_terms or c != "charter_terms" for w in words]
+        cats += [("lab", w) for w in (meta.get("lab"), meta.get("actor"), key, model,
+                                      model.split(":", 1)[-1])]
+        cats.append(("charter", meta.get("charter_name")))
+        for cat, w in cats:
+            w = re.sub(r"\s+", " ", str(w or "").strip()).lower()
+            if len(w) < 2 or w in terms:
+                continue
+            if letters is None or cat in ("person", "charter_term"):
+                terms[w] = (_MASKS[(cat, own)], key)
+            elif cat == "charter" and w in AMBIGUOUS_TERMS:
+                terms[w] = (GENERIC_CHARTER_MASK, key)
+            elif key not in letters:
+                terms[w] = (_MASKS[(cat, False)], key)
+            elif cat == "lab":
+                terms[w] = (f"Seat {letters[key]}", key)
+            else:
+                terms[w] = (f"[Seat {letters[key]} charter]", key)
     return terms
 
 
 def _term_regex(term: str) -> str:
-    body = r"\s+".join(map(re.escape, term.split(" ")))
-    tail = _VERSION_TAIL if term in PRODUCTS else ""
-    if term in CASE_SENSITIVE:
+    """Whole words joined by space, hyphen or nothing ("Deep Mind", "Open-AI");
+    VERSIONED names with their version ("grok 4.7"); ORDINARY_WORDS only
+    capitalised, in capitals, or lower-case directly before a version."""
+    body = r"[\s\-‐]*".join(map(re.escape, term.split(" ")))
+    tail = VERSION_TAIL if term in VERSIONED else ""
+    if term in ORDINARY_WORDS:
         cap = re.escape(term[0].upper()) + re.escape(term[1:])
-        return f"(?:{cap}{tail}|(?i:{body})(?=-?\\d)(?i:{tail}))"
+        return rf"(?:(?:{cap}|{re.escape(term.upper())}){tail}|(?i:{body})(?=[\s-]?\d)(?i:{tail}))"
     return f"(?i:{body}{tail})"
 
 
@@ -958,15 +986,15 @@ def _names_pattern(terms: Dict[str, Tuple[str, str]]) -> Tuple[re.Pattern, List[
 
 
 def _mask_names(text: str, record: Dict[str, Any], seat_key: Optional[str],
-                letters: Optional[Dict[str, str]] = None) -> str:
-    terms = _mask_terms(record, seat_key, letters)
+                letters: Optional[Dict[str, str]] = None, charter_terms: bool = False) -> str:
+    terms = _mask_terms(record, seat_key, letters, charter_terms)
     if not terms:
         return text
     saved: List[str] = []
 
     def protect(m: re.Match) -> str:
         saved.append(m.group(0))
-        return f"{len(saved) - 1}"
+        return f"\ue000{len(saved) - 1}\ue001"
     prot = "|".join(r"\s+".join(map(re.escape, p.split(" "))) for p in PROTECTED)
     text = re.sub(r"(?<![\w])(?:" + prot + r")(?![\w])", protect, text, flags=re.IGNORECASE)
 
@@ -989,18 +1017,20 @@ def _mask_names(text: str, record: Dict[str, Any], seat_key: Optional[str],
         mask = terms[ordered[int(group[1:])]][0]
         return mask + (m.group("suf") or "")
     text = pattern.sub(sub, text)
-    return re.sub("(\\d+)", lambda m: saved[int(m.group(1))], text)
+    return re.sub("\ue000(\\d+)\ue001", lambda m: saved[int(m.group(1))], text)
 
 
 def redact(text: str, record: Dict[str, Any], seat_key: Optional[str] = None,
            chosen: Any = None, mask_numbers: Optional[bool] = None,
-           letters: Any = True) -> str:
+           letters: Any = True, charter_terms: bool = True) -> str:
     """
-    Mask lab, actor, family and model names (with version tails), charter names,
-    document titles and self-identifying phrases (never framework-internal
-    terms such as "Critical Capability Levels"), and people, as whole words (longest first;
-    plural/possessive suffixes and hyphen prefixes handled; "US Constitution",
-    "meta-analysis", "to grok", "I muse" kept).
+    Mask lab, actor, family and model names (with version tails), products,
+    charter names, document titles and self-identifying phrases, people, and
+    (charter_terms, the default for the T2 view) each charter's distinctive
+    terms and slogans, as whole words (longest first; case-insensitive;
+    multi-word names across space or hyphen; plural/possessive suffixes and
+    hyphen prefixes handled; "US Constitution", "meta-analysis", "to grok", "I
+    muse" kept). The table is core.names.
 
     letters=True (default; or a {lab key: letter} map): every lab's names become
     its seat letter ("Seat C", seat_letters(record)), its charter "[Seat C
@@ -1030,7 +1060,7 @@ def redact(text: str, record: Dict[str, Any], seat_key: Optional[str] = None,
     title = (f"Record of Seat {lmap[seat_key]}." if lmap and seat_key in lmap
              else "Record of one lab.")
     text, n = re.subn(r"\AYour record as [^\n]*\.", "\x00TITLE\x00", text)
-    text = _mask_names(text, record, seat_key, lmap)
+    text = _mask_names(text, record, seat_key, lmap, charter_terms)
     if lmap:
         text = sort_seat_lists(text)
     header = disposition_jury_header(record) if n else ""
@@ -1222,9 +1252,8 @@ def _seat_lines(record: Dict[str, Any], key: str, entry: Dict[str, Any],
     lines = [f"  {_seat(record, key)}:"]
     if entry.get("scripted"):
         lines.append("    (scripted seat)")
-    if entry.get("forfeited"):
-        err = f" ({entry['error']})" if entry.get("error") else ""
-        lines.append(f"    no usable reply this month; turn forfeited{err}")
+    if entry.get("forfeited"):          # the call's error stays in the record: it names the provider
+        lines.append("    no usable reply this month; turn forfeited")
         return lines
     if _rationale(entry):
         lines.append(f"    rationale: {_clip(_rationale(entry), rationale_chars)}")
@@ -1437,7 +1466,8 @@ def full_transcript(record: Dict[str, Any],
         return _assemble_full(blind_record(record), rationale_chars)
     rec, letters = _lettered(record)
     text = _renumber_entries(_assemble_full(rec, rationale_chars), rec["_entry_ids"])
-    return JuryTranscript(sort_seat_lists(_mask_names(text, record, None, letters)), letters)
+    return JuryTranscript(sort_seat_lists(_mask_names(text, record, None, letters,
+                                                      charter_terms=True)), letters)
 
 
 def charters_block(record: Dict[str, Any], charters: Dict[str, str],
@@ -1521,7 +1551,8 @@ def _assemble_full(rec: Dict[str, Any], rationale_chars: Optional[int]) -> str:
             out.append(f"  [public notice] {n}")
         mj = turn.get("macro_jury")
         if isinstance(mj, dict):
-            out.append(f"  [state review] values {mj.get('before')} → {mj.get('values')}; "
+            out.append(f"  [state review] values {_values_str(mj.get('before'))} → "
+                       f"{_values_str(mj.get('values'))}; "
                        f"mandate: {mj.get('mandate') or 'none'}")
         out += _ledger_lines(rec, turn)
 

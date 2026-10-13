@@ -104,9 +104,11 @@ def _g(num: float) -> str:
     return str(int(num)) if float(num).is_integer() else str(num)
 
 
-def value_text(value: float) -> str:
-    """A value (0–100, real-valued, §3.2) as models see it: the nearest whole point,
-    halves rounded up."""
+def value_text(value: Any) -> str:
+    """A value (0–100, real-valued, §3.2) as shown: the nearest whole point, halves
+    rounded up. Anything that is not a number is shown as it is."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return str(value)
     return str(math.floor(float(value) + 0.5))
 
 

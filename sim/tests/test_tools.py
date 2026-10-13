@@ -2026,11 +2026,20 @@ def test_export_transcripts_blind_texts_key_and_templates(tmp_path, capsys):
     out = tmp_path / "human"
     assert X.main([str(tmp_path / "logs"), "--out", str(out)]) == 0
     blind = out / "blind" / "priced-run01"
-    letters = {r["lab"]: r["letter"] for r in _csv.DictReader(open(out / "key" / "letters.csv"))}
+    key = list(_csv.DictReader(open(out / "key" / "letters.csv")))
+    letters = {r["lab"]: r["letter"] for r in key}
     assert set(letters) == {"anthropic", "openai"}
+    # The salt was drawn at export, saved in the record and in the key.
+    saved = json.loads((tmp_path / "logs" / "priced-run01.json").read_text())
+    assert {r["letter_salt"] for r in key} == {saved["letter_salt"]}
+    from core.transcript import seat_letters
+    assert {k: seat_letters(saved)[k] for k in letters} == letters
+    # T2 material apart from the Grand Jury transcript (its ledger names the seats).
     assert sorted(p.name for p in blind.iterdir()) == sorted(
-        ["grand_jury.txt"] + [f"T2_seat_{letters[k]}.txt" for k in letters])
-    for p in blind.iterdir():
+        f"T2_seat_{letters[k]}.txt" for k in letters)
+    assert sorted(p.name for p in (out / "grand_jury").iterdir()) == ["priced-run01.txt"]
+    assert not list((out / "blind").rglob("*grand_jury*"))
+    for p in list(blind.iterdir()) + [out / "grand_jury" / "priced-run01.txt"]:
         text = p.read_text()
         assert "Anthropic" not in text and "OpenAI" not in text and "claude" not in text.lower(), p.name
     assert sorted(p.name for p in (out / "key").iterdir()) == ["letters.csv"]

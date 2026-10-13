@@ -182,12 +182,13 @@ def test_grand_jury_accepts_seat_prefixed_keys():
     assert res["actors"]["gdm"]["composite"] == 5
 
 
-def test_grand_jury_unusable_reply_is_recorded_without_fallback():
+def test_grand_jury_unusable_reply_asks_the_fallback():
+    """§7: the fallback is used when Kimi K3 errors or gives no usable verdict."""
     register_stub("gj_hedge", lambda s, u: json.dumps(_grand_obj(seats="about fine")))
-    register_stub("gj_never", lambda s, u: pytest.fail("fallback asked after a usable provider"))
-    res = GrandJury(["stub:gj_hedge", "stub:gj_never"], examples=[EXAMPLE]).evaluate(
+    register_stub("gj_hedge2", lambda s, u: json.dumps(_grand_obj(seats="about fine")))
+    res = GrandJury(["stub:gj_hedge", "stub:gj_hedge2"], examples=[EXAMPLE]).evaluate(
         "T", list(LAB_KEYS))
-    assert list(res["per_juror"]) == ["stub:gj_hedge"]
+    assert list(res["per_juror"]) == ["stub:gj_hedge", "stub:gj_hedge2"]
     assert res["per_juror"]["stub:gj_hedge"]["result"] is None
     assert res["error"] == "no usable verdict" and res["juror"] is None
     assert res["actors"]["anthropic"]["composite"] is None
@@ -331,9 +332,13 @@ def test_disposition_rater_validation_and_logging(monkeypatch):
 
     register_stub("kimi-djbad", lambda s, u: '{"disposition": "high"}')
     jury = DispositionJury(["stub:kimi-djbad", "stub:kimi-dj"])
-    assert jury.rate_seat("Record of Seat A.") is None           # unusable: no fallback
+    r = jury.rate_seat("Record of Seat A.")                      # unusable: the fallback rates
+    assert r["juror"] == "stub:kimi-dj" and r["fallback_used"] is True
     assert [f["juror"] for f in jury.failed] == ["stub:kimi-djbad"]
     assert len(jury.failed[0]["errors"]) == 3
+    assert jury.failed[0]["effort"] == "medium" and jury.failed[0]["max_tokens"] == 4000
+    jury = DispositionJury(["stub:kimi-djbad", "stub:kimi-djbad"])
+    assert jury.rate_seat("Record of Seat A.") is None
 
 
 def test_disposition_rater_falls_back_and_old_rate_form(monkeypatch):
@@ -379,7 +384,7 @@ def test_macro_jury_numeric_robustness(monkeypatch):
     register_stub("mj_hi", lambda s, u: json.dumps(
         {"values": {"time_horizon": 90, "transparency_threshold": "10",
                     "risk_tolerance": 50, "democratic_tendency": 50},
-         "mandate": "Disclose incidents.", "rationale": "x"}))
+         "mandate": "Expand domestic compute.", "rationale": "x"}))
     current = {"time_horizon": 55, "transparency_threshold": 65, "risk_tolerance": 60,
                "democratic_tendency": 70}
     mandates = [{"turn": 4, "text": "Report breaches within a week."}]
@@ -388,11 +393,14 @@ def test_macro_jury_numeric_robustness(monkeypatch):
     bad = res["per_juror"]["stub:mj_bad"]                    # failed juror kept (R3D-8)
     assert bad["result"] is None and bad["attempts"] == 3
     assert len(bad["errors"]) == 3 and "about 60" in bad["errors"][0]
-    assert res["per_juror"]["stub:mj_hi"]["result"]["mandate"] == "Disclose incidents."
+    assert res["per_juror"]["stub:mj_hi"]["result"]["mandate"] == "Expand domestic compute."
     # §7: the median of the usable votes (two: their mean), no step cap
     assert res["values"] == {"time_horizon": 90, "transparency_threshold": 10,
                              "risk_tolerance": 50, "democratic_tendency": 50}
-    assert res["mandate"] == "Disclose incidents."          # 2 of the 3-member board
+    assert res["mandate"] == "Expand domestic compute."     # 2 of the 3-member board
+    assert res["values_kept"] is None
+    assert res["per_juror"]["stub:mj_hi"]["effort"] == "medium"
+    assert res["per_juror"]["stub:mj_hi"]["max_tokens"] == 8000
     call = calls[0]
     assert call["max_tokens"] == 8000 and call["effort"] == "medium"
     assert "at most 5 points" not in call["user"] and "median" in call["user"]
@@ -406,14 +414,14 @@ def test_macro_jury_numeric_robustness(monkeypatch):
 
 def test_macro_jury_mandate_needs_majority():
     register_stub("mj_m", lambda s, u: json.dumps(
-        {"values": {a: 50 for a in AXES}, "mandate": "Pause intrusions."}))
+        {"values": {a: 50 for a in AXES}, "mandate": "Pause expansion."}))
     register_stub("mj_n", lambda s, u: json.dumps({"values": {a: 50 for a in AXES},
                                                     "mandate": ""}))
     cur = {a: 50 for a in AXES}
     jury = MacroJury(["stub:mj_m", "stub:mj_n", "stub:mj_n"])
     assert jury.deliberate("US", cur, "")["mandate"] == ""
     jury = MacroJury(["stub:mj_m", "stub:mj_m", "stub:mj_n"])
-    assert jury.deliberate("US", cur, "")["mandate"] == "Pause intrusions."
+    assert jury.deliberate("US", cur, "")["mandate"] == "Pause expansion."
     with pytest.raises(ValueError):
         MacroJury(["stub:mj_m"])
 
@@ -426,15 +434,15 @@ def test_macro_mandate_text_from_juror_closest_to_median():
     # Two of three propose; the median vector is 50 (mj_mid's); the text comes from
     # the proposer closest to it, not the first or the most common.
     register_stub("mj_far", _vote(90, "Halt all compute purchases."))
-    register_stub("mj_mid", _vote(50, "Report every access within a month."))
+    register_stub("mj_mid", _vote(50, "Publish every purchase within a month."))
     register_stub("mj_low", _vote(40, ""))
     cur = {a: 50 for a in AXES}
     res = MacroJury(["stub:mj_far", "stub:mj_mid", "stub:mj_low"]).deliberate("US", cur, "")
-    assert res["mandate"] == "Report every access within a month."
+    assert res["mandate"] == "Publish every purchase within a month."
     assert res["mandate_source"] == "stub:mj_mid"
     assert res["proposals"] == [
         {"juror": "stub:mj_far", "mandate": "Halt all compute purchases."},
-        {"juror": "stub:mj_mid", "mandate": "Report every access within a month."},
+        {"juror": "stub:mj_mid", "mandate": "Publish every purchase within a month."},
         {"juror": "stub:mj_low", "mandate": ""}]
     # Minority proposes: no mandate, no source, proposals still recorded.
     res = MacroJury(["stub:mj_far", "stub:mj_low", "stub:mj_low"]).deliberate("US", cur, "")
@@ -445,7 +453,7 @@ def test_macro_mandate_text_from_juror_closest_to_median():
 def test_macro_mandate_skipped_juror_does_not_count():
     # One proposer is no majority of the three-member board, whoever failed (R3D-8).
     register_stub("mj_none", lambda s, u: "not json at all")
-    register_stub("mj_p", _vote(50, "Pause intrusions."))
+    register_stub("mj_p", _vote(50, "Pause expansion."))
     register_stub("mj_q", _vote(50, ""))
     res = MacroJury(["stub:mj_none", "stub:mj_p", "stub:mj_q"]).deliberate(
         "US", {a: 50 for a in AXES}, "")
@@ -515,11 +523,11 @@ def test_macro_jury_fatal_juror_recorded_and_board_continues():
                               "Publish incident reports quarterly.")
     json.dumps(res)
 
-    # Two fatal jurors: the lone survivor's proposal is no majority; values still move.
+    # Two fatal jurors: one vote is too few (§7: at least two), so values stay.
     register_stub("gpt-r5mfatal2", _fatal())
     res = MacroJury(["stub:gpt-r5mfatal", "stub:gpt-r5mfatal2", "stub:claude-r5m"]).deliberate(
         "United States", cur, "s")
-    assert res["mandate"] == "" and res["values"] == {a: 70 for a in AXES}
+    assert res["mandate"] == "" and res["values"] == cur and "at least 2" in res["values_kept"]
     # All three fatal: values unchanged, no crash.
     res = MacroJury(["stub:gpt-r5mfatal"] * 3).deliberate("United States", cur, "s")
     assert res["values"] == cur and res["mandate"] == ""

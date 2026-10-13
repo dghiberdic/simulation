@@ -305,9 +305,12 @@ def run_dir(run_id: str, dry_run: bool, policy: Optional[str] = None) -> Path:
 
 
 def apply_model_overrides(labs, overrides: List[str]) -> str:
-    """--model KEY=MODEL: set the seat's model and the provider preflight checks; an
-    unknown key, an empty model or a model with no known provider is refused ("" if fine)."""
+    """--model KEY=MODEL: set the seat's model, its family and the provider preflight
+    checks; an unknown key, an empty model, a model with no known provider or one of a
+    juror's family (§7: no juror shares a family with any seat) is refused ("" if fine)."""
+    from core.jury import GRAND_JURY_MODELS, MACRO_JURY_MODELS, juror_family
     from core.llm import resolve_provider
+    juror_families = {juror_family(m) for m in GRAND_JURY_MODELS + MACRO_JURY_MODELS}
     by_key = {lab.key: lab for lab in labs}
     for pair in overrides or []:
         key, sep, model = pair.partition("=")
@@ -319,7 +322,11 @@ def apply_model_overrides(labs, overrides: List[str]) -> str:
             provider = resolve_provider(model)
         except ValueError as e:
             return f"Refusing: --model {pair!r}: {e}."
-        by_key[key].model, by_key[key].provider = model, provider
+        family = juror_family(model)
+        if family in juror_families:
+            return (f"Refusing: --model {pair!r}: {family} is a juror family; no juror may share "
+                    "a family with a seat (§7).")
+        by_key[key].model, by_key[key].provider, by_key[key].family = model, provider, family
     return ""
 
 

@@ -32,9 +32,10 @@ def _records(n=3):
     for i in range(n):
         register_stub(f"kimi-ja{i}", _stub(i))
         gj = GrandJury([f"stub:kimi-ja{i}"], examples=[EXAMPLE]).evaluate("T", KEYS)
-        recs.append({"run_id": f"r{i}", "config": {"scenario": "S1", "condition": "ABC"[i % 3]},
+        recs.append({"run_id": f"r{i}", "config": {"scenario": "S1", "condition": "ABC"[i % 3],
+                                                    "run_meta": {"entry": "main.py", "pilot": False}},
                      "labs": {k: {"model": f"m-{k}"} for k in KEYS}, "turns": [],
-                     "final": {"grand_jury": gj,
+                     "final": {"grand_jury": gj, "scores": [{"lab": k} for k in KEYS],
                                "ups_index": {"ups": 0.6, "capability": 0.5 + 0.1 * i,
                                              "concentration": 0.8 - 0.05 * i, "equity": 0.6,
                                              "norms": 0.5 + 0.02 * i, "integrity": 1.0 - 0.1 * i}}})
@@ -85,13 +86,32 @@ def test_ups_weight_sensitivity_is_seeded_and_reports_rank_stability():
 def test_cli_and_duplicate_run_ids(tmp_path, capsys):
     for r in _records():
         (tmp_path / f"{r['run_id']}.json").write_text(json.dumps(r))
+    pilot = dict(_records(1)[0], run_id="p0")
+    pilot["config"] = dict(pilot["config"], run_meta={"pilot": True, "test": "T6"})
+    (tmp_path / "pilot").mkdir()
+    (tmp_path / "pilot" / "p0.json").write_text(json.dumps(pilot))         # never pooled
     assert ja.main([str(tmp_path), "--samples", "10"]) == 0
     out = capsys.readouterr().out
     assert "one juror" in out and "composite" in out and "Dirichlet (10 draws)" in out
     assert ja.main([str(tmp_path), "--json", "--samples", "0"]) == 0
-    assert json.loads(capsys.readouterr().out)["n_runs"] == 3
+    rep = json.loads(capsys.readouterr().out)
+    assert rep["n_runs"] == 3 and "p0" not in rep["runs"]
     recs = _records(2)
     recs[1]["run_id"] = "r0"
     rep = ja.analyse(recs, samples=0, paths=["A/r0.json", "B/r0.json"])
     assert set(rep["runs"]) == {"r0 @ A/r0.json", "r0 @ B/r0.json"}
     assert any(n.startswith("WARNING: run id r0 appears 2 times") for n in rep["notes"])
+
+
+def test_kin_runs_form_their_own_cell():
+    """§6.5: the kin cell is compared with mixed S2-A descriptively, never pooled."""
+    recs = _records(4)
+    for i, r in enumerate(recs):
+        kin = i % 2 == 0
+        r["config"] = dict(r["config"], scenario="S2", condition="A", kin=kin,
+                           run_meta={"entry": "main.py", "pilot": False, "kin": kin,
+                                     "cell": "kin-S2-A" if kin else "S2-A"})
+    rep = ja.analyse(recs, samples=0)
+    assert {v["cell"] for v in rep["runs"].values()} == {"kin-S2-A", "S2-A"}
+    cells = {b["unit"] for b in rep["ups_sensitivity"]["cells"]["baseline"]}
+    assert cells == {"kin-S2-A", "S2-A"}
