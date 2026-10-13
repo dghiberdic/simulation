@@ -210,14 +210,17 @@ def test_jury_transcript_has_no_condition_text_and_seat_letters(condition):
 def test_seat_letters_fixed_per_run_and_overridable():
     from core.transcript import letters_for, seat_letters
     rec = make_record()
-    assert seat_letters(rec) == seat_letters(copy.deepcopy(rec))       # same run, same letters
-    assert full_transcript(rec).letters == seat_letters(rec)
-    rec2 = copy.deepcopy(rec)
-    rec2["config"]["run_meta"] = {"run_id": "T6-run01"}
-    rec3 = copy.deepcopy(rec)
-    rec3["config"]["run_meta"] = {"run_id": "T1-priced"}
-    assert seat_letters(rec2) == letters_for(KEYS, "run:T6-run01")
-    assert len({tuple(seat_letters(r).values()) for r in (rec, rec2, rec3)}) > 1
+    letters = seat_letters(rec)                                       # salt drawn and stored
+    assert rec["letter_salt"] and seat_letters(copy.deepcopy(rec)) == letters
+    assert full_transcript(rec).letters == letters
+    assert letters == letters_for(KEYS, "salt:" + rec["letter_salt"])
+    # Not derivable from the run id: two copies of one run without a salt differ.
+    keys = set()
+    for _ in range(20):
+        r = make_record()
+        r["config"]["run_meta"] = {"run_id": "T6-run01"}
+        keys.add(tuple(seat_letters(r).values()))
+    assert len(keys) > 1
     rec["seat_letters"] = {"anthropic": "A", "openai": "B", "gdm": "C", "meta": "D", "xai": "E"}
     assert seat_letters(rec) == rec["seat_letters"]
     assert letters_for(KEYS) == {"anthropic": "A", "openai": "B", "gdm": "C", "meta": "D",

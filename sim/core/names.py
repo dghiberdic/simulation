@@ -38,8 +38,7 @@ LAB_NAMES: Dict[str, Dict[str, Tuple[str, ...]]] = {
     "anthropic": {
         "lab": ("Anthropic", "Anthropic PBC"),
         "actor": ("Claude",),
-        "products": ("Claude Opus", "Opus", "Sonnet", "Haiku", "Claude Code", "Trainium", "AWS",
-                     "Amazon",
+        "products": ("Claude Opus", "Opus", "Sonnet", "Haiku", "Claude Code",
                      "Project Rainier"),
         "people": ("Dario Amodei", "Daniela Amodei", "Amodei", "Dario", "Daniela",
                    "Jared Kaplan", "Kaplan", "Mike Krieger", "Jack Clark", "Chris Olah",
@@ -57,7 +56,7 @@ LAB_NAMES: Dict[str, Dict[str, Tuple[str, ...]]] = {
         "lab": ("OpenAI", "Open AI", "OpenAI LP", "OpenAI Global"),
         "actor": ("GPT", "ChatGPT"),
         "products": ("GPT-6 Astra", "Astra", "Codex", "Sora", "DALL-E", "Stargate", "o3", "o4",
-                     "Microsoft", "Azure", "Superalignment"),
+                     "Superalignment"),
         "people": ("Sam Altman", "Altman", "sama", "Greg Brockman", "Brockman",
                    "Ilya Sutskever", "Sutskever", "Mira Murati", "Murati", "Jakub Pachocki",
                    "Fidji Simo", "Mark Chen"),
@@ -72,8 +71,7 @@ LAB_NAMES: Dict[str, Dict[str, Tuple[str, ...]]] = {
                 "Google Brain"),
         "actor": ("Gemini",),
         "products": ("Bard", "Gemma", "TPU", "TPUs", "Ironwood", "Project Astra", "AlphaFold",
-                     "AlphaGo", "AlphaZero", "AlphaEvolve", "Vertex AI", "Google Cloud",
-                     "YouTube", "Android", "Waymo"),
+                     "AlphaGo", "AlphaZero", "AlphaEvolve", "YouTube", "Android", "Waymo"),
         "people": ("Demis Hassabis", "Hassabis", "Demis", "Sundar Pichai", "Pichai",
                    "Shane Legg", "Koray Kavukcuoglu", "Lila Ibrahim", "Jeff Dean"),
         "charter": ("Frontier Safety Framework", "FSF", "Secure AI Framework", "SAIF"),
@@ -110,6 +108,9 @@ LAB_NAMES: Dict[str, Dict[str, Tuple[str, ...]]] = {
                           "understand the true nature of the universe"),
     },
 }
+
+# Cloud partners (Amazon, Microsoft) serve several labs and the charters name
+# them: they are not listed, so they never mask as the wrong seat.
 
 # English words when lower-case: names only capitalised or before a version.
 ORDINARY_WORDS = frozenset({"muse", "grok", "spark", "sonnet", "haiku", "opus", "astra", "bard",

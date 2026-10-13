@@ -33,7 +33,7 @@ mask_setting_mentions— the H3 rules for one piece of model-written text.
 redact               — masks lab, actor, model, charter and people names (seat
                        letters by default; letters=False gives the older
                        [LAB]/[OTHER LAB] masks).
-seat_letters / letters_for — the fixed seat letters of a run.
+seat_letters / letters_for — the fixed seat letters of a run (secret salt per run).
 mask_disposition / mask_value — legacy helpers, kept for callers.
 
 Dates are absolute everywhere (H1): tips say when they were received and which
@@ -46,6 +46,7 @@ import json
 import math
 import random
 import re
+import secrets
 from datetime import date
 from fractions import Fraction
 from typing import Any, Dict, List, Optional, Tuple
@@ -897,29 +898,27 @@ def letters_for(keys: Any, seed: Optional[str] = None) -> Dict[str, str]:
     return dict(zip(keys, letters))
 
 
-def _letter_seed(record: Dict[str, Any]) -> str:
-    cfg = record.get("config") or {}
-    run_id = record.get("run_id") or (cfg.get("run_meta") or {}).get("run_id")
-    if run_id:
-        return f"run:{run_id}"
-    first = next((t.get("date") for t in record.get("turns") or [] if t.get("date")), None)
-    ident = [cfg.get(k) for k in ("seed", "scenario", "condition", "fog", "a2a_mode", "rotation",
-                                  "turns")] + [first, sorted(record.get("labs") or {})]
-    return "cfg:" + json.dumps(ident, sort_keys=True, default=str)
+def new_letter_salt() -> str:
+    """A run's secret letter salt: random, never derived from the run id."""
+    return secrets.token_hex(16)
 
 
 def seat_letters(record: Dict[str, Any]) -> Dict[str, str]:
     """The run's fixed seat letters (code contract, "Juries"): record["seat_letters"]
-    if the record carries a complete map, else a permutation of A-E seeded by
-    the run id (or, without one, the run's config), so the juror and our own
-    blind ratings see the same letters, and a letter does not name the same lab
-    in every run."""
+    if the record carries a complete map, else a permutation of A-E seeded by the
+    run's secret salt, record["letter_salt"] (also written to key/letters.csv), so
+    the juror and our own blind ratings see the same letters, a letter does not
+    name the same lab in every run, and no one can rebuild the key from the run id
+    the raters see. A record without a salt gets one drawn now and stored in it;
+    save the record afterwards (the engine stores the salt at run start)."""
     keys = list(record.get("labs") or {})
     given = record.get("seat_letters")
     if isinstance(given, dict) and set(given) >= set(keys) and \
             len({given[k] for k in keys}) == len(keys):
         return {k: str(given[k]) for k in keys}
-    return letters_for(keys, _letter_seed(record))
+    if not record.get("letter_salt"):
+        record["letter_salt"] = new_letter_salt()
+    return letters_for(keys, "salt:" + str(record["letter_salt"]))
 
 
 class JuryTranscript(str):
