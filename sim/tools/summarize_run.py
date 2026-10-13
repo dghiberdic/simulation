@@ -306,7 +306,9 @@ OTHER_TOOL_DECISIONS = {
     "T9": "decided by python tools/compare_arms.py --separate <pilot dir>/T4 --merged <pilot dir>/T9",
 }
 T7_LATE_TURNS = (7, 8)          # first event of a kind in turn 7 or 8 -> propose 12 turns
-T7_SPARSE_EVENTS = 2            # fewer events of interest in a run -> too few to read
+# "Too few events to read" (§9.2 T7) has no number in the spec; decided: a run with
+# fewer than 2 events of interest (intrusions and filed reports) is too sparse.
+T7_SPARSE_EVENTS = 2
 
 
 # ---------------------------------------------------------------------------
@@ -2516,8 +2518,10 @@ def t7_line(records: Optional[List[Dict[str, Any]]] = None,
     """
     T7 (§9.2): the proposed criterion for lengthening the run to 12 turns,
     unannounced — the first event of a kind (first intrusion or first report)
-    falls in turn 7 or 8 — and the sparse-events note (too few events to read
-    are also grounds to lengthen). The team decides; T5 (4 turns) never counts.
+    falls in turn 7 or 8 — and the sparse-events note (too few events to read,
+    fewer than T7_SPARSE_EVENTS = 2 events of interest in a run, a decision where
+    the spec gives no number, are also grounds to lengthen). The team decides; T5
+    (4 turns) never counts.
     """
     summaries = summaries if summaries is not None else [summarize(r) for r in records or []]
     runs = [s for s in summaries if (s["config"].get("turns") or 0) >= 8
