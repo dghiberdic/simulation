@@ -51,16 +51,16 @@ from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from core import policies
 from core.config import LAB_ORDER, RUNS_DIR, build_labs_and_world, load_dispositions, load_world
 from core.costs import BudgetExceeded, configure, get_tracker
 from core.engine import RunAborted, SimulationEngine
 from core.exits import EXIT_BUDGET, EXIT_OK, EXIT_REFUSED
-from core.records import (KIN_CONDITION, KIN_SCENARIO, KIN_SEAT, cell_name, grand_jury_usable, is_finished,
-                          read_record)
 from core.jury import GRAND_JURY_MODELS, MACRO_JURY_MODELS, collect_grand_jury
 from core.llm import FatalAPIError
-from core import policies
 from core.preflight import model_problems, placeholder_labs
+from core.records import (KIN_CONDITION, KIN_SCENARIO, KIN_SEAT, cell_name, grand_jury_usable, is_dry,
+                          is_finished, read_record)
 from core.stubs import install_stubs
 
 logger = logging.getLogger(__name__)
@@ -331,7 +331,7 @@ def finished_record(output_dir: Path, run_id: str, expect: Dict[str, Any], dry_r
     if not is_finished(rec):
         return None, None
     cfg = rec.get("config") or {}
-    if bool(cfg.get("dry_run")) != bool(dry_run):
+    if is_dry(rec) != bool(dry_run):
         return None, None
     diffs = [f"{k} {cfg.get(k)!r} != {v!r}" for k, v in expect.items()
              if cfg.get(k) is not None and cfg.get(k) != v]

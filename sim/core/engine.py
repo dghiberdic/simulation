@@ -71,7 +71,7 @@ from core.jury import GRAND_JURY_MODELS, GrandJury, MacroJury, aggregate_grand
 from core.llm import FatalAPIError, complete_json, continue_call
 from core.mandates import mandate_violation
 from core.records import write_json_atomic
-from core.resume import LoggedFailure, LoggedRun, load_partial, set_aside, setup_diffs
+from core.resume import LoggedFailure, LoggedRun, load_partial, partial_path, set_aside, setup_diffs
 from core.rng import KeyedRNG
 from core import scoring
 from core.scoring import prosperity_score, ranked_scores, ups_index
@@ -439,7 +439,7 @@ class SimulationEngine:
         if self.output_dir:
             self._save()
             # The final log supersedes the per-turn checkpoint.
-            (self.output_dir / f"{self.run_id}.partial.json").unlink(missing_ok=True)
+            partial_path(self.output_dir, self.run_id).unlink(missing_ok=True)
 
     # ----------------------------------------------------------------- turn
     def _run_turn(self, turn: int) -> Dict[str, Any]:
@@ -1540,7 +1540,7 @@ class SimulationEngine:
             return None
         self.record["ledger"] = [e.to_dict() for e in self.world.ledger]
         self.record["a2a"] = self.channel.log()
-        return self._write(self.output_dir / f"{self.run_id}.partial.json")
+        return self._write(partial_path(self.output_dir, self.run_id))
 
     def _save(self) -> Optional[Path]:
         return self._write(self.output_dir / f"{self.run_id}.json")

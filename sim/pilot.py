@@ -93,7 +93,7 @@ from core.jury import GRAND_JURY_MODELS, MACRO_JURY_MODELS, DispositionJury, col
 from core.llm import FatalAPIError
 from core.policies import POLICIES
 from core.preflight import model_problems, placeholder_labs
-from core.records import (DRY_SUBDIR, finished_records, grand_jury_usable, is_finished, read_json,
+from core.records import (DRY_SUBDIR, finished_records, grand_jury_usable, is_dry, is_finished, read_json,
                           write_json_atomic)
 from core.stubs import install_stubs
 from core.transcript import disposition_transcript, seat_letters
@@ -205,7 +205,7 @@ def _post_run_collected(root: Path, test: str, run_id: str) -> bool:
     if not is_finished(record):
         return False
     preset = resolve_preset(load_pilot(), test)
-    dry = bool((record.get("config") or {}).get("dry_run"))
+    dry = is_dry(record)
     return not missing_post_run(record, run_id, test, ratings_path(root, dry), preset)
 
 
@@ -770,7 +770,7 @@ def completed_record(output_dir: Path, run_id: str, expect: Optional[Dict[str, A
     rec = read_json(output_dir / f"{run_id}.json")
     if not is_finished(rec) or not isinstance(rec.get("turns"), list):
         return None
-    if bool((rec.get("config") or {}).get("dry_run")) != bool(dry_run):
+    if is_dry(rec) != bool(dry_run):
         return None
     if stale_conflict(output_dir, run_id, expect):
         return None
@@ -1105,8 +1105,7 @@ def _refusal(args, data, root: Path, test: str, preset: Dict[str, Any], approval
 def rerun_done(root: Path, dry_run: bool) -> bool:
     """True when T6's one re-run (T6-run02) has a finished record."""
     rec = read_json(root / "T6" / "T6-run02.json")
-    return isinstance(rec, dict) and bool((rec.get("final") or {}).get("scores")) \
-        and bool((rec.get("config") or {}).get("dry_run")) == bool(dry_run)
+    return is_finished(rec) and is_dry(rec) == bool(dry_run)
 
 
 def run_test(args, data: Dict[str, Any], root: Path, test: str) -> int:
@@ -1353,10 +1352,10 @@ def rescore_grand_jury(args, data: Dict[str, Any], root: Path, test: str) -> int
     run_id = (read_summary(root, "T6") or {}).get("run_id") or "T6-run01"
     output_dir = root / "T6"
     record = read_json(output_dir / f"{run_id}.json")
-    if not isinstance(record, dict) or not (record.get("final") or {}).get("scores"):
+    if not is_finished(record):
         print(f"Refusing: no finished T6 record at {output_dir / (run_id + '.json')}.")
         return EXIT_REFUSED
-    if bool((record.get("config") or {}).get("dry_run")) != bool(args.dry_run):
+    if is_dry(record) != bool(args.dry_run):
         print(f"Refusing: {run_id} is a {'dry' if not args.dry_run else 'real'} record; pass "
               f"{'--dry-run' if not args.dry_run else 'no --dry-run'} to re-score it.")
         return EXIT_REFUSED
