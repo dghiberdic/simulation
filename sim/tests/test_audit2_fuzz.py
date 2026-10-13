@@ -121,9 +121,6 @@ def _kill_at_write(monkeypatch, match, after=False):
     return orig
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG-fuzz-2: a kill after the T2 ratings are pooled but before the record is saved "
-    "leaves final.t2_ratings missing for good (re-invoking finds nothing missing)"))
 def test_kill_between_pooled_ratings_and_record_keeps_t2_in_record(tmp_path, monkeypatch):
     root = _pilot_root(tmp_path)
     orig = _kill_at_write(monkeypatch, "T5-run01.json")
@@ -140,9 +137,6 @@ def test_kill_between_pooled_ratings_and_record_keeps_t2_in_record(tmp_path, mon
     assert set(rec["final"].get("t2_ratings") or {}) == {"anthropic", "openai", "gdm", "meta"}
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG-fuzz-3: a kill after the post-run stages but before the summary: re-invoking "
-    "the test is refused as completed and the summary (and the priced hard stop) is never written"))
 def test_reinvoked_test_writes_the_missing_summary(tmp_path, monkeypatch):
     root = _pilot_root(tmp_path)
     _kill_at_write(monkeypatch, "pilot_summary_T5.json")
@@ -180,9 +174,6 @@ def test_kill_after_the_final_record_leaves_the_partial_log(tmp_path, monkeypatc
     assert (root / "T5" / "T5-run01.partial.json").exists()
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG-fuzz-4: --force after a kill that left the partial log beside the final replays "
-    "the old run from that log instead of running it again"))
 def test_force_rerun_does_not_replay_a_stale_partial(tmp_path, monkeypatch):
     import core.engine as engine_mod
     root = _pilot_root(tmp_path)

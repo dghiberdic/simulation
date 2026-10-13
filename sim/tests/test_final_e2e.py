@@ -123,8 +123,6 @@ def test_blank_hand_template_is_waiting(tmp_path):
 # pilot.py T6 --post-run-only after the one re-run
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, reason="BUG-e2e-3: pilot.py T6 --post-run-only after a re-run checks T6-run01 "
-                                       "only; T6-run02's missing Grand Jury verdict is never collected")
 def test_post_run_only_collects_the_rerun_grand_jury(tmp_path, capsys):
     root = tmp_path / "p"
     assert _dry(root, "priced") == 0

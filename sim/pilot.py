@@ -47,16 +47,21 @@ Commands:
     python pilot.py T6|T5|T4|T9                one test (needs the approval)
     python pilot.py all                        every test not yet done, in order; stops at the hard stop
     python pilot.py T6 --rerun                 the reserve's one T6 re-run (T6-run02); a second is refused
-    python pilot.py T6 --rescore-grand-jury    T8: re-ask the Grand Jury on the T6 record after the
-                                               examples are revised (seats not re-run; once)
+    python pilot.py T6 --rescore-grand-jury    T8: re-ask the Grand Jury on the latest T6 record after
+                                               the examples are revised (seats not re-run; once)
   A completed test is refused unless --skip-completed (skip it, exit 0) or
-  --force (run it again; a real run's old record is moved aside, never deleted).
-  A finished run is never paid for again: re-invoking its test (or
-  --post-run-only) collects only its missing post-run stages (Grand Jury, T2
-  ratings) and then marks the test completed. A run stopped mid-way resumes
-  from its partial log (core.resume): logged turns are replayed with no call.
-  The T6 re-run writes its own summary (pilot_summary_T6-rerun.json), so a
-  failed re-run never un-does T6, and it can be retried.
+  --force (run it again; the old record and any partial log beside it are moved
+  aside, never deleted). A finished run is never paid for again: re-invoking its
+  test (or --post-run-only) does only what it still misses (the Grand Jury, T2
+  ratings, ratings pooled but not saved in the record, the summary, the priced
+  run's hard stop) and then marks the test completed; this holds for a run kept
+  as <run_id>-vN too. After the re-run, `T6` and `T6 --post-run-only` mean the
+  re-run (it replaces T6-run01; T2 and T8 read it). A run stopped mid-way
+  resumes from its partial log (core.resume): logged turns are replayed with no
+  call. The T6 re-run writes its own summary (pilot_summary_T6-rerun.json), so a
+  failed re-run never un-does T6, and it can be retried. A dry run never
+  overwrites or sets aside a real run's log (nor the reverse): give it another
+  --output.
   options: --dry-run (stub models and jurors, $0, logs under data/pilot/dry/),
            --output DIR (pilot root), --spend-file, --budget (guard override:
            --budget, else the approval's, else pilot.json's $48), --skip-completed,
@@ -93,8 +98,8 @@ from core.jury import GRAND_JURY_MODELS, MACRO_JURY_MODELS, DispositionJury, col
 from core.llm import FatalAPIError
 from core.policies import POLICIES
 from core.preflight import model_problems, placeholder_labs
-from core.records import (DRY_SUBDIR, finished_records, grand_jury_usable, is_dry, is_finished, read_json,
-                          write_json_atomic)
+from core.records import (DRY_SUBDIR, PARTIAL_SUFFIX, finished_records, grand_jury_usable, is_dry,
+                          is_finished, read_json, write_json_atomic)
 from core.stubs import install_stubs
 from core.transcript import disposition_transcript, seat_letters
 from tools import summarize_run as SR
@@ -185,28 +190,16 @@ def _completed(s: Optional[Dict[str, Any]]) -> bool:
 
 def test_done(root: Path, test: str) -> bool:
     """
-    The test is done: its summary says completed, or its run finished and every
-    post-run stage is collected although the summary is missing or failed (a kill or
-    a budget stop during the T2 rating). A T6 re-run's summary found in T6's own
-    file never decides T6: T6's earlier summary (.prev) and T6-run01's record do.
+    The test is done: its summary says completed. A finished run whose summary
+    is missing or failed (a kill or a budget stop after the run) is completed by
+    re-invoking its test, which collects only what is missing and writes the
+    summary. A T6 re-run's summary found in T6's own file never decides T6:
+    T6's earlier summary (.prev) does.
     """
     s = read_summary(root, test)
     if s and test == "T6" and s.get("run_id") == "T6-run02":
         s = read_json(summary_path(root, test).with_name("pilot_summary_T6.prev.json"))
-    if _completed(s):
-        return True
-    ids = dict.fromkeys(i for i in ((s or {}).get("run_id"), base_run_id(test)) if i)
-    return any(_post_run_collected(root, test, rid) for rid in ids)
-
-
-def _post_run_collected(root: Path, test: str, run_id: str) -> bool:
-    """True when <run_id>.json is a finished run with no post-run stage missing."""
-    record = read_json(root / test / f"{run_id}.json")
-    if not is_finished(record):
-        return False
-    preset = resolve_preset(load_pilot(), test)
-    dry = is_dry(record)
-    return not missing_post_run(record, run_id, test, ratings_path(root, dry), preset)
+    return _completed(s)
 
 
 def resolve_preset(data: Dict[str, Any], name: str, approval: Optional[Dict[str, Any]] = None,
@@ -538,13 +531,33 @@ def append_ratings(path: Path, rows: Dict[str, Any], test: str, run_id: str, dry
     _write_json(path, pooled)
 
 
-def unrated_seats(path: Optional[Path], record: Dict[str, Any], test: str, run_id: str) -> List[str]:
-    """Model seats of this run with no rating in the pooled file."""
+def pooled_ratings(path: Optional[Path], test: str, run_id: str) -> Dict[str, List[Dict[str, Any]]]:
+    """This run's ratings in the pooled file, by seat."""
     pooled = read_json(Path(path)) if path else None
     pooled = pooled if isinstance(pooled, dict) else {}
-    rated = {seat for seat, items in (pooled.get("ratings") or {}).items()
-             for r in items if isinstance(r, dict) and r.get("run_id") == run_id and r.get("test") == test}
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for seat, items in (pooled.get("ratings") or {}).items():
+        mine = [r for r in items or [] if isinstance(r, dict) and r.get("run_id") == run_id
+                and r.get("test") == test]
+        if mine:
+            out[seat] = mine
+    return out
+
+
+def unrated_seats(path: Optional[Path], record: Dict[str, Any], test: str, run_id: str) -> List[str]:
+    """Model seats of this run with no rating in the pooled file."""
+    rated = pooled_ratings(path, test, run_id)
     return [s.key for s in model_seats(record) if s.key not in rated]
+
+
+def ratings_not_in_record(path: Optional[Path], record: Dict[str, Any], test: str,
+                          run_id: str) -> Dict[str, List[Dict[str, Any]]]:
+    """Seats rated in the pooled file whose rating the record does not hold
+    (final.t2_ratings): a stop between pooling and saving the record."""
+    held = (record.get("final") or {}).get("t2_ratings") or {}
+    seats = {s.key for s in model_seats(record)}
+    return {seat: rows for seat, rows in pooled_ratings(path, test, run_id).items()
+            if seat in seats and seat not in held}
 
 
 def store_t2_in_record(record: Dict[str, Any], rows: Dict[str, Any]) -> None:
@@ -636,7 +649,8 @@ def _tally_attempt(row: Dict[str, Any], a: Dict[str, Any], kind: str) -> None:
         row["served_models"][a["served_model"]] = row["served_models"].get(a["served_model"], 0) + 1
 
 
-def usage_report(records: List[Dict[str, Any]], run_ids: List[str]) -> Dict[str, Any]:
+def usage_report(records: List[Dict[str, Any]], run_ids: List[str],
+                 calls: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """
     Per actor model: proposal and message-round failure rates (parse failures
     per provider, T1), forfeits, stop reasons, interviews (A.7): answered,
@@ -644,8 +658,10 @@ def usage_report(records: List[Dict[str, Any]], run_ids: List[str]) -> Dict[str,
     counted), empty answers (still empty after the retry, counted apart from
     the skips), incomplete (hit the output cap), cut (logged at 300 tokens)
     and retried; tokens, cost and served model ids. Per juror model and role:
-    calls, cost and served ids from the tracker. `records` may include a partial record.
+    calls, cost and served ids from `calls` (default: this process's tracker).
+    `records` may include a partial record.
     """
+    calls = get_tracker().calls if calls is None else calls
     by_model: Dict[str, Dict[str, Any]] = {}
     for record in records:
         for turn in record.get("turns", []):
@@ -687,7 +703,7 @@ def usage_report(records: List[Dict[str, Any]], run_ids: List[str]) -> Dict[str,
         row["served_mismatch"] = sorted(s for s in row["served_models"] if served_mismatch(model, s))
     ids = set(run_ids)
     jurors: Dict[str, Dict[str, Any]] = {}
-    for c in get_tracker().calls:
+    for c in calls:
         if c.get("run_id") not in ids or c.get("purpose") not in JUROR_PURPOSES:
             continue
         row = jurors.setdefault(f"{c['model']}|{c['purpose']}", {
@@ -699,7 +715,7 @@ def usage_report(records: List[Dict[str, Any]], run_ids: List[str]) -> Dict[str,
         row["served_models"] = served
         row["served_mismatch"] = sorted(s for s in served if served_mismatch(row["model"], s))
     by_purpose: Dict[str, float] = {}
-    for c in get_tracker().calls:
+    for c in calls:
         if c.get("run_id") in ids:
             by_purpose[c.get("purpose") or "?"] = round(by_purpose.get(c.get("purpose") or "?", 0.0)
                                                         + (c.get("cost") or 0.0), 4)
@@ -728,17 +744,34 @@ def stale_conflict(output_dir: Path, run_id: str, expect: Optional[Dict[str, Any
     return "; ".join(diffs) or None
 
 
-def claim_run_id(output_dir: Path, run_id: str, expect: Optional[Dict[str, Any]],
-                 ratings_file: Optional[Path], force: bool = False) -> Optional[str]:
-    """The id this run writes under: `run_id`, or "<run_id>-vN" when the final there is
-    a different run. A leftover unfinished final there is deleted. A finished (paid)
-    record of this set-up is never deleted: None without `force`; with it, the
-    record is moved aside to <run_id>.json.replaced-<time> (no longer read as a run).
-    Either way the run's pooled T2 ratings are dropped, the run being replaced."""
+def resolve_run_id(output_dir: Path, run_id: str, expect: Optional[Dict[str, Any]]) -> str:
+    """The id this run is kept under: `run_id`, or "<run_id>-vN" when the final at the
+    base id (and at each earlier -vN) is a run of another set-up. Reads only."""
     candidate, n = run_id, 1
     while stale_conflict(output_dir, candidate, expect):
         n += 1
         candidate = f"{run_id}-v{n}"
+    return candidate
+
+
+def other_mode_log(output_dir: Path, run_id: str, dry_run: bool) -> Optional[Path]:
+    """A finished record or partial log of the other mode (dry vs real) at this run id:
+    a dry run must never overwrite or set aside a real run's files (nor the reverse)."""
+    for path in (output_dir / f"{run_id}.json", output_dir / f"{run_id}{PARTIAL_SUFFIX}"):
+        rec = read_json(path)
+        if isinstance(rec, dict) and isinstance(rec.get("turns"), list) and is_dry(rec) != bool(dry_run):
+            return path
+    return None
+
+
+def claim_run_id(output_dir: Path, run_id: str, expect: Optional[Dict[str, Any]],
+                 ratings_file: Optional[Path], force: bool = False) -> Optional[str]:
+    """The id this run writes under (resolve_run_id). A leftover unfinished final there
+    is deleted. A finished (paid) record of this set-up is never deleted: None without
+    `force`; with it, the record and any partial log beside it are moved aside to
+    <name>.replaced-<time> (no longer read as a run). Either way the run's pooled T2
+    ratings are dropped, the run being replaced."""
+    candidate = resolve_run_id(output_dir, run_id, expect)
     if candidate != run_id:
         logger.warning(f"[stale] {run_id}.json in {output_dir} holds a different run; saving as {candidate}")
     path = output_dir / f"{candidate}.json"
@@ -747,9 +780,12 @@ def claim_run_id(output_dir: Path, run_id: str, expect: Optional[Dict[str, Any]]
             if not force:
                 logger.warning(f"[stale] {path} is a finished run; kept (pass --force to replace it)")
                 return None
-            moved = path.with_name(f"{path.name}.replaced-{time.strftime('%Y%m%d-%H%M%S')}")
-            path.replace(moved)
-            logger.info(f"[stale] {path} moved aside to {moved.name}")
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            for old in (path, output_dir / f"{candidate}{PARTIAL_SUFFIX}"):
+                if old.exists():
+                    moved = old.with_name(f"{old.name}.replaced-{stamp}")
+                    old.replace(moved)
+                    logger.info(f"[stale] {old} moved aside to {moved.name}")
         else:
             path.unlink()
             logger.info(f"[stale] removed {path}")
@@ -791,6 +827,9 @@ def missing_post_run(record: Dict[str, Any], run_id: str, test: str, ratings_fil
         seats = unrated_seats(ratings_file, record, test, run_id)
         if seats:
             out.append(f"T2 ratings ({', '.join(seats)})")
+        unsaved = ratings_not_in_record(ratings_file, record, test, run_id)
+        if unsaved:
+            out.append(f"T2 ratings pooled but not in the record ({', '.join(unsaved)})")
     return out
 
 
@@ -837,6 +876,11 @@ def run_post_stages(record: Dict[str, Any], run_id: str, test: str, output_dir: 
                         post["errors"].append(f"T2 rating {seat}: {fails[-1].get('error')}")
                 if only_missing:
                     post["done"].append(f"T2 ratings: {post['rated']} seat(s) rated")
+            unsaved = ratings_not_in_record(ratings_file, record, test, run_id) if only_missing else {}
+            if unsaved:
+                store_t2_in_record(record, {"ratings": unsaved})
+                _write_json(output_dir / f"{run_id}.json", record)
+                post["done"].append(f"T2 ratings copied from the pool to the record: {', '.join(unsaved)}")
     except BudgetExceeded as e:
         post["errors"].append(f"{stage}: stopped by the budget guard")
         e.post_run = post
@@ -936,7 +980,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "examples are revised; never re-runs the seats; the old verdict is kept as "
                         "final.grand_jury_previous; once")
     p.add_argument("--post-run-only", action="store_true",
-                   help="run nothing new: collect missing T2 ratings (and the T6 Grand Jury) of finished runs")
+                   help="run nothing new: complete a finished run (missing T2 ratings, the T6 Grand Jury, the "
+                        "summary)")
     p.add_argument("--force-order", action="store_true", help="run a test before the earlier ones are done")
     p.add_argument("--allow-placeholder-values", action="store_true",
                    help="allow real runs while charter values are still placeholders")
@@ -1066,7 +1111,8 @@ def run_all(args, data: Dict[str, Any], root: Path) -> int:
 
 
 def _refusal(args, data, root: Path, test: str, preset: Dict[str, Any], approval) -> Optional[str]:
-    """Why this test may not run now, or None."""
+    """Why this test may not run now, or None. A finished run that still misses a
+    post-run stage or its summary never reaches here (run_test completes it)."""
     order = list(data.get("order") or [])
     if test != "priced" and approval is None:
         return ("the priced run's hard stop: share its cost, decide T7, then "
@@ -1080,19 +1126,19 @@ def _refusal(args, data, root: Path, test: str, preset: Dict[str, Any], approval
         return "--rerun is only for T6 (the reserve's re-run)"
     if args.rerun and not test_done(root, "T6"):
         return "--rerun needs a finished T6 run"
-    if args.rerun and rerun_done(root, args.dry_run) and not args.force:
-        return ("T6 has had its one re-run (T6-run02, §9.2); pass --force to redo that re-run "
-                "(it never adds a third run)")
-    if test_done(root, test) and not args.rerun and not args.post_run_only and not args.force:
+    if args.rerun and rerun_done(root, data, args.dry_run) and not args.force:
+        return ("T6 has had its one re-run (T6-run02, §9.2) and it is complete; pass --force to redo that "
+                "re-run (it never adds a third run)")
+    if test_done(root, test) and not args.rerun and not args.force:
         return (f"{test} is already completed ({(read_summary(root, test) or {}).get('run_id')}); pass "
                 "--skip-completed to skip it, --force to run it again (replacing the run)"
                 + (", or --rerun for the reserve's one T6 re-run" if test == "T6" else ""))
-    if not args.force_order and not args.post_run_only and not args.rerun:
+    if not args.force_order and not args.rerun:
         cut = {c.get("test") for c in (approval or {}).get("cuts") or [] if c.get("drop")}
         before = [t for t in order[:order.index(test)] if t not in cut and not test_done(root, t)]
         if before:
             return f"run the earlier tests first ({', '.join(before)}), or pass --force-order"
-    if not args.dry_run and not args.post_run_only:
+    if not args.dry_run:
         if not args.allow_placeholder_values and placeholder_labs():
             return (f"charter values are placeholders for {', '.join(placeholder_labs())}; run "
                     "rate_charters.py first, or pass --allow-placeholder-values")
@@ -1102,62 +1148,115 @@ def _refusal(args, data, root: Path, test: str, preset: Dict[str, Any], approval
     return None
 
 
-def rerun_done(root: Path, dry_run: bool) -> bool:
-    """True when T6's one re-run (T6-run02) has a finished record."""
-    rec = read_json(root / "T6" / "T6-run02.json")
-    return is_finished(rec) and is_dry(rec) == bool(dry_run)
+def run_expect(preset: Dict[str, Any], seed: int) -> Dict[str, Any]:
+    """The set-up a finished record of this test must match (stale_conflict)."""
+    return {"scenario": preset["scenario"], "condition": preset["condition"], "a2a_mode": preset["a2a"],
+            "turns": int(preset["turns"]), "seed": seed, "rotation": preset.get("swap"),
+            "event_turn": preset.get("event_turn") or load_world().get("event_turn")}
+
+
+def run_target(root: Path, test: str, preset: Dict[str, Any], rerun: bool) -> Tuple[str, Dict[str, Any]]:
+    """(run id, expected set-up) of the test's run, or of T6's re-run: <test>-run01
+    (re-run: T6-run02), or its -vN when the base id holds a run of another set-up."""
+    seed = 1 if rerun else 0
+    expect = run_expect(preset, seed)
+    return resolve_run_id(root / test, f"{test}-run{seed + 1:02d}", expect), expect
+
+
+def run_complete(root: Path, test: str, run_id: str, record: Dict[str, Any], preset: Dict[str, Any],
+                 dry_run: bool, rerun: bool) -> bool:
+    """A finished run with nothing left to do: every post-run stage collected, its
+    summary completed for this run id, and after the priced run the hard stop's
+    share.txt written."""
+    if missing_post_run(record, run_id, test, ratings_path(root, dry_run), preset):
+        return False
+    s = read_summary(root, test, rerun)
+    if not (_completed(s) and s.get("run_id") == run_id):
+        return False
+    return not (preset.get("hard_stop") and not rerun and not (root / test / SHARE_NAME).exists())
+
+
+def _rerun_record(root: Path, preset: Dict[str, Any], dry_run: bool
+                  ) -> Tuple[str, Optional[Dict[str, Any]]]:
+    run_id, expect = run_target(root, "T6", preset, True)
+    return run_id, completed_record(root / "T6", run_id, expect, dry_run)
+
+
+def rerun_done(root: Path, data: Dict[str, Any], dry_run: bool) -> bool:
+    """True when T6's one re-run (T6-run02) is finished and complete (post-run stages
+    and its summary)."""
+    preset = resolve_preset(data, "T6", read_approval(root))
+    run_id, rec = _rerun_record(root, preset, dry_run)
+    return rec is not None and run_complete(root, "T6", run_id, rec, preset, dry_run, rerun=True)
+
+
+def latest_t6(root: Path, data: Dict[str, Any], dry_run: bool) -> Tuple[str, bool]:
+    """(run id, is the re-run) of the latest T6 run: the re-run once it has a finished
+    record (it replaces T6-run01, §9.2), else T6-run01. T2 and T8 read this run."""
+    preset = resolve_preset(data, "T6", read_approval(root))
+    run_id, rec = _rerun_record(root, preset, dry_run)
+    if rec is not None:
+        return run_id, True
+    return run_target(root, "T6", preset, False)[0], False
 
 
 def run_test(args, data: Dict[str, Any], root: Path, test: str) -> int:
     if test in COMMANDS:
-        raise SystemExit(f"{test} is a command, not a test")
+        print(f"Refusing: {test} is a command, not a test.")
+        return EXIT_REFUSED
     approval = read_approval(root)
     preset = resolve_preset(data, test, approval)
-    if args.skip_completed and test_done(root, test) and not args.rerun and not args.post_run_only:
+    output_dir = root / test
+    ratings_file = ratings_path(root, args.dry_run)
+    if test == "T6" and not args.rerun and not args.force and latest_t6(root, data, args.dry_run)[1]:
+        args = argparse.Namespace(**dict(vars(args), rerun=True))     # after the re-run, T6 means it
+    run_id, expect = run_target(root, test, preset, args.rerun)
+
+    # A finished run of this set-up is never paid for again: without --force, only
+    # what it still misses (post-run stages, the summary, the hard stop) is done.
+    finished = None if args.force and not args.post_run_only else \
+        completed_record(output_dir, run_id, expect, args.dry_run)
+    if args.post_run_only or (finished is not None and not run_complete(
+            root, test, run_id, finished, preset, args.dry_run, args.rerun)):
+        return _post_run_only(args, data, root, preset, test, run_id, finished, output_dir, ratings_file)
+    if args.skip_completed and test_done(root, test) and not args.rerun:
         print(f"{test}: {(read_summary(root, test) or {}).get('run_id') or base_run_id(test)} already "
               "completed (skipped)")
         return EXIT_OK
-    if args.skip_completed and args.rerun and rerun_done(root, args.dry_run):
-        print("T6: T6-run02 (the one re-run) already completed (skipped)")
+    if args.skip_completed and args.rerun and rerun_done(root, data, args.dry_run):
+        print(f"T6: {run_id} (the one re-run) already completed (skipped)")
         return EXIT_OK
     why = _refusal(args, data, root, test, preset, approval)
     if why:
         print(f"Refusing {test}: {why}.")
         return EXIT_REFUSED
+    other = other_mode_log(output_dir, run_id, args.dry_run)
+    if other is not None:
+        print(f"Refusing {test}: {other} is a {'real' if args.dry_run else 'dry'} run's log; a "
+              f"{'dry' if args.dry_run else 'real'} run never overwrites or sets it aside: pass another "
+              "--output.")
+        return EXIT_REFUSED
     if args.dry_run and preset.get("requires_examples") and not jury_mod.load_examples():
         logger.warning("[T8] no few-shot examples yet: the Grand Jury records 'no examples yet' (dry run)")
     budget = _configure(args, data)
-    output_dir = root / test
-    ratings_file = ratings_path(root, args.dry_run)
     swap = parse_swap(preset.get("swap"))
     scripted = {k: POLICIES[name] for k, name in (preset.get("scripted_seats") or {}).items()}
-    seed = 1 if args.rerun else 0
-    run_id = f"{test}-run{seed + 1:02d}"
+    seed = int(expect["seed"])
     turns = int(preset["turns"])
-    expect = {"scenario": preset["scenario"], "condition": preset["condition"], "a2a_mode": preset["a2a"],
-              "turns": turns, "seed": seed, "rotation": preset.get("swap"),
-              "event_turn": preset.get("event_turn") or load_world().get("event_turn")}
-
-    # A finished run of this set-up is never paid for again: without --force,
-    # only its missing post-run stages are collected, and the test is then done.
-    finished = None if args.force and not args.post_run_only else \
-        completed_record(output_dir, run_id, expect, args.dry_run)
-    if args.post_run_only or finished is not None:
-        return _post_run_only(args, data, root, preset, test, run_id, finished, output_dir, ratings_file)
 
     if not args.dry_run:
         probe_labs, _ = build_labs_and_world(load_world(), charters=False)
         problems = model_problems(probe_labs, _real_jurors(), scripted, bool(preset.get("macro_jury", True)),
-                                      bool(preset.get("grand_jury")))
+                                  bool(preset.get("grand_jury")))
         if problems:
             print("Preflight failed; nothing was called:\n  " + "\n  ".join(problems))
             return EXIT_REFUSED
-        claimed = claim_run_id(output_dir, run_id, expect, ratings_file, force=args.force)
-        if claimed is None:
-            print(f"Refusing {test}: {run_id} has a finished record of this set-up; pass --force to run it "
-                  "again (the old record is kept aside).")
-            return EXIT_REFUSED
-        run_id = claimed
+    claimed = claim_run_id(output_dir, run_id, expect, ratings_file, force=args.force)
+    if claimed is None:
+        print(f"Refusing {test}: {run_id} has a finished record of this set-up that cannot be completed "
+              "here; pass --force to run it again (the old record is kept aside).")
+        return EXIT_REFUSED
+    run_id = claimed
 
     plan = build_plan(data, root, approval=approval)
     est = next((s for s in plan["steps"] if s["test"] == test), {}).get("costs") or {}
@@ -1213,6 +1312,77 @@ def run_test(args, data: Dict[str, Any], root: Path, test: str) -> int:
                           aborted, post)
 
 
+def run_calls(run_id: str) -> List[Dict[str, Any]]:
+    """Every call of this run: the paid ones from the ledger's call log (every process
+    that worked on the run), plus this process's unlogged $0 calls."""
+    tracker = get_tracker()
+    out: List[Dict[str, Any]] = []
+    try:
+        with open(tracker.calls_file) as f:
+            for line in f:
+                try:
+                    c = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(c, dict) and c.get("run_id") == run_id:
+                    out.append(c)
+    except OSError:
+        pass
+    return out + [c for c in tracker.calls if c.get("run_id") == run_id
+                  and not (c.get("cost") or c.get("possibly_billed"))]
+
+
+POST_RUN_INPUTS = ("grand_jury", "disposition_rating")
+
+
+def merge_usage(prior: Dict[str, Any], new: Dict[str, Any]) -> Dict[str, Any]:
+    """A run's usage after a post-run-only process: the prior summary's spend by
+    purpose and juror plus this process's calls (seat rows come from the record)."""
+    out = dict(new)
+    by_purpose = dict(prior.get("by_purpose") or {})
+    for k, v in (new.get("by_purpose") or {}).items():
+        by_purpose[k] = round(by_purpose.get(k, 0.0) + v, 4)
+    jurors = {k: dict(v) for k, v in (prior.get("jurors") or {}).items()}
+    for k, row in (new.get("jurors") or {}).items():
+        old = jurors.get(k)
+        if old is None:
+            jurors[k] = row
+            continue
+        served = dict(old.get("served_models") or {})
+        for m, n in (row.get("served_models") or {}).items():
+            served[m] = served.get(m, 0) + n
+        jurors[k] = dict(old, calls=old.get("calls", 0) + row["calls"],
+                         cost=round(float(old.get("cost") or 0.0) + row["cost"], 4), served_models=served,
+                         served_mismatch=sorted(set(old.get("served_mismatch") or [])
+                                                | set(row.get("served_mismatch") or [])))
+    out.update(by_purpose=by_purpose, jurors=jurors, run_cost_usd=round(sum(by_purpose.values()), 4))
+    return out
+
+
+def measured_usage(root: Path, test: str, run_id: str, rerun: bool, records: List[Dict[str, Any]],
+                   post_run_only: bool) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """(usage, measured cost inputs) for the summary. The run's own process measures
+    them from its calls. A post-run-only process made only juror calls: it keeps the
+    earlier summary's usage and inputs and adds its post-run spend (Grand Jury, T2
+    rating) to them; with no earlier summary of this run (a kill before it was
+    written) they are rebuilt from the ledger's call log. Never from fallbacks."""
+    if not post_run_only:
+        calls = get_tracker().calls
+        return usage_report(records, [run_id], calls), measure_runs(calls, records)
+    prior = read_summary(root, test, rerun)
+    if prior and prior.get("run_id") == run_id and prior.get("usage") and prior.get("inputs") is not None:
+        here = get_tracker().calls
+        inputs = dict(prior["inputs"])
+        added = measure_runs(here, records)
+        for key in POST_RUN_INPUTS:
+            if added.get(key):
+                inputs[key] = round(float(inputs.get(key) or 0.0) + added[key], 4)
+        return merge_usage(prior["usage"], usage_report(records, [run_id], here)), inputs
+    calls = run_calls(run_id)
+    whole = [{k: v for k, v in r.items() if k != "resumed"} for r in records]    # the log has every turn
+    return usage_report(records, [run_id], calls), measure_runs(calls, whole)
+
+
 def _write_summary(args, data: Dict[str, Any], root: Path, test: str, run_id: str, preset: Dict[str, Any],
                    budget: Optional[float], record: Optional[Dict[str, Any]],
                    partial: Optional[Dict[str, Any]], status: str, aborted: Optional[Dict[str, Any]],
@@ -1233,9 +1403,13 @@ def _write_summary(args, data: Dict[str, Any], root: Path, test: str, run_id: st
     if post.get("post_run_only"):
         summary["post_run_only"] = True
     errors: List[str] = []
+    try:
+        summary["usage"], summary["inputs"] = measured_usage(root, test, run_id, bool(args.rerun),
+                                                             usage_records, bool(post.get("post_run_only")))
+    except Exception as e:          # noqa: BLE001 — the summary is never lost
+        logger.exception(f"[summary] usage: {type(e).__name__}: {e}")
+        errors.append(f"usage: {type(e).__name__}: {e}")
     for field, build in (
-            ("usage", lambda: usage_report(usage_records, [run_id])),
-            ("inputs", lambda: measure_runs(get_tracker().calls, usage_records)),
             ("spend_usd", lambda: round(get_tracker().persisted_total(), 4)),
             ("decisions", lambda: pilot_decisions(root, test, args.dry_run, data) if record else {}),
             ("plan", lambda: build_plan(data, root, approval=approval) if record else None)):
@@ -1305,19 +1479,28 @@ def _hard_stop(args, data: Dict[str, Any], root: Path, summary: Dict[str, Any]) 
 
 def _post_run_only(args, data, root: Path, preset, test: str, run_id: str, record: Optional[Dict[str, Any]],
                    output_dir: Path, ratings_file: Path) -> int:
-    """The missing post-run stages of a finished run (--post-run-only, or a re-invoked
-    test whose run finished). Once nothing is missing, the test's summary says
-    completed (so the plan and `all` never run it again)."""
+    """What a finished run still misses (--post-run-only, or a re-invoked test whose run
+    finished): its post-run stages, then its summary (and after the priced run the
+    hard stop). Once nothing is missing, the test's summary says completed (so the
+    plan and `all` never run it again)."""
     budget = _configure(args, data)
     if record is None:
-        print(f"{test}: {run_id} has no finished record; nothing collected")
+        print(f"{test}: {run_id} has no finished {'dry' if args.dry_run else 'real'} record of this set-up; "
+              "nothing collected")
         return EXIT_REFUSED
     missing = missing_post_run(record, run_id, test, ratings_file, preset)
     post: Dict[str, Any] = {"errors": [], "done": [], "rated": 0, "post_run_only": True}
     if missing:
         print(f"{test}: {run_id} is finished (not run again); collecting: {'; '.join(missing)}")
         seats = [SimpleNamespace(key=k, model=v.get("model")) for k, v in (record.get("labs") or {}).items()]
-        jurors = install_stubs(seats) if args.dry_run else _real_jurors()
+        if args.dry_run:
+            jurors = install_stubs(seats)
+        else:
+            jurors = _real_jurors()
+            problems = model_problems([], jurors, uses_macro=False, uses_grand=bool(preset.get("grand_jury")))
+            if problems:
+                print("Preflight failed; nothing was called:\n  " + "\n  ".join(problems))
+                return EXIT_REFUSED
         try:
             post.update(run_post_stages(record, run_id, test, output_dir, ratings_file, jurors, args.dry_run,
                                         preset, only_missing=True))
@@ -1330,8 +1513,7 @@ def _post_run_only(args, data, root: Path, preset, test: str, run_id: str, recor
         if still:
             print(f"  still missing: {'; '.join(still)}")
             return EXIT_REFUSED
-    summary = read_summary(root, test, rerun=bool(args.rerun))
-    if summary and summary.get("status") == "completed" and summary.get("run_id") == run_id and not missing:
+    if run_complete(root, test, run_id, record, preset, args.dry_run, bool(args.rerun)):
         print(f"{test}: {run_id} complete")
         return EXIT_OK
     return _write_summary(args, data, root, test, run_id, preset, budget, record, None, "completed", None, post)
@@ -1341,7 +1523,8 @@ def rescore_grand_jury(args, data: Dict[str, Any], root: Path, test: str) -> int
     """
     T8 (§9.2): after our hand scores disagree and the few-shot examples
     (config/jury_examples.json) are revised once, re-ask the Grand Jury on the
-    finished T6 record — the seats are never re-run. The old verdict moves to
+    latest finished T6 record (the re-run once there is one) — the seats are
+    never re-run. The old verdict moves to
     final.grand_jury_previous; a second re-score is refused once one gave a usable
     verdict (a failed one exits 2 and may be retried). tools/jury_check.py
     then reads the new verdict.
@@ -1349,7 +1532,7 @@ def rescore_grand_jury(args, data: Dict[str, Any], root: Path, test: str) -> int
     if test != "T6":
         print("Refusing: --rescore-grand-jury is for T6 only (the Grand Jury's rubric runs on the T6 run, T8).")
         return EXIT_REFUSED
-    run_id = (read_summary(root, "T6") or {}).get("run_id") or "T6-run01"
+    run_id, _rerun = latest_t6(root, data, args.dry_run)       # T8 reads the latest T6 run
     output_dir = root / "T6"
     record = read_json(output_dir / f"{run_id}.json")
     if not is_finished(record):
