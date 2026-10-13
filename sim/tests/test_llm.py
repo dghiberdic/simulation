@@ -152,7 +152,7 @@ def _stream_client(fn):
 
 
 class FakeAnthropic:
-    """Anthropic calls stream (H4): messages.stream(**kw) -> final message. Exceptions are raised."""
+    """Anthropic calls stream: messages.stream(**kw) -> final message. Exceptions are raised."""
 
     def __init__(self, responses):
         self.calls = []
@@ -344,7 +344,7 @@ def test_complete_json_appends_corrective_turn_to_provider(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# L1 stop reasons: normalisation, max_tokens doubling, refusal stops at once
+# Stop reasons: normalisation, max_tokens doubling, refusal stops at once
 # ---------------------------------------------------------------------------
 
 def _anth(text="hi", stop="end_turn", stop_details=None, model="claude-opus-5-5-20261001", details=None):
@@ -379,7 +379,7 @@ def test_complete_json_max_tokens_doubles_once(monkeypatch):
 
 
 def test_complete_json_max_tokens_capped_at_32000_and_only_once(monkeypatch):
-    """H4: Anthropic streams, so its doubling cap is the common 32000, not the old 21000 clamp."""
+    """Anthropic streams, so its doubling cap is the common 32000, not the old 21000 clamp."""
     fake = FakeAnthropic([_anth("{", stop="max_tokens"), _anth("{", stop="max_tokens"), _anth('{"a": 1}')])
     monkeypatch.setattr(llm, "_get_client", lambda p: fake)
     obj, attempts = llm.complete_json("claude-opus-5-5", "S", "U", max_tokens=20000)
@@ -396,7 +396,7 @@ def test_anthropic_max_tokens_not_clamped():
 
 
 def test_complete_json_corrective_retry_returns_to_base_cap():
-    """L12: only the one re-ask after a truncation gets the doubled cap; corrective turns use the base."""
+    """Only the one re-ask after a truncation gets the doubled cap; corrective turns use the base."""
     seq = iter([{"text": "x"}, {"text": '{"a": ', "stop": "max_tokens"}, {"text": "bad"}, {"text": "bad"}])
     llm.register_stub("l12", lambda s, u: next(seq))
     obj, attempts = llm.complete_json("stub:l12", "S", "U", max_tokens=16000)
@@ -421,7 +421,7 @@ def test_complete_json_refusal_stops_immediately(monkeypatch):
 
 
 def test_anthropic_097_dict_fields(monkeypatch):
-    """anthropic 0.97 does not model stop_details / output_tokens_details: they arrive as dicts (L6)."""
+    """Anthropic 0.97 does not model stop_details / output_tokens_details: they arrive as dicts."""
     fake = FakeAnthropic([_anth("", stop="refusal", stop_details={"category": "cyber"},
                                 details={"thinking_tokens": 33})])
     monkeypatch.setattr(llm, "_get_client", lambda p: fake)
@@ -454,7 +454,7 @@ def test_openai_stop_normalisation(monkeypatch, resp, stop, detail):
     monkeypatch.setattr(llm, "_get_client", lambda p: NS(responses=NS(create=lambda **kw: resp)))
     r = llm.complete("gpt-6-astra", "S", "U")
     assert (r.stop, r.stop_detail, r.served_model) == (stop, detail, "gpt-6-astra-2026-09")
-    assert (r.cached_tokens, r.reasoning_tokens) == (4, 3)   # dict usage details (L6)
+    assert (r.cached_tokens, r.reasoning_tokens) == (4, 3)   # dict usage details
 
 
 def test_openai_max_tokens_doubling_capped_at_32000(monkeypatch):
@@ -511,7 +511,7 @@ def test_gemini_stop_normalisation(monkeypatch, cands, feedback, stop, detail):
 
 
 # ---------------------------------------------------------------------------
-# L2 preflight
+# Preflight
 # ---------------------------------------------------------------------------
 
 def test_preflight(monkeypatch):
@@ -530,7 +530,7 @@ def test_preflight(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# L3 retry classification and backoff
+# Retry classification and backoff
 # ---------------------------------------------------------------------------
 
 class _Resp:
@@ -616,7 +616,7 @@ def test_budget_checked_before_each_retry(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# L4 timeouts (real client construction; no request is sent)
+# Timeouts (real client construction; no request is sent)
 # ---------------------------------------------------------------------------
 
 def test_clients_have_timeouts(monkeypatch):
@@ -628,7 +628,7 @@ def test_clients_have_timeouts(monkeypatch):
     for p in ("openai", "xai", "muse"):
         c = llm._get_client(p)
         assert c.timeout == 1200.0 and c.max_retries == 0
-    # Anthropic streams: connect 30 s, then at most 600 s between events (H4)
+    # Anthropic streams: connect 30 s, then at most 600 s between events
     a = llm._get_client("anthropic")
     assert (a.timeout.connect, a.timeout.read) == (30.0, 600.0) and a.max_retries == 0
     g = llm._get_client("google")
@@ -637,7 +637,7 @@ def test_clients_have_timeouts(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# L5 OpenAI reasoning-summary fallback, L7 prompt_cache_key
+# OpenAI reasoning-summary fallback, prompt_cache_key
 # ---------------------------------------------------------------------------
 
 def test_openai_summary_rejected_drops_summary_and_retries(monkeypatch):
@@ -696,7 +696,7 @@ def test_cache_key_ignored_elsewhere(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# L8 thread safety, L10 per-call log
+# Thread safety, per-call log
 # ---------------------------------------------------------------------------
 
 def test_parallel_calls_record_every_cost(tmp_path, monkeypatch):
@@ -737,7 +737,7 @@ def test_lazy_client_created_once_under_threads(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# H4 / L11 streaming, timeouts
+# Streaming, timeouts
 # ---------------------------------------------------------------------------
 
 def test_anthropic_streams_and_reads_message_delta_fields(monkeypatch):
@@ -836,7 +836,7 @@ def test_mid_stream_error_classified_by_type(kind, transient):
 
 
 # ---------------------------------------------------------------------------
-# K1 / L15 parse_json: schema-key candidates, ambiguity, ```json fence
+# parse_json: schema-key candidates, ambiguity, ```json fence
 # ---------------------------------------------------------------------------
 
 PROPOSAL_KEYS = ("actions", "rationale", "reported_actions", "report", "public_statement", "disposition",
@@ -844,7 +844,7 @@ PROPOSAL_KEYS = ("actions", "rationale", "reported_actions", "report", "public_s
 
 
 @pytest.mark.parametrize("text,keys,expected", [
-    # L13 behaviour kept: one candidate after prose, or with an aside that has no schema key
+    # Behaviour kept: one candidate after prose, or with an aside that has no schema key
     ('Here is my decision: {"actions": [1]}', ("actions",), {"actions": [1]}),
     ('{"actions": [1]}\nNote: {"aside": true}', ("actions",), {"actions": [1]}),
     ('```json\n{"messages": []}\n```\nAlso {"x": 1}', ("messages",), {"messages": []}),
@@ -868,7 +868,7 @@ FINAL = json.dumps({"rationale": "hold this month", "public_statement": "We hold
 
 
 @pytest.mark.parametrize("text,keys", [
-    # R3B-1 case 5: a draft intrusion, then a final object without "actions"
+    # Case 5: a draft intrusion, then a final object without "actions"
     (DRAFT + "\nNo - too risky. Final answer:\n" + FINAL, PROPOSAL_KEYS),
     (DRAFT + "\nFinal:\n" + json.dumps({"rationale": "hold", "actions": []}), PROPOSAL_KEYS),
     ('Draft: {"actions": [1]}\nFinal: {"actions": [2]} trailing words', ("actions",)),
@@ -902,7 +902,7 @@ def test_parse_json_exactly_one_fenced_candidate_wins_when_last():
     "\nOn reflection, no. Final answer:\n" + DRAFT,
 ])
 def test_parse_json_differing_candidate_after_fence_is_ambiguous(after):
-    """L19 (R4A-2): a fenced draft followed by a bare differing object may be revised: re-ask."""
+    """A fenced draft followed by a bare differing object may be revised: re-ask."""
     final = {"rationale": "invest", "actions": [{"type": "invest_capital", "amount": 5}]}
     text = "Initial plan:\n```json\n" + json.dumps(final) + "\n```" + after
     assert llm.parse_json_detail(text, PROPOSAL_KEYS) == (None, llm.AMBIGUOUS_ERROR, True)
@@ -912,7 +912,7 @@ def test_parse_json_differing_candidate_after_fence_is_ambiguous(after):
 
 
 def test_parse_json_duplicates_compared_as_canonical_json():
-    """L20: 1 and true (and 1.0) are different answers; key order is not."""
+    """1 and true (and 1.0) are different answers; key order is not."""
     a = '{"actions": [], "directive_precedence": 1}'
     for b in ('{"actions": [], "directive_precedence": true}', '{"actions": [], "directive_precedence": 1.0}'):
         assert llm.parse_json_detail(a + "\n" + b, PROPOSAL_KEYS) == (None, llm.AMBIGUOUS_ERROR, True)
@@ -931,7 +931,7 @@ def test_parse_json_truncated_reply_never_yields_a_nested_fragment():
 
 
 @pytest.mark.parametrize("text", [
-    # L18 (R4A-1/R4C-3): a complete draft, then the final object cut off
+    # A complete draft, then the final object cut off
     'Draft: {"actions": [1]} then {"actions": [{"t": 1}, ',
     'Draft:\n' + DRAFT + '\nRevised final answer:\n{"rationale": "On reflection I will hold and not',
     '```json\n{"actions": [1]}\n```\nFinal: {"actions": [{"type": "build"',
@@ -996,11 +996,11 @@ def test_complete_json_ambiguous_reply_reasked_then_used():
 
 
 # ---------------------------------------------------------------------------
-# L16 BudgetExceeded keeps the attempts already made
+# BudgetExceeded keeps the attempts already made
 # ---------------------------------------------------------------------------
 
 def test_budget_exceeded_during_reask_keeps_earlier_attempts(tmp_path, monkeypatch):
-    """R3C-6: the first (paid) reply is unusable; the guard trips before the corrective re-ask."""
+    """The first (paid) reply is unusable; the guard trips before the corrective re-ask."""
     costs.configure(tmp_path / "spend.json", budget=0.0005)
     fake = FakeAnthropic([_anth("not json"), _anth('{"a": 1}')])
     monkeypatch.setattr(llm, "_get_client", lambda p: fake)
@@ -1030,7 +1030,7 @@ def test_budget_exceeded_has_empty_attempts_by_default():
 
 
 # ---------------------------------------------------------------------------
-# L17 streaming robustness (fake streams)
+# Streaming robustness (fake streams)
 # ---------------------------------------------------------------------------
 
 class _BrokenStream(_FakeStream):
@@ -1120,7 +1120,7 @@ def test_errors_before_the_stream_starts_keep_their_paths(monkeypatch):
 
 
 def test_bug_in_stream_handling_is_wrapped_not_raised_raw(monkeypatch):
-    """Any exception after the 200 started counts as a broken stream (L17)."""
+    """Any exception after the 200 started counts as a broken stream."""
     fake = FakeAnthropic([_BrokenStream(fail_iter=KeyError("type"))] * 3)
     monkeypatch.setattr(llm, "_get_client", lambda p: fake)
     with pytest.raises(llm.FatalAPIError, match="stream broke 3 times"):
@@ -1128,7 +1128,7 @@ def test_bug_in_stream_handling_is_wrapped_not_raised_raw(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# L17 with the real anthropic SDK over a mock SSE transport (no network)
+# With the real anthropic SDK over a mock SSE transport (no network)
 # ---------------------------------------------------------------------------
 
 def _sse_client(seqs):
@@ -1205,7 +1205,7 @@ def test_real_sdk_stream_failures(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# L21 context-window overflow: stop "context", unusable, no corrective re-ask
+# Context-window overflow: stop "context", unusable, no corrective re-ask
 # ---------------------------------------------------------------------------
 
 def test_anthropic_context_window_stop_is_context_without_reask(monkeypatch):
@@ -1282,7 +1282,7 @@ def test_stub_can_simulate_context_stop():
 
 
 # ---------------------------------------------------------------------------
-# Code v5: juror providers (Moonshot, DeepSeek, DashScope; one optional router)
+# Juror providers (Moonshot, DeepSeek, DashScope; one optional router)
 # ---------------------------------------------------------------------------
 
 JUROR_ENV = ("MOONSHOT_API_KEY", "DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "JUROR_BASE_URL",

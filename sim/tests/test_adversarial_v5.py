@@ -1042,7 +1042,7 @@ def _intruder_policy(lab, labs, world, cfg, scenario, rng):
 @pytest.mark.parametrize("event_turn,turns", [(2, 4), (4, 6), (9, 8), (20, 8)])
 def test_event_turn_config(event_turn, turns):
     """§6: the event (ceiling + intrusion open) falls on event_turn; an event turn asked
-    for at or past the run's end is refused (FX-1: it must leave a month after it)."""
+    for at or past the run's end is refused (it must leave a month after it)."""
     cfg = load_world()
     labs, world = build_labs_and_world(cfg, dispositions={k: 50 for k in KEYS}, charters=False)
     if event_turn >= turns:

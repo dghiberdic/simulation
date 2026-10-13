@@ -1,8 +1,5 @@
-"""Economy (spec §3.1–§3.3, §4): v5 constants, C̃ income, stock growth from turn 2.
-
-Updated for spec v5: the old v8-reference pins (a = 5, ΔK 1.2, US stock 1,500 +110,
-20-unit cap, old seeds) were replaced by pins of the v5 config below.
-"""
+"""Economy (spec §3.1–§3.3, §4): the configured constants, C̃ income, stock growth
+from turn 2, pinned against config/world.json and the lab seeds."""
 
 import math
 import random
@@ -17,7 +14,7 @@ from core.economy import (
 )
 from core.state import WorldState, build_lab
 
-# v5 config, shock off, 8 turns, final capability in lab order (anthropic, openai, gdm, meta, xai)
+# The configured world, shock off, 8 turns: final capability in lab order (anthropic, openai, gdm, meta, xai)
 V5_GREEDY_EVENT4 = [171.9728, 170.1985, 161.3768, 161.9163, 161.2761]
 V5_IDLE = [171.1672, 169.5462, 160.612, 160.7624, 159.7123]
 
@@ -299,7 +296,7 @@ def test_value_pull_is_not_rounded():
 
 
 def test_purchases_frozen_only_when_holdings_exceed_ceiling():
-    """A.4/A.5: the freeze applies while holdings EXCEED the ceiling (C1-13)."""
+    """A.4/A.5: the freeze applies while holdings EXCEED the ceiling."""
     cfg = load_world()
     labs = _labs(cfg)
     world = WorldState(start=date(2026, 8, 1), us_stock=2450.0)

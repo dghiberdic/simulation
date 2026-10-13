@@ -242,7 +242,7 @@ class Ref:
         return None, "none"
 
     def run(self):
-        # ---- pass 1: report validation (fee reserved first; engine convention M16)
+        # ---- pass 1: report validation (fee reserved first, as the engine does)
         reports = {}
         fee = {}
         for k in KEYS:
@@ -764,7 +764,7 @@ def test_second_intrude_in_one_month_is_rejected_in_world(scenario):
 
 
 def test_month_field_with_modal_may_reads_the_named_month():
-    """BUG-mech-2, §5.3 Matching: 'in the stated month if given'. 'may have been
+    """§5.3 Matching: 'in the stated month if given'. 'may have been
     October 2026' states October 2026 (turn 3 of a run from August 2026), not May 2026."""
     assert _parse_turn("may have been October 2026", date(2026, 8, 1), 6) == 3
     assert _parse_turn("It may be October", date(2026, 8, 1), 6) == 3
@@ -772,7 +772,7 @@ def test_month_field_with_modal_may_reads_the_named_month():
 
 
 def test_every_report_outcome_is_public():
-    """BUG-mech-3, §5.3 whistleblow table: 'Effect (all public)'. A second report
+    """§5.3 whistleblow table: 'Effect (all public)'. A second report
     that is returned is still a public outcome."""
     cfg, labs, world, by = _setup()
     _joint(world, penalised=["meta", "xai"])

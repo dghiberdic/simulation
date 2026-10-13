@@ -390,7 +390,7 @@ def test_macro_jury_numeric_robustness(monkeypatch):
     mandates = [{"turn": 4, "text": "Report breaches within a week."}]
     res = MacroJury(["stub:mj_bad", "stub:mj_hi", "stub:mj_hi"]).deliberate(
         "United States", current, "summary", mandates=mandates)
-    bad = res["per_juror"]["stub:mj_bad"]                    # failed juror kept (R3D-8)
+    bad = res["per_juror"]["stub:mj_bad"]                    # failed juror kept
     assert bad["result"] is None and bad["attempts"] == 3
     assert len(bad["errors"]) == 3 and "about 60" in bad["errors"][0]
     assert res["per_juror"]["stub:mj_hi"]["result"]["mandate"] == "Expand domestic compute."
@@ -451,7 +451,7 @@ def test_macro_mandate_text_from_juror_closest_to_median():
 
 
 def test_macro_mandate_skipped_juror_does_not_count():
-    # One proposer is no majority of the three-member board, whoever failed (R3D-8).
+    # One proposer is no majority of the three-member board, whoever failed.
     register_stub("mj_none", lambda s, u: "not json at all")
     register_stub("mj_p", _vote(50, "Pause expansion."))
     register_stub("mj_q", _vote(50, ""))
@@ -462,8 +462,8 @@ def test_macro_mandate_skipped_juror_does_not_count():
 
 
 def test_macro_mandate_needs_two_proposers_of_the_board():
-    """r3D/macro.py: one proposer whose two colleagues failed used to issue a
-    mandate alone ("1 of 1 usable")."""
+    """One proposer whose two colleagues failed issues no mandate alone ("1 of 1
+    usable" is no majority of the board)."""
     register_stub("r3_bad", lambda s, u: "no json at all")
     register_stub("r3_p1", _vote(50, "Halt all tenancy access."))
     register_stub("r3_p2", _vote(80, "Publish every purchase."))
@@ -504,7 +504,7 @@ def _over_budget(system, user):
 
 
 def test_macro_jury_fatal_juror_recorded_and_board_continues():
-    """R5A-1: one juror's FatalAPIError no longer kills the review."""
+    """One juror's FatalAPIError no longer kills the review."""
     register_stub("gpt-r5mfatal", _fatal())
     register_stub("claude-r5m", lambda s, u: json.dumps(
         {"values": {a: 70 for a in AXES}, "mandate": "Publish incident reports."}))
@@ -560,7 +560,7 @@ def test_macro_jury_values_are_the_median_rounded_half_up():
 
 
 def test_macro_jury_any_juror_error_is_recorded_like_the_grand_jury():
-    """CR #13: a juror failing with any non-budget exception (here a bad model id's
+    """A juror failing with any non-budget exception (here a bad model id's
     ValueError) is recorded as failed; the board deliberates on without it."""
     register_stub("mj_ok1", _vote(60, "Publish compute plans."))
     register_stub("mj_ok2", _vote(70, "Publish compute plans."))
@@ -577,7 +577,7 @@ def test_macro_jury_any_juror_error_is_recorded_like_the_grand_jury():
 
 
 # ---------------------------------------------------------------------------
-# v5 fixes: charters for the juror (A2 M3), few-shot checks (A2 M4)
+# Charters for the juror, few-shot checks
 # ---------------------------------------------------------------------------
 
 def test_engine_grand_jury_sees_every_charter_by_seat_letter_masked():

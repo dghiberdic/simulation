@@ -65,7 +65,7 @@ def test_measure_runs_splits_turn_one_and_purposes():
 
 
 def test_measure_runs_normalises_scripted_seat_runs_to_a_full_panel():
-    """CR #3: a run with a scripted seat (T5) measures seat inputs for its model seats
+    """A run with a scripted seat (T5) measures seat inputs for its model seats
     only; they are scaled to the full panel so later projections are not biased low,
     and project_run's seat_scale then applies once."""
     full, part = _measured_record("a-run01"), _measured_record("t5-run01", scripted=True)
@@ -96,7 +96,7 @@ def test_measured_inputs_average_seat_shares_over_tests_that_played_the_model(tm
             {"status": "completed", "runs_completed": 1, "inputs": {"actor_later_turn": 0.5, "seat_share": sh}}))
     out = pilot.measured_inputs(tmp_path, data)["seat_share"]
     assert sum(out.values()) == pytest.approx(1.0, abs=1e-3)
-    # Per test, share x models in the test = relative cost per seat-turn (BUG-11):
+    # Per test, share x models in the test = relative cost per seat-turn:
     # priced 0.6, 0.6, 1.8; T5 (no grok) 0.5, 1.5; means 0.55, 0.6, 1.65.
     assert out["grok-4.7"] == pytest.approx(0.6 / (0.55 + 0.6 + 1.65), abs=1e-3)
 
@@ -238,7 +238,7 @@ def test_campaign_dry_round_end_to_end(tmp_path, capsys):
 
 
 # ---------------------------------------------------------------------------
-# Resume (CR #1), guard trips during the Grand Jury (CR #4)
+# Resume, guard trips during the Grand Jury
 # ---------------------------------------------------------------------------
 
 def _ledger(path, total):
@@ -265,7 +265,7 @@ def _paying_run_cell(tmp_path, costs_by_cell, factor=1.0, fail_at=None, order=No
 
 
 def test_resume_reuses_the_saved_plan_across_processes(tmp_path, monkeypatch):
-    """CR #1: a resumed campaign keeps its cells and its rounds; it does not re-plan
+    """A resumed campaign keeps its cells and its rounds; it does not re-plan
     from the budget left (which used to cut the campaign short)."""
     _ledger(tmp_path / "spend.json", 0.0)
     plan = campaign.build_campaign(None, 300.0, turns=8, s2_mode="separate")
@@ -344,7 +344,7 @@ def test_guard_trip_during_grand_jury_counts_as_done_with_jury_missing(tmp_path)
 
 
 def test_main_never_repays_a_run_halted_during_its_grand_jury(tmp_path, monkeypatch):
-    """CR #4: the guard trips in the Grand Jury after the final record is saved; calling
+    """The guard trips in the Grand Jury after the final record is saved; calling
     again asks only the jury, and the final record is never deleted."""
     from core import jury as jury_mod
     from core.costs import BudgetExceeded

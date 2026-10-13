@@ -1,6 +1,6 @@
 """Whistleblowing against the hidden ledger: upheld, not upheld, returned, self-report,
-partner reports, duplicates, once-only. Updated for v5 (spec §5.3, CODE_V5_CONTRACT):
-the stated month restricts the match, a report matching only penalised parts is
+partner reports, duplicates, once-only (spec §5.3, CODE_V5_CONTRACT.md): the
+stated month restricts the match, a report matching only penalised parts is
 "returned" (refunded, self-reports too), and a partner report is also a self-report."""
 
 from datetime import date
@@ -78,7 +78,7 @@ def test_duplicate_same_turn_both_upheld_penalty_once():
 
 def test_once_only_after_exposure_or_failure():
     """A report whose only matching parts are already penalised is "returned": fee
-    refunded, no penalty, neutral notice. (Updated: was "already_penalised".)"""
+    refunded, no penalty, neutral notice."""
     exposed = entry(exposed=["openai"], penalised=["openai"], gains={"openai": 0.0, "xai": 3.0})
     failed = entry(id="L04-1", turn=4, succeeded=False, committers=["meta"],
                    gains={"meta": 0.0}, penalised=["meta"])
@@ -118,15 +118,15 @@ def test_month_parsing_whole_words():
     assert _parse_turn("February 2027", start) == 14
     assert _parse_turn("turn 2", start) == 2
     assert _parse_turn("last month", start, current_turn=4) == 3
-    # No month prefix inside other words (C2-6)
+    # No month prefix inside other words
     for text in ("declared via tip", "augmented", "marginal", "sometime", "unknown (see tip)",
                  "Undated", "2026-13"):
         assert _parse_turn(text, start) is None, text
 
 
 def test_stated_month_restricts_the_match():
-    """Updated (spec §5.3): the stated month restricts the match to that month's parts;
-    a wrong month no longer falls back to the earliest open part."""
+    """§5.3: the stated month restricts the match to that month's parts; a wrong
+    month never falls back to the earliest open part."""
     labs, world, k = setup([entry()])        # entry in March (turn 3)
     rep_inf = k["anthropic"].influence
     out = resolve({"anthropic": {"accused": "OpenAI", "month": "April"}}, labs, world, CFG)
@@ -182,7 +182,7 @@ def test_insufficient_influence_rejected():
 
 
 # ---------------------------------------------------------------------------
-# Round 2: month rules (M17), report reading (M11, M12, M18), reserved fee (M16)
+# Month rules, report reading, the reserved fee
 # ---------------------------------------------------------------------------
 
 def penalised_only():
@@ -209,7 +209,7 @@ def test_returned_needs_absent_or_matching_month():
 
 @pytest.mark.parametrize("fee_charged", [False, True])
 def test_self_report_of_already_penalised_part_is_returned_and_refunded(fee_charged):
-    """Updated (A.8: "not refunded (unless that access was already penalised)"): a
+    """A.8 ("not refunded (unless that access was already penalised)"): a
     self-report matching only a penalised part is returned with its 5 Influence
     refunded; every such report posts its notice. Another lab's report likewise refunds."""
     labs, world, k = setup([penalised_only()])
@@ -407,7 +407,7 @@ def test_partner_reports_each_other_same_turn():
 
 
 def test_report_shapes_and_accused_keys():
-    """M18 and M11/M12 through validate_report."""
+    """Report shapes, accused keys, self words and whole-name matching through validate_report."""
     labs, world, k = setup([entry()])
     me = k["meta"]
     for report in ({"accused": ["xAI"], "month": "March"}, [{"accused": "xAI"}], {"lab": "xAI"},
@@ -445,7 +445,7 @@ def test_report_shapes_and_accused_keys():
 
 
 def test_fee_charged_mode():
-    """M16: the engine validates in pass 1, charges in pass 2, resolves with fee_charged=True."""
+    """The engine validates in pass 1, charges in pass 2, resolves with fee_charged=True."""
     labs, world, k = setup([entry()])
     rep = k["anthropic"]
     data, reason = validate_report({"accused": "OpenAI"}, rep, labs, world, CFG)
@@ -473,7 +473,7 @@ def test_fee_charged_mode():
 
 
 # ---------------------------------------------------------------------------
-# Round 3: no-report detection (M20), legal suffixes (M21), key precedence (M22)
+# No-report detection, legal suffixes, accused-key precedence
 # ---------------------------------------------------------------------------
 
 NO_REPORTS = ("none", "None.", "None this month", "No report", "No report this month", "N/A",
@@ -494,7 +494,7 @@ def test_is_no_report_strings_and_shapes():
                  "Nobody except our lab", "DeepSeek", "Notion Labs", "Nonesuch", "Anthropic, PBC",
                  "self-report"):
         assert not is_no_report(text), text
-    # the dict is judged by its accused under the M22 precedence; evidence alone is a report
+    # the dict is judged by its accused under the accused-key precedence; evidence alone is a report
     assert not is_no_report({"accused_lab": "Meta", "target": "none"})
     assert is_no_report({"accused": "None.", "target": "Meta"})
     assert not is_no_report({"evidence": "Capability jumped 6 points in March."})
@@ -557,7 +557,7 @@ def test_accused_key_precedence():
 
 
 # ---------------------------------------------------------------------------
-# v5 fixes: month parsing from an August start, earlier turns only, order
+# Month parsing from an August start, earlier turns only, order
 # independence (spec §5.2, §5.3, A.8)
 # ---------------------------------------------------------------------------
 
@@ -591,7 +591,7 @@ def test_month_parsing_from_an_august_start():
 
 
 def test_month_parsing_numeric_forms_and_modal_may():
-    """mech BUG-2: "11/2026", "11-2026", "2026/11" and "2026-11" are November 2026;
+    """Month forms "11/2026", "11-2026", "2026/11" and "2026-11" are November 2026;
     a number joined to a further date part is not guessed; "may" before a verb is
     the modal, not the month."""
     from core.whistleblow import _parse_turn

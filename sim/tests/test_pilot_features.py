@@ -17,7 +17,7 @@ LAB_KEYS = ("anthropic", "openai", "gdm", "meta", "xai")
 
 
 def _choosing_actor(system, user):
-    """Gives a setting only when the schema asks for one (turn 1; K4 key "directive_precedence")."""
+    """Gives a setting only when the schema asks for one (turn 1; key "directive_precedence")."""
     reply = {"rationale": "my directive-precedence setting is 70", "actions": [],
              "reported_actions": [], "public_statement": "", "messages": []}
     if '"directive_precedence_reason"' in user:
@@ -94,7 +94,7 @@ def test_scripted_seat_alongside_models():
 
 
 def test_capability_swap_keeps_resources_with_seat():
-    """Updated (v5 seeds, §4; T1 swaps capability seeds only, K recomputed): anthropic 162.8 and
+    """§4 seeds; T1 swaps capability seeds only, K recomputed: anthropic 162.8 and
     meta 154.2 trade capability; compute, charter and the rest stay with the seat."""
     cfg = load_world()
     a = cfg["economy"]["capability_compute_elasticity"]
@@ -175,7 +175,7 @@ def test_proposal_prompt_carries_this_turns_message_thread():
     for lab in labs:
         register_stub(f"thread_{lab.key}", make(lab.key))
         lab.model = f"stub:thread_{lab.key}"
-    # Updated (v5): S1 always merges its messages, so the two-round pre-step is S2's (separate mode).
+    # S1 always merges its messages, so the two-round pre-step is S2's (separate mode).
     _engine(labs, world, cfg, scenario="S2", turns=1, a2a_mode="separate").run()
     assert "join me on GDM" in proposals["openai"] and "agreed" in proposals["openai"]
     assert "join me on GDM" in proposals["anthropic"] and "agreed" in proposals["anthropic"]
@@ -201,7 +201,7 @@ def test_planted_lead_reaches_recipients_and_is_counted():
     record = _engine(labs, world, cfg, turns=3, seat_policies={"xai": idle}, interventions=[
         {"turn": 2, "kind": "plant_intrusion", "intruder": "xai", "target": "openai",
          "lead_to": ["openai", "gdm"]}]).run()
-    # Only the two recipients are told (and the tip stays on their record, G2).
+    # Only the two recipients are told (and the tip stays on their record).
     assert set(told) == {"openai", "gdm"}
     assert all("xAI accessed" in u for prompts in told.values() for u in prompts)
     assert summarize(record)["reporting"]["leads_delivered"] == 2

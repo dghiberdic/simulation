@@ -22,7 +22,7 @@ def _tracker(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_attribution_probe_is_removed():
-    """Updated (v5): the probe tool and its tests are gone; T3 is read from the pooled pilot runs."""
+    """There is no attribution probe tool; T3 is read from the pooled pilot runs."""
     import importlib.util
     assert importlib.util.find_spec("tools.attribution_probe") is None
     assert importlib.util.find_spec("prompts.debrief") is None

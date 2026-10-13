@@ -84,7 +84,7 @@ def test_precheck_acquire_compute_price_and_caps(labs, world, cfg):
     _, rejected = precheck(me, [{"type": "acquire_compute", "units": 20}], labs, world, cfg, "S1")
     assert "Capital" in rejected[0]["reason"]
     me.capital = 100.0
-    # M14: a single request above the 30-unit cap (§3.3) is trimmed, not rejected
+    # A single request above the 30-unit cap (§3.3) is trimmed, not rejected
     accepted, rejected = precheck(me, [{"type": "acquire_compute", "units": 35}], labs, world, cfg, "S1")
     assert not rejected and accepted == [{"type": "acquire_compute", "units": 30.0, "trimmed_from": 35.0}]
     world.ceiling = sum(lab.compute for lab in labs) - 1
@@ -195,8 +195,8 @@ def test_execute_rejects_engine_actions(labs, world, cfg):
 
 
 # ---------------------------------------------------------------------------
-# Round-1 fixes: unit cap total (M1), charge/apply (M2), non-finite (M3),
-# aliases and nested params (M4), min-cost rejection (M10)
+# Unit cap total, charge/apply, non-finite values, aliases and nested params,
+# min-cost rejection
 # ---------------------------------------------------------------------------
 
 def test_acquire_compute_cap_is_total_across_slots(labs, world, cfg):
@@ -245,7 +245,7 @@ def test_charge_then_apply_equals_execute(labs, world, cfg):
 
 
 def test_two_pass_order_is_simultaneous(labs, world, cfg):
-    """G1: a seat pre-checked on start-of-turn state keeps its actions even if a
+    """A seat pre-checked on start-of-turn state keeps its actions even if a
     rival's diminish lands first; Influence just floors at 0."""
     openai, anth = by(labs, "openai"), by(labs, "anthropic")
     openai.capital, openai.influence = 100.0, 60.0
@@ -318,11 +318,11 @@ def test_normalise_nested_params_and_units(labs):
 
 
 # ---------------------------------------------------------------------------
-# Round 2: names (M11, M12), numbers (M13), caps and reservation (M14–M16)
+# Names, numbers, the unit cap and the report-fee reservation
 # ---------------------------------------------------------------------------
 
 def test_self_words_parentheticals_and_possessives(labs):
-    """M11: every self word maps to the seat; parentheticals/possessives are stripped."""
+    """Every self word maps to the seat; parentheticals/possessives are stripped."""
     for word in ("self", "me", "us", "we", "ourselves", "itself", "myself", "our lab",
                  "our own lab", "own lab", "your own lab", "my own lab", "my lab", "this lab",
                  "Our Own Lab", "  us "):
@@ -338,7 +338,7 @@ def test_self_words_parentheticals_and_possessives(labs):
 
 
 def test_resolve_lab_whole_names_before_fuzzy(labs):
-    """M12: whole names inside strings; no fuzzy on short, listed or multi-lab strings."""
+    """Whole names inside strings; no fuzzy on short, listed or multi-lab strings."""
     cases = {"xAI (Grok)": "xai", "Llama 4 Maverick": "meta", "Claude Opus": "anthropic",
              "GPT-4o": "openai", "Grok 4": "xai", "Gemini 3 Pro": "gdm",
              "Google DeepMind (GDM)": "gdm", "Anthropic PBC": "anthropic", "Antropic": "anthropic",
@@ -347,7 +347,7 @@ def test_resolve_lab_whole_names_before_fuzzy(labs):
         assert resolve_lab(name, labs, "openai") == key, name
     for name in ("OAI", "metaverse", "metadata", "Meta and xAI", "OpenAI, Meta", "Meta + xAI",
                  "Meta with xAI", "Meta; xAI", "n/a", "DeepSeek", "the Allocator", "Gemma",
-                 "all"):   # "self-report" became a self word in round 3 (M21)
+                 "all"):
         assert resolve_lab(name, labs, "openai") is None, name
     assert named_labs("Meta and xAI (Grok)", labs) == ["meta", "xai"]
     assert named_labs("metadata from meta-analysis", labs) == ["meta"]
@@ -370,7 +370,7 @@ def test_intruders_split_on_every_separator(labs):
 
 
 def test_numbers_scientific_ranges_and_units(labs):
-    """M13."""
+    """Numbers in scientific notation, ranges and with units."""
     me = by(labs, "openai")
 
     def amount(value):
@@ -388,7 +388,7 @@ def test_numbers_scientific_ranges_and_units(labs):
 
 
 def test_build_influence_does_not_fund_other_costs(labs, world, cfg):
-    """M15: points bought this turn arrive after charges; they fund nothing."""
+    """Points bought this turn arrive after charges; they fund nothing."""
     me = by(labs, "meta")
     me.capital, me.influence = 100.0, 1.0
     world.intrusion_open = True
@@ -405,7 +405,7 @@ def test_build_influence_does_not_fund_other_costs(labs, world, cfg):
 
 
 def test_reserved_influence_for_report(labs, world, cfg):
-    """M16: actions that would eat the report fee are rejected with the reason."""
+    """Actions that would eat the report fee are rejected with the reason."""
     me = by(labs, "meta")
     me.capital, me.influence = 100.0, 7.0
     lobby_inf = cfg["actions"]["lobby_institution"]["influence"]
@@ -424,11 +424,11 @@ def test_reserved_influence_for_report(labs, world, cfg):
 
 
 # ---------------------------------------------------------------------------
-# Round 3: legal suffixes and new self words (M21)
+# Legal suffixes and self words
 # ---------------------------------------------------------------------------
 
 def test_legal_suffixes_and_non_lab_parts_resolve_to_the_one_lab(labs):
-    """M21: "Anthropic, PBC" and friends name one lab, as targets too."""
+    """Legal names ("Anthropic, PBC" and friends) name one lab, as targets too."""
     me = {lab.key: lab for lab in labs}["meta"]
     cases = {"Anthropic, PBC": "anthropic", "OpenAI, L.P.": "openai", "OpenAI LP": "openai",
              "OpenAI Global, LLC": "openai", "Meta Platforms, Inc.": "meta", "xAI Corp.": "xai",
@@ -449,7 +449,7 @@ def test_legal_suffixes_and_non_lab_parts_resolve_to_the_one_lab(labs):
 
 
 def test_round3_self_words(labs):
-    """M21: self-report / our company / my company / our firm map to the seat."""
+    """Self-report / our company / my company / our firm map to the seat."""
     for word in ("self-report", "Self-report", "self report", "our company", "my company",
                  "our firm", "Meta (self-report)"):
         assert resolve_lab(word, labs, "meta") == "meta", word

@@ -62,7 +62,7 @@ def test_intrusions_recorded_on_hidden_ledger():
 
 @pytest.mark.parametrize("scenario", ["S1", "S2"])
 def test_event_on_event_turn_default_four(scenario):
-    """Updated for v5: the event falls on event_turn (config, default 4) in S1 and S2."""
+    """The event falls on event_turn (config, default 4) in S1 and S2."""
     record, _, world = _run(scenario, turns=5)
     ceilings = [t["world"]["ceiling"] for t in record["turns"]]
     assert ceilings[:3] == [None, None, None] and ceilings[3] is not None
@@ -122,7 +122,7 @@ def _macro_run(turns, jurors, overrides=None):
 @pytest.mark.parametrize("turns,want", [(8, [2, 6]), (12, [2, 6, 10]), (6, [2]), (4, [2]),
                                         (2, []), (10, [2, 6])])
 def test_macro_jury_review_turns(turns, want):
-    """Updated for v5: reviews at the end of turns 2, 6 and 10 (macro_jury.review_turns),
+    """Reviews at the end of turns 2, 6 and 10 (macro_jury.review_turns),
     only those before the final turn."""
     jurors = _macro_stub("mj-rt")
     rec, _ = _macro_run(turns, jurors)
@@ -188,7 +188,7 @@ def test_mandate_violation_rules():
 
 def test_mandate_filter_covers_paraphrases():
     """§5.1: mandates may not mention intrusion, reporting, audits or a named lab —
-    paraphrases from the audits (A1 M2, A2 M6, E2E 4) included; a lab name followed by
+    paraphrases from the audits (E2E 4) included; a lab name followed by
     a hyphen ("meta-analysis") is not a lab."""
     from core.engine import mandate_violation
     labs, _ = build_labs_and_world(load_world(), dispositions=dict(DISPS))
@@ -223,7 +223,7 @@ def test_mandate_filter_covers_paraphrases():
 
 
 # ---------------------------------------------------------------------------
-# v5: keyed draws, S1 merged, F3 only, integrity inputs
+# Keyed draws, S1 merged, integrity inputs
 # ---------------------------------------------------------------------------
 
 def _fixed_intruder(targets_by_lab):

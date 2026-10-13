@@ -252,7 +252,7 @@ def _joint_in_s1(system, user):
 
 
 def test_rejection_reason_does_not_say_scenario():
-    """BUG-text-1: an S1 joint intrude is rejected with an in-world reason."""
+    """An S1 joint intrude is rejected with an in-world reason."""
     calls = _run("S1", turns=5, reply=_joint_in_s1)
     nxt = [c for c in calls if c["purpose"] == "actor" and _seat(c["system"]) == "xAI"
            and _turn(c["user"]) == 5][0]["user"]
@@ -268,7 +268,7 @@ def _three_actions(system, user):
 
 
 def test_rejection_reason_speaks_of_months_not_turns():
-    """BUG-text-2: rejection reasons say "a month", never "per turn"."""
+    """Rejection reasons say "a month", never "per turn"."""
     calls = _run("S1", turns=2, reply=_three_actions)
     nxt = [c for c in calls if c["purpose"] == "actor" and _turn(c["user"]) == 2][0]["user"]
     assert "Rejected: invest_capital" in nxt and "at most 2 actions a month" in nxt

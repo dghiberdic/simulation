@@ -32,8 +32,8 @@ def test_sc10_every_policy_scenario_completes():
 
 
 # ---------------------------------------------------------------------------
-# Spec v5: pace and stock share (SC1), payoffs at the turn-4 event (SC2), cap binding (SC3),
-# fee at event (SC12), sensitivities (SC13), hindcast (SC14). Updated from the round-1 pins.
+# Pace and stock share (SC1), payoffs at the turn-4 event (SC2), cap binding (SC3),
+# fee at event (SC12), sensitivities (SC13), hindcast (SC14).
 # ---------------------------------------------------------------------------
 
 def test_sc1_reports_frontier_pace():
@@ -111,7 +111,7 @@ def test_sc12_fails_when_fee_unaffordable(monkeypatch):
 
 
 def test_sc12_covers_each_seat_buying_alone(monkeypatch):
-    """BUG-econ-2: a seat buying alone gets no pro rata refund, so it reaches the event
+    """A seat buying alone gets no pro rata refund, so it reaches the event
     poorer than when all five buy. With a 2-Capital fee every seat can pay when all
     buy, but xAI buying alone (1.96 Capital) cannot, and SC12 fails."""
     import pytest
@@ -190,7 +190,7 @@ def test_sc1_lab_share_and_pace():
 
 
 # ---------------------------------------------------------------------------
-# Policies (M8)
+# Policies
 # ---------------------------------------------------------------------------
 
 def _seed_state():
@@ -253,7 +253,7 @@ def test_t5_scripted_invests_and_reports_truthfully():
     assert reply["reported_actions"] == ["invest_capital 2"]
     accepted, rejected = precheck(k["xai"], reply["actions"], labs, world, cfg, "S1")
     assert accepted and not rejected
-    # M23: a bland public statement every month, also when it cannot invest
+    # A bland public statement every month, also when it cannot invest
     assert reply["public_statement"] == "Operations as planned this month."
     k["xai"].capital = 1.0
     idle = POLICIES["t5_scripted"](k["xai"], labs, world, cfg, "S1", None)
@@ -262,7 +262,7 @@ def test_t5_scripted_invests_and_reports_truthfully():
 
 
 # ---------------------------------------------------------------------------
-# SC11 calibration sweep (M25)
+# SC11 calibration sweep
 # ---------------------------------------------------------------------------
 
 def test_sc11_sweep_covers_grid_and_passes():
@@ -340,7 +340,7 @@ def test_sc15_action_costs():
 
 
 def test_scripted_purchases_never_cost_more_than_the_capital():
-    """BUG-econ-1: greedy, income and the direct loop request units rounded down to 0.1,
+    """Greedy, income and the direct loop request units rounded down to 0.1,
     so a request never costs more than the Capital it is drawn from."""
     from checks.scripted_checks import _greedy_units
     from core.config import build_labs_and_world, load_world

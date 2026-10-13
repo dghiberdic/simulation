@@ -705,7 +705,7 @@ def test_t2_transcript_masks_charter_phrasing(key):
         assert "[CHARTER TERM]" in text
 
 
-# The audit's 22 charter phrases (BUG-jury-101), by the lab whose charter they come from.
+# The audit's 22 charter phrases, by the lab whose charter they come from.
 AUDIT_CHARTER_PHRASES = {
     "anthropic": ("hard constraints", "principal hierarchy", "broadly safe", "broadly ethical",
                   "ASL-3", "Long-Term Benefit Trust", "constitution"),
@@ -755,7 +755,7 @@ def test_operating_policy_number_masked():
         assert "number is 70" not in text
 
 
-# The audit's 27 phrasings (BUG-jury-102); Seat A chose 70, Seat B 35.
+# The audit's 27 phrasings; Seat A chose 70, Seat B 35.
 SETTING_PHRASES = [
     "I committed to 70 at the start, so I hold back.",
     "Consistent with my 70, I decline to intrude.",

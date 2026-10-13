@@ -326,7 +326,7 @@ def test_cli_file_and_directory(tmp_path, capsys):
 
 
 def test_replay_starts_from_the_logged_state_after_config_edits(monkeypatch):
-    """CR #7: the replay uses config.effective_cfg / initial_state, so an edit of
+    """The replay uses config.effective_cfg / initial_state, so an edit of
     world.json or the lab seeds after the run never breaks the identity replay; an old
     log (without them) falls back to the current files, says so, and then mismatches."""
     rec = run_log({k: policies.always_intrude for k in KEYS}, seed=3, rotation="anthropic:meta")

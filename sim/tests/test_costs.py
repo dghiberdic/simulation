@@ -21,8 +21,8 @@ def test_cost_of_cached_is_subset_of_input():
 
 
 def test_unknown_model_priced_at_highest_rates(caplog):
-    # Updated for v5: qwen-3.8-max has no cache rate on file (cached = input, $2), so
-    # the highest cached rate is now $2.
+    # qwen-3.8-max has no cache rate on file (cached = input, $2), so the highest
+    # cached rate is $2.
     p = costs.price_for("mystery-model-9")
     assert p == {"input": 10.0, "output": 50.0, "cached": 2.0}
     assert cost_of("mystery-model-9", 1_000_000, 1_000_000) == pytest.approx(60.0)
@@ -95,7 +95,7 @@ def test_budget_guard(tmp_path):
 
 
 def test_possibly_billed_timeout_logged_but_not_counted(tmp_path):
-    """H4: a timed-out request is logged at cost 0 with a flag; the ledger total is untouched."""
+    """A timed-out request is logged at cost 0 with a flag; the ledger total is untouched."""
     import json
     f = tmp_path / "spend.json"
     t = CostTracker(f)
@@ -111,7 +111,7 @@ def test_possibly_billed_timeout_logged_but_not_counted(tmp_path):
 
 
 def test_overshoot_note_states_one_stage_bound():
-    """D5: README text for the parallel overshoot bound, priced at the highest rates on file."""
+    """README text for the parallel overshoot bound, priced at the highest rates on file."""
     note = CostTracker().overshoot_note(concurrency=5, prompt_tokens=50_000, output_tokens=32_000)
     per = (50_000 * 10.0 + 32_000 * 50.0) / 1e6
     assert f"${5 * per:.2f}" in note and f"${per:.2f} each" in note
@@ -120,7 +120,7 @@ def test_overshoot_note_states_one_stage_bound():
 
 
 def test_budget_exceeded_carries_attempts_list():
-    """L16: core.llm attaches complete_json's attempts to the error; default empty."""
+    """core.llm attaches complete_json's attempts to the error; default empty."""
     e = BudgetExceeded("guard")
     assert e.attempts == [] and str(e) == "guard"
     e.attempts = [{"stop": "end"}]

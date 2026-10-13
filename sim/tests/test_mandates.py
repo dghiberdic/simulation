@@ -1,5 +1,4 @@
-"""core/mandates.py: the §5.1 mandate filter on the audit's labelled corpus
-(audit round 2, BUG-jury-201/202): paraphrases, unicode tricks and lab names
+"""core/mandates.py: the §5.1 mandate filter on a labelled corpus: paraphrases, unicode tricks and lab names
 dropped; benign mandates kept. Latin-script foreign languages are out of scope
 (the pilot reads every issued mandate)."""
 

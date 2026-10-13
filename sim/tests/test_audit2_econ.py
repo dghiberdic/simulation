@@ -259,7 +259,7 @@ def test_value_pull_moves_one_point_a_turn_and_lands_on_target():
 # ---------------------------------------------------------------------------
 
 def test_greedy_policy_request_is_affordable():
-    """BUG-econ-1: the greedy request is rounded down to 0.1, never past its Capital."""
+    """The greedy request is rounded down to 0.1, never past its Capital."""
     cfg = load_world()
     labs, world = build_labs_and_world(cfg, dispositions=DISP, charters=False)
     xai = next(l for l in labs if l.key == "xai")
@@ -270,7 +270,7 @@ def test_greedy_policy_request_is_affordable():
 
 
 def test_all_greedy_engine_run_has_no_rejected_purchases():
-    """BUG-econ-1: in an all-greedy run no greedy purchase is rejected for want of Capital."""
+    """In an all-greedy run no greedy purchase is rejected for want of Capital."""
     cfg = load_world({"economy.know_how_shock_sd": 0.0})
     labs, world = build_labs_and_world(cfg, dispositions=DISP, charters=False)
     rec = SimulationEngine(labs, world, cfg, scenario="S1", turns=4, seed=1, policy=greedy,
@@ -280,7 +280,7 @@ def test_all_greedy_engine_run_has_no_rejected_purchases():
 
 
 def test_lone_greedy_xai_can_pay_fee_at_event():
-    """BUG-econ-2 (§5.3 fee 1 Capital + 2 Inf): a trailing seat that buys compute
+    """§5.3 (fee 1 Capital + 2 Influence): a trailing seat that buys compute
     greedily while the others hold back can still pay one target's fee at the event."""
     cfg = load_world({"economy.know_how_shock_sd": 0.0})
     labs, world = build_labs_and_world(cfg, dispositions=DISP, charters=False)

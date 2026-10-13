@@ -1,6 +1,6 @@
 """Intrusion resolution: commitments, success/failure, gains, exposure, leads, keyed
-draws, Monte Carlo rates. Updated for v5: draws are keyed (core.rng), so the
-scripted draws are given per (purpose, lab), and amounts read from the config."""
+draws, Monte Carlo rates. Draws are keyed (core.rng), so the scripted draws are
+given per (purpose, lab); amounts are read from the config."""
 
 from datetime import date
 
@@ -111,7 +111,7 @@ def test_failure_charges_fee_penalises_and_notifies():
 
 
 def test_fees_charged_by_engine_are_only_recorded():
-    """G1: with fees_charged=True resolve() records the fee but does not deduct it again."""
+    """With fees_charged=True resolve() records the fee but does not deduct it again."""
     labs, world, snap = setup()
     me = by(labs, "openai")
     cap, inf = me.capital, me.influence

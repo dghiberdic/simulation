@@ -1,4 +1,4 @@
-"""core.records.write_json_atomic: a crash mid-write never truncates a record (clean P2-5)."""
+"""core.records: atomic writes, record predicates, run discovery."""
 
 import json
 

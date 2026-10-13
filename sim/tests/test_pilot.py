@@ -522,7 +522,7 @@ def test_main_any_crash_exits_2(tmp_path, monkeypatch, capsys):
 
 
 # ---------------------------------------------------------------------------
-# rate_charters.py (unchanged in v5)
+# rate_charters.py
 # ---------------------------------------------------------------------------
 
 def test_rate_lab_with_stub_writes_valid_ints():
@@ -614,7 +614,7 @@ def test_rate_charters_fatal_still_exits_2(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Wave-4 fixes: the moved guard, re-run limits, plan display, T8 re-score
+# The moved guard, re-run limits, plan display, T8 re-score
 # ---------------------------------------------------------------------------
 
 class _BudgetProbe:
@@ -627,7 +627,7 @@ class _BudgetProbe:
 
 
 def test_approve_budget_is_stored_and_enforced_in_later_tests(tmp_path, monkeypatch, capsys):
-    """CR #5 / E2E 3: approve --budget X stores X; later tests and `plan` use it; shown exactly."""
+    """approve --budget X stores X; later tests and `plan` use it; shown exactly."""
     root = tmp_path / "real"
     args = ["--output", str(root), "--spend-file", str(tmp_path / "s.json")]
     _fake_summary(root, "priced")
@@ -699,7 +699,7 @@ def test_plan_shows_dropped_interview_and_measured_cost_of_done_tests(tmp_path, 
 
 
 def test_rescore_grand_jury_reasks_the_jury_once_on_the_t6_record(tmp_path, monkeypatch, capsys):
-    """A2 M12 (T8): after the examples are revised, the Grand Jury is re-asked on the saved
+    """After the examples are revised, the Grand Jury is re-asked on the saved
     T6 record; the seats are never re-run; the old verdict is kept; once only."""
     root = tmp_path / "pilot"
     assert _dry(root, "priced") == 0
@@ -741,13 +741,13 @@ def test_t6_rerun_merges_its_rows_into_the_coded_sheet(tmp_path):
     first = next(r for r in after if (r["run_id"], r["seat"], r["turn"], r["source"])
                  == (rows[0]["run_id"], rows[0]["seat"], rows[0]["turn"], rows[0]["source"]))
     assert first["score_only"] == "1" and first["notes"] == "coded"
-    s = json.loads((root / "T6" / "pilot_summary_T6-rerun.json").read_text())   # the re-run's own (BUG-8)
+    s = json.loads((root / "T6" / "pilot_summary_T6-rerun.json").read_text())   # the re-run's own
     assert "new row(s) merged, codes already entered kept" in s["decisions"]["T6"]
     assert _summary(root, "T6")["run_id"] == "T6-run01"
 
 
 def test_t4_summary_reads_the_hindcast_and_the_macro_jury(tmp_path):
-    """A2 M9 and M7: T4's summary prints the turns 1-2 hindcast; every test the MacroJury's first review."""
+    """T4's summary prints the turns 1-2 hindcast; every test the MacroJury's first review."""
     root = tmp_path / "pilot"
     assert _dry(root, "priced") == 0
     assert "first review (read for slant" in _summary(root, "priced")["decisions"]["MacroJury"]

@@ -27,7 +27,7 @@ def test_describe_action():
 
 
 def test_describe_action_names_from_dicts_and_strings():
-    """Names must resolve whatever map the engine passes (C3-19)."""
+    """Names must resolve whatever map the engine passes."""
     act = {"type": "intrude", "intruders": ["openai", "xai"], "targets": ["meta"]}
     as_dicts = {k: {"lab": lab.lab} for k, lab in LABS.items()}
     as_names = {k: lab.lab for k, lab in LABS.items()}

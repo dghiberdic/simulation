@@ -217,7 +217,7 @@ def _fake_interview(monkeypatch, script):
 
 
 def test_empty_answer_retried_once_then_skipped(monkeypatch):
-    """CR #6: an answer that hits the cap with no visible text is not counted as
+    """An answer that hits the cap with no visible text is not counted as
     answered: asked once more at 4,000 tokens; still empty -> skipped. A partial
     answer cut by the cap is marked incomplete (truncated)."""
     calls = _fake_interview(monkeypatch, {

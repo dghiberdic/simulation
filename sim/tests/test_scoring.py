@@ -1,7 +1,7 @@
 """Prosperity Score, ranking, UPS index and capability HHI (spec §8, §9.3).
 
-Updated for spec v5: weights 0.85/0.15; UPS has five terms on C̃ = C − 100 with
-leader-margin concentration and an integrity term (old: HHI concentration, 4 terms).
+Weights 0.85/0.15; UPS has five terms on C̃ = C − 100, with leader-margin
+concentration and an integrity term.
 """
 
 import math
