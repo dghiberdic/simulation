@@ -763,12 +763,12 @@ def test_second_intrude_in_one_month_is_rejected_in_world(scenario):
     assert [r["reason"] for r in rejected] == ["one intrude a month"]
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-mech-2: the modal verb 'may' in the month field "
-                                       "is read as the month of May")
 def test_month_field_with_modal_may_reads_the_named_month():
-    """§5.3 Matching: 'in the stated month if given'. 'may have been October 2026'
-    states October 2026 (turn 3 of a run from August 2026), not May 2026."""
+    """BUG-mech-2, §5.3 Matching: 'in the stated month if given'. 'may have been
+    October 2026' states October 2026 (turn 3 of a run from August 2026), not May 2026."""
     assert _parse_turn("may have been October 2026", date(2026, 8, 1), 6) == 3
+    assert _parse_turn("It may be October", date(2026, 8, 1), 6) == 3
+    assert _parse_turn("May 2026", date(2026, 8, 1), 6) == -2
 
 
 @pytest.mark.xfail(strict=True, reason="BUG-mech-3: a repeated 'returned' report by the same "

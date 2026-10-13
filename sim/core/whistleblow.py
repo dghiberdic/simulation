@@ -71,6 +71,17 @@ _MONTH_RE = re.compile(r"\b(" + "|".join(sorted(_MONTH_WORDS, key=len, reverse=T
 
 _RELATIVE = {"last month": 1, "previous month": 1, "past month": 1, "this month": 0}
 
+# Numeric months: "2026-11", "2026/11" (year first) and "11/2026", "11-2026" (month
+# first). A number joined to a further date part ("05/11/2026") is not read.
+_YEAR_MONTH = re.compile(r"(?<![\d/.-])(\d{4})\s*[-/]\s*(\d{1,2})(?![\d/.])")
+_MONTH_YEAR = re.compile(r"(?<![\d/.-])(\d{1,2})\s*[-/]\s*(\d{4})(?![\d/.-])")
+_YEAR = re.compile(r"\b(20\d\d)\b")
+
+# "may" is the modal verb, not the month, when one of these follows it ("may have
+# been October", "may not", "may well").
+_MODAL_NEXT = re.compile(r"\s+(?:have|has|be|been|not|also|well|still|perhaps|possibly|"
+                         r"likely|only|or|in\s+fact)\b")
+
 
 def month_label(turn: int, start: date) -> str:
     """Turn → "October 2026" (turn 1 is the start month, August 2026)."""
@@ -115,6 +126,13 @@ def _parse_turn(raw: Any, start: date, current_turn: Optional[int] = None) -> Op
     A month without a year is its most recent occurrence at or before the
     current turn (_bare_month_turn). "last month" is current_turn − 1.
 
+    Numeric forms "2026-11", "2026/11", "11/2026" and "11-2026" are read as month
+    and year; a full date ("2026-11-05") by its year and month.
+
+    "may" followed by a verb such as "have", "be" or "not" (_MODAL_NEXT) is the
+    modal verb, not the month, and the next month word is read instead: "may have
+    been October 2026" is October 2026, while "May", "in may" and "May 2026" are May.
+
     A readable month always restricts the match, even when it falls before the
     run or after the current turn: the result is then a turn < 1 or > the
     current turn, which matches no ledger entry (not "no restriction").
@@ -129,7 +147,7 @@ def _parse_turn(raw: Any, start: date, current_turn: Optional[int] = None) -> Op
         raw = int(raw)
     if isinstance(raw, int):
         return _bare_month_turn(raw, start, current_turn) if 1 <= raw <= 12 else None
-    text = str(raw).strip().lower()
+    text = " ".join(str(raw).split()).lower()
     if text.isdigit():
         number = int(text)
         return _bare_month_turn(number, start, current_turn) if 1 <= number <= 12 else None
@@ -140,20 +158,29 @@ def _parse_turn(raw: Any, start: date, current_turn: Optional[int] = None) -> Op
         for phrase, back in _RELATIVE.items():
             if re.search(rf"\b{phrase}\b", text):
                 return current_turn - back
-    iso = re.search(r"\b(\d{4})-(\d{1,2})\b", text)
-    if iso:
-        year, month = int(iso.group(1)), int(iso.group(2))
-        if not 1 <= month <= 12:
-            return None
-        return _month_turn(year, month, start)
-    word = _MONTH_RE.search(text)
+    numeric = _YEAR_MONTH.search(text)
+    if numeric:
+        year, month = int(numeric.group(1)), int(numeric.group(2))
+    else:
+        numeric = _MONTH_YEAR.search(text)
+        if numeric:
+            month, year = int(numeric.group(1)), int(numeric.group(2))
+    if numeric:
+        return _month_turn(year, month, start) if 1 <= month <= 12 else None
+    word = next((m for m in _MONTH_RE.finditer(text) if not _modal_may(m, text)), None)
     if word is None:
         return None
     month = _MONTH_WORDS[word.group(1)]
-    found = re.search(r"\b(20\d\d)\b", text)
+    found = _YEAR.search(text)
     if found:
         return _month_turn(int(found.group(1)), month, start)
     return _bare_month_turn(month, start, current_turn)
+
+
+def _modal_may(word: "re.Match[str]", text: str) -> bool:
+    """True when a "may" match in the lower-cased field is the modal verb: a verb
+    such as "have", "be" or "not" follows it (_MODAL_NEXT)."""
+    return word.group(1) == "may" and bool(_MODAL_NEXT.match(text[word.end():]))
 
 
 # ---------------------------------------------------------------------------

@@ -589,6 +589,24 @@ def test_month_parsing_from_an_august_start():
     assert _parse_turn("March", AUG) == 8 and _parse_turn("September", AUG) == 2
 
 
+def test_month_parsing_numeric_forms_and_modal_may():
+    """mech BUG-2: "11/2026", "11-2026", "2026/11" and "2026-11" are November 2026;
+    a number joined to a further date part is not guessed; "may" before a verb is
+    the modal, not the month."""
+    from core.whistleblow import _parse_turn
+    for text in ("11/2026", "11-2026", "2026/11", "2026-11", "2026-11-05", "11 / 2026",
+                 "around 11/2026"):
+        assert _parse_turn(text, AUG, current_turn=6) == 4, text
+    for text in ("05/11/2026", "13/2026", "2026/13", "1.11.2026"):
+        assert _parse_turn(text, AUG, current_turn=6) is None, text
+    assert _parse_turn("may have been October 2026", AUG, 6) == 3
+    assert _parse_turn("May not be sure, maybe September", AUG, 6) == 2
+    assert _parse_turn("may be", AUG, 6) is None
+    for text in ("May", "may", "in May", "early may", "May 2026", "May, 2026"):
+        assert _parse_turn(text, AUG, current_turn=6) == -2, text
+    assert _parse_turn("May 2027", AUG, current_turn=12) == 10
+
+
 def test_bare_number_is_a_calendar_month_in_a_report():
     """A.8 asks for the month of the access: "month": 10 means October (turn 3), not
     turn 10; a value under "turn" is a turn."""
