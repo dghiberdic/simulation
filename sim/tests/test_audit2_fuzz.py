@@ -69,9 +69,6 @@ def test_resume_replays_a_review_without_a_mandate(tmp_path):
     assert _same(got) == _same(want)
 
 
-@pytest.mark.xfail(strict=True, raises=ResumeMismatch, reason=(
-    "BUG-fuzz-1: a replayed turn whose MacroJury review issued a mandate fails the resume "
-    "check (mandates_active is compared before the logged review is applied)"))
 def test_resume_replays_a_review_that_issued_a_mandate(tmp_path):
     """core.resume: 'Apart from "resumed" and the call latencies, the resumed run's
     record equals the record of an uninterrupted run given the same replies.' A
@@ -80,6 +77,17 @@ def test_resume_replays_a_review_that_issued_a_mandate(tmp_path):
     assert want["turns"][1]["mandates_active"] == [{"turn": 2, "text": MANDATE}]
     got = eng.run()
     assert _same(got) == _same(want)
+
+
+def test_resume_stops_on_a_logged_mandate_the_review_did_not_issue(tmp_path):
+    """The mandates the replayed review leaves active are still checked against the log."""
+    want, eng = _resume_after_turn_3(tmp_path, "a2fz_mj_mandate")
+    path = tmp_path / "k" / "a2fz.partial.json"
+    partial = json.loads(path.read_text())
+    partial["turns"][1]["mandates_active"] = [{"turn": 2, "text": "Something else."}]
+    path.write_text(json.dumps(partial))
+    with pytest.raises(ResumeMismatch, match="mandates_active"):
+        _engine(tmp_path / "k", "a2fz_mj_mandate").run()
 
 
 # ---------------------------------------------------------------------------

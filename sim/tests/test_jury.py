@@ -326,7 +326,8 @@ import pytest
 from core import policies
 from core.config import build_labs_and_world, load_world
 from core.config import load_state
-from core.engine import SimulationEngine, mandate_violation
+from core.engine import SimulationEngine
+from core.mandates import mandate_violation
 from core.jury import MACRO_JURY_MODELS, MacroJury, median_value
 from core.llm import register_stub
 

@@ -806,10 +806,10 @@ class MacroJury:
             best = min(legal, key=dist)
             out.update(mandate=proposals[best]["mandate"], mandate_source=proposals[best]["juror"])
         elif dropped:
-            worst = min(dropped, key=dist)
-            out["mandate_dropped"] = {"juror": proposals[worst]["juror"],
-                                      "text": proposals[worst]["mandate"],
-                                      "reason": proposals[worst]["dropped"]}
+            closest = min(dropped, key=dist)
+            out["mandate_dropped"] = {"juror": proposals[closest]["juror"],
+                                      "text": proposals[closest]["mandate"],
+                                      "reason": proposals[closest]["dropped"]}
         return out
 
 

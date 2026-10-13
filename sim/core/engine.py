@@ -69,7 +69,6 @@ from core.economy import purchases_frozen
 from core.fog import FOG, describe_action, observed_actions
 from core.jury import GRAND_JURY_MODELS, GrandJury, MacroJury, aggregate_grand
 from core.llm import FatalAPIError, complete_json, continue_call
-from core.mandates import mandate_violation
 from core.records import write_json_atomic
 from core.resume import LoggedFailure, LoggedRun, load_partial, partial_path, set_aside, setup_diffs
 from core.rng import KeyedRNG
@@ -517,6 +516,8 @@ class SimulationEngine:
         if self.macro_jurors and turn in self.review_turns:
             turn_rec["macro_jury"] = self._macro_review(turn)
             turn_rec["mandates_active"] = [dict(m) for m in world.mandates]
+        if self._replaying(turn):
+            self._log.check_reviewed(turn, turn_rec)
         return turn_rec
 
     def _system_prompt(self, lab: LabState) -> str:
@@ -1364,16 +1365,9 @@ class SimulationEngine:
         jury = MacroJury(self.macro_jurors)
         summary = self._state_summary()
         result = jury.deliberate("United States", self.world.state_values, summary,
-                                 run_id=self.run_id, mandates=self.world.mandates)
+                                 run_id=self.run_id, mandates=self.world.mandates, labs=self.labs)
         self.world.state_values = result["values"]
-        mandate = result.get("mandate") or ""
-        if mandate:
-            why = mandate_violation(mandate, self.labs)
-            if why:
-                # §5.1: dropped and logged; the values still apply.
-                logger.info(f"[macro_jury] turn {turn}: mandate dropped ({why}): {mandate!r}")
-                result["mandate_dropped"] = {"text": mandate, "reason": why}
-                result["mandate"] = mandate = ""
+        mandate = result.get("mandate") or ""      # §5.1: already filtered with the run's names
         if mandate:
             self.world.mandates.append({"turn": turn, "text": mandate})
         self.record["macro_jury"].append({

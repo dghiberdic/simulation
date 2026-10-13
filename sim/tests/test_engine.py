@@ -174,7 +174,7 @@ def test_clean_mandate_is_issued():
 
 
 def test_mandate_violation_rules():
-    from core.engine import mandate_violation
+    from core.mandates import mandate_violation
     cfg = load_world()
     labs, _ = build_labs_and_world(cfg, dispositions=dict(DISPS))
     assert mandate_violation("Invest in domestic chip supply.", labs) is None
@@ -190,7 +190,7 @@ def test_mandate_filter_covers_paraphrases():
     """§5.1: mandates may not mention intrusion, reporting, audits or a named lab —
     paraphrases from the audits (E2E 4) included; a lab name followed by
     a hyphen ("meta-analysis") is not a lab."""
-    from core.engine import mandate_violation
+    from core.mandates import mandate_violation
     labs, _ = build_labs_and_world(load_world(), dispositions=dict(DISPS))
     for bad in (
             # intrusion
