@@ -69,6 +69,7 @@ from core.economy import purchases_frozen
 from core.fog import DEFAULT_FOG, check_fog, describe_action, observed_actions
 from core.jury import GRAND_JURY_MODELS, GrandJury, MacroJury, aggregate_grand
 from core.llm import FatalAPIError, complete_json, continue_call
+from core.records import write_json_atomic
 from core.rng import KeyedRNG
 from core import scoring
 from core.scoring import prosperity_score, ranked_scores, ups_index
@@ -1557,8 +1558,6 @@ class SimulationEngine:
         return self._write(self.output_dir / f"{self.run_id}.json")
 
     def _write(self, path: Path) -> Path:
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
-            json.dump(self.record, f, indent=2, default=str)
+        write_json_atomic(path, self.record)        # never a truncated record (P2-5)
         logger.info(f"[save] wrote {path}")
         return path

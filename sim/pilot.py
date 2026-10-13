@@ -84,6 +84,7 @@ from core import jury as jury_mod
 from core.jury import GRAND_JURY_MODELS, DispositionJury, GrandJury
 from core.llm import FatalAPIError, preflight, register_stub
 from core.policies import POLICIES
+from core.records import write_json_atomic
 from core.state import VALUE_AXES
 from core.transcript import charters_block, disposition_transcript, full_transcript, seat_letters
 from prompts.interview import QUESTION as INTERVIEW_QUESTION
@@ -243,11 +244,7 @@ def _read_json(path: Path) -> Optional[Any]:
 
 def _write_json(path: Path, data: Any) -> None:
     """Write-then-rename so an interrupted pilot never leaves a half-written file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=2, default=str)
-    os.replace(tmp, path)
+    write_json_atomic(path, data)
 
 
 def pilot_root(dry_run: bool, output: Optional[str] = None) -> Path:

@@ -32,11 +32,12 @@ reasoning tokens (providers bill them as output).
 
 import json
 import logging
-import os
 import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from core.records import write_json_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -128,11 +129,7 @@ class CostTracker:
 
     def _write_ledger(self, ledger: Dict[str, Any]) -> None:
         # Write-then-rename so an interrupted run never leaves a corrupt ledger.
-        self.spend_file.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.spend_file.with_suffix(".tmp")
-        with open(tmp, "w") as f:
-            json.dump(ledger, f, indent=2)
-        os.replace(tmp, self.spend_file)
+        write_json_atomic(self.spend_file, ledger)
 
     def persisted_total(self) -> float:
         with self._lock:

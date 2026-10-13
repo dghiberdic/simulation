@@ -55,6 +55,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from core.config import load_world
 from core.costs import configure, get_tracker, kin_seat_scale, project_run, with_fallbacks
 from core.engine import interview_schedule, review_turns
+from core.records import write_json_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -253,10 +254,7 @@ def read_state(path: Path) -> Dict[str, Any]:
 
 
 def write_state(path: Path, state: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(state, indent=2))
-    tmp.replace(path)
+    write_json_atomic(path, state)
 
 
 def completed_rounds(plan: Dict[str, Any], done: Dict[str, List[str]]) -> int:
