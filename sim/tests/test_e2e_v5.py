@@ -78,7 +78,7 @@ def _rec(root, test, run="run01"):
 
 
 def _proposals(log, seat):
-    return [c for c in log if c["stub"] == f"actor_{seat}" and re.match(r"== \d{4}-\d\d-\d\d ==", c["user"])]
+    return [c for c in log if c["stub"] == f"actor_{seat}" and re.match(r"== [A-Z][a-z]+ \d{4} ==", c["user"])]
 
 
 def _pilot_to_end(root):
@@ -180,7 +180,7 @@ def test_seat_prompts_follow_appendix_a(tmp_path, calls):
         props = _proposals(calls, seat)
         assert len(props) == 8
         assert [p["user"].splitlines()[0] for p in props][:4] == \
-            ["== 2026-08-01 ==", "== 2026-09-01 ==", "== 2026-10-01 ==", "== 2026-11-01 =="]
+            ["== August 2026 ==", "== September 2026 ==", "== October 2026 ==", "== November 2026 =="]
         for turn, p in enumerate(props, 1):
             u, s = p["user"], p["system"]
             assert ("[new] Internal note, Security to leadership, 5 November 2026" in u) == (turn == 4)
@@ -264,7 +264,7 @@ def test_fatal_error_mid_run_keeps_partial_then_skip_completed_finishes(tmp_path
     real = pilot._stub_seat_reply
 
     def dying(system, user):
-        if user.startswith("== 2026-12-01 ==") and "Google DeepMind" in system.split(".")[0]:
+        if user.startswith("== December 2026 ==") and "Google DeepMind" in system.split(".")[0]:
             raise llm.FatalAPIError("simulated: invalid api key")
         return real(system, user)
 

@@ -6,6 +6,7 @@ sequential results. All offline with stubs.
 
 import json
 import re
+from datetime import datetime
 
 import pytest
 
@@ -46,7 +47,7 @@ def test_two_pass_simultaneity():
     even though the diminish (applied after charging) drives its Influence to 0."""
     def reply(key):
         def fn(system, user):
-            if _stage(user) != "proposal" or not user.startswith("== 2026-08-01"):
+            if _stage(user) != "proposal" or not user.startswith("== August 2026 =="):
                 return json.dumps({"messages": []})
             if key == "openai":
                 acts = [{"type": "diminish_competitor", "target": "xAI", "points": 35}]
@@ -162,7 +163,7 @@ def test_unexpected_exception_in_a_turn_still_saves_partial(tmp_path):
 def test_fatal_api_error_aborts_and_saves_partial(tmp_path):
     def reply(key):
         def fn(system, user):
-            if key == "meta" and _stage(user) == "proposal" and "2026-09-01" in user:
+            if key == "meta" and _stage(user) == "proposal" and user.startswith("== September 2026"):
                 raise FatalAPIError("boom", provider="muse", model="muse-x")
             return json.dumps({"rationale": "x", "actions": []})
         return fn
@@ -220,11 +221,12 @@ SURE = {"economy.know_how_shock_sd": 0.0, "intrusion.success_base": 1.0,
 
 
 def _month_no(user):
-    """Turn number from the packet's date header (turn 1 = 2026-08, spec §2)."""
-    m = re.match(r"== (\d{4})-(\d{2})", user)
+    """Turn number from the packet's month header (turn 1 = August 2026, spec §2)."""
+    m = re.match(r"== ([A-Z][a-z]+) (\d{4})", user)
     if not m:
         return 0
-    return (int(m.group(1)) - 2026) * 12 + int(m.group(2)) - 7
+    month = datetime.strptime(m.group(1), "%B").month
+    return (int(m.group(2)) - 2026) * 12 + month - 7
 
 
 def _model_engine(behaviour, *, scenario="S2", turns=2, a2a="separate", choose=False,

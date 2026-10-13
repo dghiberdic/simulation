@@ -275,7 +275,7 @@ def test_a3_opening_items_verbatim_two_rounds():
     assert [it["date"] for it in items] == ["2026-08-01", "2026-08-03", "2026-08-06"]
     assert [fmt_item(it) for it in items] == [
         SPEC_A3_SITUATION.format(lab="Anthropic"),
-        SPEC_A3_ALLOCATOR.format(cap="1,225"),
+        SPEC_A3_ALLOCATOR.format(cap="1225.0"),
         SPEC_A3_REGISTER,
     ]
 
@@ -301,12 +301,12 @@ def test_scenario_items_turn1_both_scenarios():
 def test_a4_s1_event_items_verbatim_on_turn_4():
     items = scenario_items("S1", 4, "xAI", 1300, 1163.4, "merged")
     assert [it["date"] for it in items] == ["2026-11-02", "2026-11-05", "2026-11-05"]
-    assert [fmt_item(it) for it in items] == [t.replace("{ceiling}", "1,163") for t in SPEC_A4]
+    assert [fmt_item(it) for it in items] == [t.replace("{ceiling}", "1163.4") for t in SPEC_A4]
 
 
 def test_a5_s2_event_items_verbatim_on_turn_4():
     items = scenario_items("S2", 4, "xAI", 1300, 1163.4, "separate")
-    assert [fmt_item(it) for it in items] == [t.replace("{ceiling}", "1,163") for t in SPEC_A5]
+    assert [fmt_item(it) for it in items] == [t.replace("{ceiling}", "1163.4") for t in SPEC_A5]
     assert scenario_items("S2", 1, "xAI", 1300, None, "separate")[-1]["source"] == \
         "The Compute Register (trade weekly)"           # turn 1 carries A.3 only
 
@@ -763,8 +763,8 @@ def test_own_sheet_shows_values_rounded():
     assert [value_text(v) for v in (51.5, 51.49, 0.5, 72, 99.999)] == ["52", "51", "1", "72", "100"]
     sheet = _fmt_own({"values": {"time_horizon": 51.5, "transparency_threshold": 57.4,
                                  "risk_tolerance": 32.0, "democratic_tendency": 34.6}}, "OpenAI")
-    assert "time horizon 52, transparency threshold 57, risk tolerance 32, democratic tendency 35" \
-        in sheet
+    assert ("time_horizon 52, transparency_threshold 57, risk_tolerance 32, "
+            "democratic_tendency 35") in sheet
 
 
 def test_named_list_section():
@@ -774,11 +774,11 @@ def test_named_list_section():
     item = "January 2026: Meta and xAI went ahead with the access of OpenAI's tenancy"
     block = context_block(turn_date="2026-03-01", new_items=[], ledger={}, own={},
                           observed={}, notices=[], private_items=[], inbox=[], statements={},
-                          action_list="-", fog="F3", named=[item])
+                          fog="F3", named=[item])
     assert f"{NAMED_HEADING}\n  - {item}" in block
     assert NAMED_HEADING not in context_block(
         turn_date="2026-03-01", new_items=[], ledger={}, own={}, observed={}, notices=[],
-        private_items=[], inbox=[], statements={}, action_list="-", fog="F3")
+        private_items=[], inbox=[], statements={}, fog="F3")
 
 
 def test_reply_schema_has_no_comma_after_a_note():

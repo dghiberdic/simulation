@@ -26,7 +26,9 @@ DEFAULT_BUDGET_TOKENS = 500
 
 
 def _units(value: float) -> str:
-    return f"{int(round(value)):,}"
+    """Compute units with one decimal, as the ledger and the Allocator status line show
+    them, so the cap and the ceiling read the same everywhere."""
+    return f"{value:.1f}"
 
 
 # ---------------------------------------------------------------------------

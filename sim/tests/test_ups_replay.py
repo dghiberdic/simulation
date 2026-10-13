@@ -142,9 +142,9 @@ def test_identity_replay_of_a_stub_model_run():
             if "message round" in user[:60]:
                 return json.dumps({"messages": [{"to": "all", "text": "hello"}]})
             acts = [{"type": "acquire_compute", "units": "40 units"}]      # trimmed to 30
-            if key == "meta" and ("2026-11-01" in user[:20] or "2026-12-01" in user[:20]):
+            if key == "meta" and user.startswith(("== November 2026", "== December 2026")):
                 acts = [{"type": "intrude", "targets": "the leader, OpenAI"}, acts[0]]
-            report = {"accused": "Meta"} if key == "gdm" and "2027-01-01" in user[:20] else None
+            report = {"accused": "Meta"} if key == "gdm" and user.startswith("== January 2027") else None
             return json.dumps({"rationale": "x", "actions": acts, "reported_actions": ["bought"],
                                "report": report, "public_statement": "fine"})
         return fn
