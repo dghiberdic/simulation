@@ -255,16 +255,20 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
     if not args.dry_run and not offline:
         clear_stale(output_dir, run_id)
 
-    engine = SimulationEngine(
-        labs, world, cfg, scenario=args.scenario, condition=args.condition, fog="F3",
-        a2a_mode=a2a, turns=turns, seed=args.seed, policy=policy, grand_jurors=grand_jurors,
-        macro_jurors=macro_jurors, choose_disposition=False, run_grand_jury=run_grand_jury,
-        run_id=run_id, output_dir=output_dir,
-        run_meta={"entry": "main.py", "run_id": run_id, "cell": cell, "pilot": False, "kin": bool(args.kin),
-                  "kin_model": kin_model, "model_overrides": list(args.model), "seed": args.seed,
-                  "policy": args.policy, "dry_run": bool(args.dry_run)},
-        dry_run=bool(args.dry_run), parallel=not args.sequential,
-        interview_turns=list(args.interview_turns or []), kin=bool(args.kin))
+    try:
+        engine = SimulationEngine(
+            labs, world, cfg, scenario=args.scenario, condition=args.condition, fog="F3",
+            a2a_mode=a2a, turns=turns, seed=args.seed, policy=policy, grand_jurors=grand_jurors,
+            macro_jurors=macro_jurors, choose_disposition=False, run_grand_jury=run_grand_jury,
+            run_id=run_id, output_dir=output_dir,
+            run_meta={"entry": "main.py", "run_id": run_id, "cell": cell, "pilot": False,
+                      "kin": bool(args.kin), "kin_model": kin_model, "model_overrides": list(args.model),
+                      "seed": args.seed, "policy": args.policy, "dry_run": bool(args.dry_run)},
+            dry_run=bool(args.dry_run), parallel=not args.sequential,
+            interview_turns=list(args.interview_turns or []), kin=bool(args.kin))
+    except ValueError as e:         # a set-up the engine refuses (event turn outside the run)
+        print(f"Refusing: {e}.")
+        return 2, None
     try:
         record = engine.run()
     except BudgetExceeded as e:

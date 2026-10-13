@@ -85,6 +85,11 @@ from prompts.turn import (
 )
 
 from prompts.interview import QUESTION as INTERVIEW_QUESTION, cut_answer
+try:
+    from prompts.turn import value_text
+except ImportError:             # until FX-1's prompts.turn.value_text is merged; drop then
+    def value_text(v: Any) -> str:
+        return str(round(v)) if isinstance(v, (int, float)) else str(v)
 
 logger = logging.getLogger(__name__)
 
@@ -371,8 +376,11 @@ class SimulationEngine:
         self.event_turn = int(event_turn if event_turn is not None
                               else cfg.get("event_turn", DEFAULT_EVENT_TURN))
         self.review_turns = review_turns(cfg, turns)
-        # The action list's "from turn {event_turn}" heading follows the engine's event turn.
-        self._action_cfg = dict(cfg, event_turn=self.event_turn)
+        # An event turn asked for must fall in the run with a month after it; the config
+        # default may lie past a short (pre-event) test run.
+        if self.event_turn < 1 or (event_turn is not None and self.event_turn >= turns):
+            raise ValueError(f"event_turn {self.event_turn} must be between 1 and {turns - 1} "
+                             f"for a {turns}-turn run")
         self.interview_turns = interview_schedule(interview_turns, turns)
         self.policy = policy
         self.seat_policies: Dict[str, Policy] = dict(seat_policies or {})
@@ -546,6 +554,7 @@ class SimulationEngine:
         # read before turn-1 growth and every score reads +0.0 (E23); the seat's own
         # sheet shows its opening know-how too (K2).
         opening = self._build_sheets() if turn == 1 else None
+        opening_c = self._capabilities() if turn == 1 else None
         self._opening_own = ({lab.key: lab.private_sheet(self.elasticity) for lab in self.labs}
                              if turn == 1 else {})
         growth = self._macro_growth(turn)
@@ -554,10 +563,11 @@ class SimulationEngine:
         self._repaid = dict(growth.get("repaid") or {})
 
         # Frozen public snapshot for this turn's simultaneous proposals. Intrusions
-        # resolve on the capability figures the seats were shown (K2): month 1 on the
-        # opening figures, later months on the posted ledger.
+        # resolve on the capabilities of the month the seats were shown (K2): month 1
+        # on the opening figures, later months on the posted ledger's, unrounded (the
+        # internal values; the ledger shows them rounded).
         self._ledger = opening or self._build_sheets()
-        snapshot_c = {lab.key: self._ledger[lab.lab]["capability"] for lab in self.labs}
+        snapshot_c = opening_c or self._capabilities()
         self._allocator = self._allocator_status()
         self._directives = self._directive_lines()
         new_items = {lab.key: self._scenario_items(turn, lab) for lab in self.labs}
@@ -682,6 +692,10 @@ class SimulationEngine:
                         f"(holdings {holdings:.1f}); intrusion open")
 
     # ----------------------------------------------------- public sheets
+    def _capabilities(self) -> Dict[str, float]:
+        """Each seat's internal (unrounded) capability."""
+        return {lab.key: lab.capability(self.elasticity) for lab in self.labs}
+
     def _build_sheets(self) -> Dict[str, Dict[str, Any]]:
         """Enriched public ledger (capability change, Prosperity Score, rank)."""
         shown = {r["lab"]: round(r["score"], 1) + 0.0 for r in ranked_scores(self.labs, self.cfg)}
@@ -1352,7 +1366,7 @@ class SimulationEngine:
         if kind == "invest_capital":     # an absolute month: the record is read later (E28)
             return f"{base} (repaid with its return in {_month(self.world.start, turn + 1)})"
         if kind == "publish_narrative":
-            return f"{base} (now {effect.get('to')})"
+            return f"{base} (now {value_text(effect.get('to'))})"
         if kind == "accelerate_infrastructure":
             return f"{base}: national supply growth now {_f1(effect.get('us_growth', 0))}"
         return base
@@ -1391,7 +1405,7 @@ class SimulationEngine:
 
     def _turn_prompt(self, turn: int, lab: LabState) -> str:
         return build_turn_prompt(
-            action_list=action_list(self.scenario, self.world.intrusion_open, self._action_cfg),
+            action_list=action_list(self.scenario, self.world.intrusion_open, self.cfg),
             condition=self.condition, a2a_mode=self.a2a_mode,
             choose_disposition=self.choose_disposition and lab.disposition is None,
             wb_cfg=self.cfg["whistleblow"], budget_tokens=self.budget_tokens,
@@ -1400,7 +1414,7 @@ class SimulationEngine:
 
     def _message_prompt(self, turn: int, lab: LabState, stage: str) -> str:
         return build_message_prompt(
-            stage=stage, action_list=action_list(self.scenario, self.world.intrusion_open, self._action_cfg),
+            stage=stage, action_list=action_list(self.scenario, self.world.intrusion_open, self.cfg),
             budget_tokens=self.budget_tokens,
             remaining_tokens=self.channel.tokens_remaining(lab.key, turn),
             start_date=self.world.start.isoformat(), **self._ctx(turn, lab, stage))

@@ -1203,6 +1203,9 @@ def _refusal(args, data, root: Path, test: str, preset: Dict[str, Any], approval
                 "python pilot.py approve --turns 8|12")
     if preset["cut"]:
         return f"{test} was cut at approval (the re-priced plan exceeded the guard)"
+    event = int(preset.get("event_turn") or load_world().get("event_turn", 4))
+    if not 1 <= event < int(preset["turns"]):
+        return f"event turn {event} must be between 1 and {int(preset['turns']) - 1} for a {preset['turns']}-turn run"
     if args.rerun and test != "T6":
         return "--rerun is only for T6 (the reserve's re-run)"
     if args.rerun and not test_done(root, "T6"):

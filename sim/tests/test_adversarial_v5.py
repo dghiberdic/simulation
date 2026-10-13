@@ -1041,10 +1041,14 @@ def _intruder_policy(lab, labs, world, cfg, scenario, rng):
 
 @pytest.mark.parametrize("event_turn,turns", [(2, 4), (4, 6), (9, 8), (20, 8)])
 def test_event_turn_config(event_turn, turns):
-    """§6: the event (ceiling + intrusion open) falls on event_turn; an event turn past
-    the run's end never happens (no ceiling, intrude always rejected)."""
+    """§6: the event (ceiling + intrusion open) falls on event_turn; an event turn asked
+    for at or past the run's end is refused (FX-1: it must leave a month after it)."""
     cfg = load_world()
     labs, world = build_labs_and_world(cfg, dispositions={k: 50 for k in KEYS}, charters=False)
+    if event_turn >= turns:
+        with pytest.raises(ValueError, match="event_turn"):
+            SimulationEngine(labs, world, cfg, scenario="S1", turns=turns, event_turn=event_turn)
+        return
     eng = SimulationEngine(labs, world, cfg, scenario="S1", turns=turns, seed=1,
                            policy=_intruder_policy, run_grand_jury=False, parallel=False,
                            event_turn=event_turn)
@@ -1056,8 +1060,6 @@ def test_event_turn_config(event_turn, turns):
         intruded = any(a["type"] == "intrude" for a in t["actors"]["xai"]["accepted"])
         assert intruded == opened
     assert rec["config"]["event_turn"] == event_turn
-    if event_turn > turns:
-        assert rec["ledger"] == []
 
 
 def test_event_turn_from_config_override():
