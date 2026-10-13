@@ -450,12 +450,14 @@ def precheck(lab: LabState, raw_actions: List[Dict[str, Any]], labs, world: Worl
     built = 0.0   # build_influence points accepted so far (count only toward the 100 cap)
     reserved = max(0.0, float(reserved_influence or 0.0))
 
-    for raw in raw_actions:
+    for idx, raw in enumerate(raw_actions):
         def reject(reason: str) -> None:
             rejected.append({"action": raw, "reason": reason})
             logger.info(f"[precheck] {lab.key} rejected {raw!r}: {reason}")
 
-        if len(accepted) >= max_actions:
+        # §5.1: a lab submits up to two actions; a third is dropped even when an
+        # earlier one is rejected (never a fall-back).
+        if idx >= max_actions:
             reject(f"at most {max_actions} actions a month")
             continue
         try:

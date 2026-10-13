@@ -130,8 +130,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="the kin cell: Claude in all five seats + the §6.5 insert (S2, condition A)")
     p.add_argument("--turns", type=int, default=None, help="run length (default world.json: 8; 12 if T7 says so)")
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--a2a", choices=["separate", "merged"], default="merged",
-                   help="message mode for S2 and the kin cell (T9); S1 always merges")
+    p.add_argument("--a2a", choices=["separate", "merged"], default=None,
+                   help="message mode for S2 and the kin cell (T9; default separate, the two-round "
+                        "pre-step §9.2 keeps when T9 has not decided); S1 always merges")
     p.add_argument("--interview-turns", type=parse_interview_turns, default=[], metavar="3,4,5,final",
                    help="interview turns (A.7); default none")
     p.add_argument("--disposition", type=_setting, default=None,
@@ -216,8 +217,9 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
     args.scenario, args.condition = args.scenario or "S1", args.condition or "A"
     cfg = load_world()
     turns = args.turns or int(cfg.get("turns", 8))
-    a2a = "merged" if args.scenario == "S1" else args.a2a          # S1 always merges (§5.2)
-    if args.scenario == "S1" and args.a2a != "merged":
+    # S1 always merges (§5.2); S2 and the kin cell: T9's mode, separate until T9 decides (§9.2)
+    a2a = "merged" if args.scenario == "S1" else (args.a2a or "separate")
+    if args.scenario == "S1" and args.a2a not in (None, "merged"):
         say(f"Note: S1 always merges its messages into the proposal (§5.2): --a2a {args.a2a} "
               "overridden to merged.")
     cell = cell_name(args.scenario, args.condition, args.kin)
@@ -229,6 +231,10 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
         say(why)
         return EXIT_REFUSED, None
     labs, world = build_labs_and_world(cfg, dispositions=dispositions, charters=args.policy is None)
+    if args.kin and args.model:
+        say("Refusing: the kin cell has Claude in every seat (§6.5); --model cannot replace a seat's model "
+            "with --kin.")
+        return EXIT_REFUSED, None
     kin_model = apply_kin(labs) if args.kin else None
     why = apply_model_overrides(labs, args.model)
     if why:

@@ -396,8 +396,24 @@ def run_logging(output_dir: Optional[Path], run_id: str, **header: Any) -> Itera
     if not output_dir:
         yield None
         return
-    from core import calllog
     paths = run_log_paths(output_dir, run_id)
+    if run_id in _active_runs:          # nested (a post-run jury inside a logged stage)
+        yield paths
+        return
+    _active_runs.add(run_id)
+    try:
+        with _attached(paths, run_id, header) as p:
+            yield p
+    finally:
+        _active_runs.discard(run_id)
+
+
+_active_runs: set = set()
+
+
+@contextmanager
+def _attached(paths: Dict[str, Path], run_id: str, header: Dict[str, Any]) -> Iterator[Dict[str, Path]]:
+    from core import calllog
     root = logging.getLogger()
     handlers: List[logging.Handler] = [_file_handler(paths["log"], PlainEventFormatter()),
                                        _file_handler(paths["events"], JSONLinesFormatter())]

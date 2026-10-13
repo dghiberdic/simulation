@@ -1127,7 +1127,7 @@ class SimulationEngine:
                                  "repaid": [], "intrusion": [], "named": [], "reported": [],
                                  "report": [], "delivery": [], "setting": []}
             for item in effects.get(lab.key, []):
-                r["executed"].append(self._executed_line(item["action"], item["effect"], turn))
+                r["executed"].append(self._executed_line(item["action"], item["effect"], turn, lab.key))
             # invest_capital repaid at the start of this month.
             if self._repaid.get(lab.key):
                 r["repaid"].append(f"{f1(self._repaid[lab.key])} Capital (invest_capital from "
@@ -1279,7 +1279,8 @@ class SimulationEngine:
                       f"copied capability forfeited")
         return f"against {whom}{when}: {plain}"
 
-    def _executed_line(self, a: Dict[str, Any], effect: Dict[str, Any], turn: int) -> str:
+    def _executed_line(self, a: Dict[str, Any], effect: Dict[str, Any], turn: int,
+                       actor: Optional[str] = None) -> str:
         base = describe_action(a, self.by_key)
         kind = a["type"]
         if kind == "build_influence":
@@ -1289,7 +1290,11 @@ class SimulationEngine:
         if kind == "invest_capital":     # an absolute month: the record is read later
             return f"{base} (repaid with its return in {month_label(self.world.start, turn + 1)})"
         if kind == "publish_narrative":
-            return f"{base} (now {value_text(effect.get('to'))})"
+            # The new value only for the seat's own lab: another lab's values are on its
+            # private sheet (§3.2, §5.4), so a rival's is never shown.
+            if effect.get("target") == actor:
+                return f"{base} (now {value_text(effect.get('to'))})"
+            return base
         if kind == "accelerate_infrastructure":
             return f"{base}: national supply growth now {f1(effect.get('us_growth', 0))}"
         return base

@@ -596,7 +596,14 @@ def collect_grand_jury(record: Dict[str, Any], jurors: List[str], run_id: str, o
     """Ask the Grand Jury on a finished run's saved record (its verdict missing) and
     save the verdict into <output_dir>/<run_id>.json; the seats are never re-run. A
     budget stop or an interrupt saves what the jurors gave (error "budget" or
-    "interrupted") and re-raises. Returns a one-line note."""
+    "interrupted") and re-raises. Returns a one-line note. Logged to the run's
+    .log / .events.jsonl / .calls.jsonl like the run itself."""
+    from core.logsetup import run_logging
+    with run_logging(output_dir, run_id, stage="grand_jury (post-run)"):
+        return _collect_grand_jury(record, jurors, run_id, output_dir)
+
+
+def _collect_grand_jury(record: Dict[str, Any], jurors: List[str], run_id: str, output_dir: Path) -> str:
     keys = list(record.get("labs") or {})
     transcript = full_transcript(record)
     final = record.setdefault("final", {})

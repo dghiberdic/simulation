@@ -518,7 +518,7 @@ python main.py --scenario S2 --condition B --dry-run      # stubs, $0
 | `--scenario` / `--condition` | `S1` / `A` (`--kin`: `S2` / `A`) | `S1` `S2`; `A0` `A` `B` `C` |
 | `--kin` | off | kin cell (S2, condition A only) |
 | `--turns` | 8 (`world.json`) | 12 if T7 lengthened the run |
-| `--a2a` | `merged` | S2 and kin only (S1 always merges); `separate` = two-round pre-step |
+| `--a2a` | `separate` | S2 and kin only (S1 always merges); `separate` = the two-round pre-step, which S2 and kin keep until T9 decides (§9.2); `merged` folds messages into the proposal |
 | `--interview-turns` | none | e.g. `3,4,5,final` |
 | `--disposition N` | `config/dispositions.json` | one setting for every seat |
 | `--policy NAME` | off | scripted seats, no models or juries |

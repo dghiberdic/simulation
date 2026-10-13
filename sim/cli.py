@@ -180,7 +180,6 @@ def cmd_test(argv: List[str]) -> int:
     p = argparse.ArgumentParser(prog="sim test", description="The offline test suite (no keys, $0). "
                                 "Unknown options go to pytest.")
     p.add_argument("--fast", action="store_true", help="run in parallel (pytest-xdist, -n auto)")
-    p.add_argument("--audit", action="store_true", help="include tests/audit (the spec-audit probes)")
     args, rest = p.parse_known_args(argv)
     cmd = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"]
     if args.fast:
@@ -189,8 +188,6 @@ def cmd_test(argv: List[str]) -> int:
             cmd += ["-n", "auto"]
         except ImportError:
             print("pytest-xdist is not installed; running serially (pip install pytest-xdist)", file=sys.stderr)
-    if not args.audit and not any(a.startswith("tests/audit") for a in rest):
-        cmd += ["--ignore=tests/audit"]
     cmd += rest
     print("$ " + " ".join(cmd), file=sys.stderr)
     return subprocess.call(cmd, cwd=SIM)

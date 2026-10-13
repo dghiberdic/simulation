@@ -183,7 +183,7 @@ def _run_header(d: Dict[str, Any]):
     g.add_row("commit", f"{d.get('git_commit')} ({d.get('git_branch')})"
               + ("  [yellow]dirty[/]" if d.get("git_dirty") else ""))
     g.add_row("config", str(d.get("config_hash")))
-    for k in ("turns", "seed", "a2a", "policy", "dry_run"):
+    for k in ("stage", "turns", "seed", "a2a", "policy", "dry_run"):
         if d.get(k) is not None:
             g.add_row(k, str(d[k]))
     return Panel(g, title="[bold]run[/]", border_style="cyan", expand=False)

@@ -883,6 +883,15 @@ def run_post_stages(record: Dict[str, Any], run_id: str, test: str, output_dir: 
     run still counts; BudgetExceeded propagates after what was rated is pooled
     and saved, with this dict as e.post_run.
     """
+    from core.logsetup import run_logging
+    with run_logging(output_dir, run_id, stage="post-run"):
+        return _run_post_stages(record, run_id, test, output_dir, ratings_file, jurors, dry_run, preset,
+                                only_missing, rerate)
+
+
+def _run_post_stages(record: Dict[str, Any], run_id: str, test: str, output_dir: Path, ratings_file: Path,
+                     jurors: Dict[str, List[str]], dry_run: bool, preset: Dict[str, Any],
+                     only_missing: bool = False, rerate: bool = False) -> Dict[str, Any]:
     post: Dict[str, Any] = {"errors": [], "done": [], "rated": 0}
     stage = "Grand Jury"
     try:

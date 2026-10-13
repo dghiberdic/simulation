@@ -74,6 +74,18 @@ def test_resumed_run_appends_to_the_same_log(tmp_path, logdir):
     assert text.count("hello") == 2 and "appending: resumed" in text
 
 
+def test_nested_run_logging_writes_each_line_once(tmp_path, logdir):
+    # a post-run jury (core.jury.collect_grand_jury) inside pilot's logged post-run stage
+    logsetup.configure_logging("t", invocation_log=False)
+    with logsetup.run_logging(tmp_path, "r2", stage="post-run"):
+        with logsetup.run_logging(tmp_path, "r2", stage="grand_jury"):
+            logging.getLogger("x").info("once-only")
+        logging.getLogger("x").info("still-attached")
+    logging.getLogger("x").info("after-detach")
+    text = (tmp_path / "r2.log").read_text()
+    assert text.count("once-only") == 1 and "still-attached" in text and "after-detach" not in text
+
+
 def test_no_ansi_when_no_color_or_not_a_tty(logdir, monkeypatch, capsys):
     monkeypatch.setenv("NO_COLOR", "1")
     logsetup.configure_logging("t", invocation_log=False)

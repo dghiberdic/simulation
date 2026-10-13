@@ -273,8 +273,8 @@ class Ref:
             acc = []
             built = 0.0
             n_intr = 0
-            for a in self.intent[k]["actions"]:
-                if len(acc) >= 2:
+            for i, a in enumerate(self.intent[k]["actions"]):
+                if i >= 2:              # §5.1: the first two submitted actions only
                     continue
                 t = a["type"]
                 a = dict(a)
