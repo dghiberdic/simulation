@@ -17,20 +17,25 @@ which lab sits behind each seat letter of a run, in four views:
   t2.text              each model seat's T2 record (core.transcript.disposition_transcript)
 
 The text views are scored by the lab vocabulary that survives redaction, read
-on the normalised text (core.mandates.normalise_spans: spaced-out letters,
-look-alikes): every name of core.names (lab, actor, products, places, people,
+on the normalised text and its digit-for-letter readings, exactly as the mask
+reads it (core.mandates.find_spans: spaced-out letters, look-alikes, invisible
+characters, "Op3nAI", "D33pM1nd", "LIama"): every name of core.names (lab, actor, products, places, people,
 charter titles, charter terms; ORDINARY_WORDS only capitalised, as the mask
 reads them) and LEAK_TERMS, identifiers the mask leaves on purpose because they
 are shared or generic (cloud partners, legal forms; weight 3), and the word
 pairs found only in one lab's charter (at least three times; weight 1). The
 names the mask removes give a floor; LEAK_TERMS and obfuscations the mask
-misses are what a reader could still use. Within a view the seats are assigned to labs jointly (the
+misses are what a reader could still use. The text-view rates are therefore a
+FLOOR (METHOD): identifiers outside core.names and LEAK_TERMS, and paraphrases,
+are not scored. Within a view the seats are assigned to labs jointly (the
 best permutation). A seat counts as identified when its assignment is right and
 rests on evidence (a positive score for the assigned lab); with no evidence a
 guess is right one time in five at most, and it is not counted.
 
 Output per run and pooled per view: seats, identified, rate (identified ÷
-seats). The §2 figure ("pooled") pools main model runs only; kin, pilot,
+seats); per run and pooled, "setting_leak_candidates": the sentences of
+model-written text that still hold a setting cue word and a number after the
+mask (core.transcript.setting_leak_candidates), for a reader to check. The §2 figure ("pooled") pools main model runs only; kin, pilot,
 scripted --policy, dry and untagged runs are pooled apart, one block per kind.
 
 CLI:
@@ -53,16 +58,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.config import load_charter, load_lab_configs                        # noqa: E402
 from core.costs import scripted_seats                                          # noqa: E402
 from core.exits import EXIT_OK, EXIT_REFUSED                                   # noqa: E402
-from core.mandates import normalise_spans                                      # noqa: E402
+from core.mandates import find_spans                                          # noqa: E402
 from core.names import CATEGORIES, LAB_NAMES                                   # noqa: E402
 from core.records import is_dry, is_main_run, is_pilot, is_scripted_run       # noqa: E402
 from core.cli import run_main                                                  # noqa: E402
 from core.transcript import (charters_block, disposition_transcript, full_transcript,  # noqa: E402
-                             term_regex)
+                             setting_leak_candidates, term_regex)
 
 VIEWS = ("grand_jury.ledger", "grand_jury.charters", "grand_jury.text", "t2.text")
 KINDS = ("main", "kin", "pilot", "policy", "dry", "untagged")
 HEADLINE_KIND = "main"
+METHOD = ("Text views: a floor. Evidence is the names of core.names and LEAK_TERMS, read on the "
+          "normalised text and its digit-for-letter readings (look-alikes, invisible characters, "
+          "spacing, 0/1/3/4/5/7/@/$ for letters, I and l), and charter-only word pairs; identifiers "
+          "outside these lists and paraphrases are not scored. Ledger and charter views: matched to "
+          "the public seeds and charters.")
 # Identifiers the mask leaves (shared with other labs' partners, or generic), that
 # still point to one lab in this panel.
 LEAK_TERMS: Dict[str, Tuple[str, ...]] = {
@@ -145,11 +155,10 @@ def text_scores(text: str, keys: Sequence[str]) -> Dict[str, float]:
     """{lab key: evidence in `text`}: surviving names and LEAK_TERMS ×NAME_WEIGHT,
     on the normalised text, + charter word pairs."""
     pairs = _pairs(text)
-    shadow = normalise_spans(text)[0]
     out = {}
     for key in keys:
         rx = _name_regex(key)
-        names = len(rx.findall(shadow)) if rx else 0
+        names = len(find_spans(rx, text)) if rx else 0
         out[key] = NAME_WEIGHT * names + sum(pairs[p] for p in charter_pairs().get(key, ()) if p in pairs)
     return out
 
@@ -245,6 +254,8 @@ def run_identifiability(record: Dict[str, Any]) -> Dict[str, Any]:
     t2 = {letters[k]: text_scores(str(disposition_transcript(record, k)), keys)
           for k in keys if k not in scripted}
     out["t2.text"] = _tally(t2, keys, truth) if t2 else None
+    cands = setting_leak_candidates(record)
+    out["setting_leak_candidates"] = {"count": len(cands), "sentences": cands}
     return out
 
 
@@ -285,9 +296,11 @@ def identifiability(records: Sequence[Tuple[str, Dict[str, Any]]]) -> Dict[str, 
         kinds[rid] = run_group(rec)
     by_kind = {kind: pooled({r: v for r, v in per_run.items() if kinds[r] == kind})
                for kind in KINDS if kind in kinds.values()}
-    return {"runs": per_run, "kinds": kinds,
+    main = [v for r, v in per_run.items() if kinds[r] == HEADLINE_KIND]
+    return {"runs": per_run, "kinds": kinds, "method": METHOD,
             "pooled": pooled({r: v for r, v in per_run.items() if kinds[r] == HEADLINE_KIND}),
-            "by_kind": by_kind}
+            "by_kind": by_kind,
+            "setting_leak_candidates": sum(v["setting_leak_candidates"]["count"] for v in main)}
 
 
 def _table(title: str, rows: Dict[str, Any]) -> List[str]:
@@ -305,6 +318,9 @@ def format_report(rep: Dict[str, Any]) -> str:
         if kind != HEADLINE_KIND:
             lines += [""] + _table(f"{kind} runs (reported apart, not in the main figure)", rows)
     lines.append("A seat counts when matched correctly; text views need evidence (guessing: at most 0.2).")
+    lines.append(f"Setting leak candidates (main runs; sentences with a setting cue word and a number "
+                 f"left after the mask, to read): {rep['setting_leak_candidates']}")
+    lines.append(METHOD)
     return "\n".join(lines)
 
 

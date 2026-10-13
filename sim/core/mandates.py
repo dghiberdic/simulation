@@ -8,8 +8,12 @@ The text is normalised first (normalise): NFKC (fullwidth letters), zero-width
 characters and soft hyphens removed, Cyrillic and Greek look-alike letters read
 as Latin, a zero inside a word read as o ("0penAI"), letters spaced, dotted or
 hyphenated apart joined ("a u d i t", "A.U.D.I.T", "A-n-t-h-r-o-p-i-c"),
-casefolded. core.transcript masks names on the same normalisation
-(normalise_spans maps it back to the original text). A mandate that still holds letters of another script is dropped
+casefolded; then also read with digits and symbols for letters inside a run of
+letters (0 o, 1 i or l, 3 e, 4 a, 5 s, 7 t, @ a, $ s) and I and l confused
+("4nthr0pic", "D33pM1nd", "E1on", "LIama", "OpenAl"; normalise_variants: a
+figure such as "70", "H100" or "o3" is never read as a word). core.transcript
+and tools.identifiability find names on the same readings (find_spans maps a
+match back to the original text). A mandate that still holds letters of another script is dropped
 (the board writes for the US, in English). Other languages in Latin script are
 out of scope: the pilot reads every issued mandate (§7, logged by cell), which
 is the check on what slips through.
@@ -66,7 +70,7 @@ count only in capitals. A name followed by a hyphen is part of another word
 
 import re
 import unicodedata
-from typing import Callable, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from core.names import IDENTIFYING, LAB_NAMES, ORDINARY_WORDS, UPPERCASE_ONLY, capitalised, names
 
@@ -124,6 +128,55 @@ def normalise(text: str, casefold: bool = True) -> str:
     """normalise_spans' text, casefolded unless `casefold` is False."""
     text = normalise_spans(text)[0]
     return text.casefold() if casefold else text
+
+
+# Digits and symbols written for letters ("4nthr0pic", "Op3nAI", "Ch@tGPT", "Gr$k"),
+# read only inside a run of letters and digits that holds at least two letters,
+# so figures ("70", "H100", "Q3", "o3") are never read as words. A 1 is an i or
+# an l, and an I and an l are confused for each other ("LIama", "OpenAl"): each
+# reading is its own variant.
+_LEET = {"0": "o", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a", "$": "s"}
+_LEET_READINGS = ({**_LEET, "1": "i"}, {**_LEET, "1": "l"})
+_SWAP_READINGS = ({**_LEET_READINGS[0], "l": "i"}, {**_LEET_READINGS[1], "I": "l"})
+_LEET_RUN = re.compile(r"[A-Za-z0-9@$]+")
+
+
+def _leet_run(run: str, table: Dict[str, str]) -> str:
+    if sum(c.isalpha() for c in run) < 2:
+        return run
+    return "".join(table.get(c, c) for c in run)
+
+
+def normalise_variants(text: str, swap_il: bool = True) -> Tuple[List[str], List[int]]:
+    """([normalise_spans' text, then its digit-for-letter readings], origin): the
+    readings map character for character, so one origin serves them all. Name
+    matching reads every variant (find_spans); `swap_il` also reads l as i and I
+    as l (names only: the topic patterns read words, and "lessons" is no "iessons")."""
+    base, origin = normalise_spans(text)
+    variants = [base]
+    for table in (_SWAP_READINGS if swap_il else _LEET_READINGS):
+        v = _LEET_RUN.sub(lambda m: _leet_run(m.group(0), table), base)
+        if v not in variants:
+            variants.append(v)
+    return variants, origin
+
+
+def find_spans(pattern: re.Pattern, text: str) -> List[Tuple[int, int, re.Match]]:
+    """Matches of `pattern` in any normalised variant of `text` (normalise_variants),
+    as (start, end) spans of the ORIGINAL text with their match, sorted and not
+    overlapping (an earlier start wins, then the longer match)."""
+    variants, origin = normalise_variants(text)
+    found = []
+    for v in variants:
+        for m in pattern.finditer(v):
+            if m.end() > m.start():
+                found.append((origin[m.start()], origin[m.end() - 1] + 1, m))
+    found.sort(key=lambda f: (f[0], -f[1]))
+    out: List[Tuple[int, int, re.Match]] = []
+    for f in found:
+        if not out or f[0] >= out[-1][1]:
+            out.append(f)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -326,15 +379,17 @@ def mandate_violation(text: str, labs: Optional[Iterable] = None) -> Optional[st
     """Why a MacroJury mandate may not be issued, or None when it may (§5.1): it
     is not in English, mentions intrusion, reporting or audits (phrase-level
     patterns, see above), or names a lab (core.names, plus the `labs` given)."""
-    plain = normalise(text, casefold=False)
-    folded = plain.casefold()
-    if _NON_LATIN.search(folded):
+    variants = normalise_variants(text)[0]
+    if _NON_LATIN.search(variants[0].casefold()):
         return "not written in English"
-    for variant in (folded, re.sub(r"(?<=[a-z])-(?=[a-z])", "", folded)):
-        found = _MANDATE_TOPICS.search(variant)
-        if found:
-            return f"mentions {found.group(0)!r}"
-    name = _named_lab(plain, labs)
-    if name:
-        return f"names a lab ({name!r})"
+    for plain in normalise_variants(text, swap_il=False)[0]:
+        folded = plain.casefold()
+        for variant in (folded, re.sub(r"(?<=[a-z])-(?=[a-z])", "", folded)):
+            found = _MANDATE_TOPICS.search(variant)
+            if found:
+                return f"mentions {found.group(0)!r}"
+    for plain in variants:
+        name = _named_lab(plain, labs)
+        if name:
+            return f"names a lab ({name!r})"
     return None

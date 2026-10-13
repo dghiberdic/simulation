@@ -48,7 +48,7 @@ from fractions import Fraction
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.fmt import f1, f2, long_date, month_label, month_year, signed, value_text
-from core.mandates import normalise_spans
+from core.mandates import find_spans
 from core.names import LAB_NAMES, ORDINARY_WORDS, UPPERCASE_ONLY, VERSION_TAIL, VERSIONED, capitalised
 import prompts.brief as _brief_mod
 from prompts.packets import opening_items, scenario_items
@@ -351,6 +351,30 @@ _ADJACENT_WORDS = 3                      # at most this many words between cue a
 _SET_CUE_RE = re.compile(
     r"(\bset\s+(?:it\s+)?(?:(?:at|to)\s+)?)((?:\d+(?:\.\d+)?|\.\d+)(?![\w])|\b(?:"
     + _NUM_WORD_ALT + r")\b)", re.IGNORECASE)
+# A sentence of a rationale or message that names the setting, a policy, the
+# precedence, a directive or the charter loses its number words (not "one"),
+# spelled or written shares ("a fifth", "four times out of five", "65 in a
+# hundred") and percentages: "Policy weight: thirty-five parts to the
+# government." Statements, accounts and reports keep the strong cues only (they
+# say "charter", "directive" and "policy" about everything). A paraphrase without
+# one of these words ("Seventy parts obedience, thirty parts conscience") is not
+# chased: it stays, a documented limit that tools/identifiability does not score
+# either (its "setting leak candidates" are sentences with a cue word and a number).
+SETTING_CUE_RE = re.compile(r"\bsettings?\b|\bpolic(?:y|ies)\b|\bprecedence\b|\bdirectives?\b|"
+                            r"\bcharters?\b|\bdispositions?\b", re.IGNORECASE)
+_SHARE_NUM = (r"(?:\d{1,3}|a|an|one|two|three|four|five|six|seven|eight|nine|ten|twenty|thirty|forty|"
+              r"fifty|sixty|seventy|eighty|ninety)")
+_CUE_NUMBER_RE = re.compile(
+    r"(?<![\w.])" + _SHARE_NUM + r"(?:[\s-]+(?:one|two|three|four|five|six|seven|eight|nine))?\s+"
+    r"(?:times?\s+|parts?\s+|votes?\s+)?(?:out\s+of|in)\s+(?:every\s+)?(?:\d{1,3}|a\s+hundred|"
+    r"one\s+hundred|hundred|ten|five|four|three|two|twenty)\b"
+    r"|\b(?:a|an|one|two|three|four|five|six|seven|eight|nine)[\s-]+(?:" + _FRACTION_WORD_ALT + r")\b"
+    r"|(?<![\w.])\d{1,3}(?:\.\d+)?(?=\s*(?:%|pc\b|percent\b|per\s*cent\b))"
+    r"|\b(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:[\s-]+(?:one|two|three|four|five|"
+    r"six|seven|eight|nine)\b)?|\b(?:(?:one\s+|a\s+)?hundred|ten|eleven|twelve|thirteen|fourteen|"
+    r"fifteen|sixteen|seventeen|eighteen|nineteen|two|three|four|five|six|seven|eight|nine)\b",
+    re.IGNORECASE)
+
 # On the choosing turn these sentences go too, number or not.
 _CHOICE_TALK_RE = re.compile(r"\bboards?\b|\b(?:higher|lower)\s+(?:end|side)\b", re.IGNORECASE)
 
@@ -626,7 +650,11 @@ def mask_setting_mentions(text: Any, values: Any = (), own: Any = None,
     "7 in 10", and within three words of commit, announce, number or pick.
     Strong cues also include "operating policy" (A.2) and "fixed for the run";
     directives or orders with the charter, principles or guidelines in one
-    sentence are strong. Bare numbers far from any cue stay. On the
+    sentence are strong. With `weak`, a sentence with setting, policy,
+    precedence, directive, charter or disposition loses its number words (not
+    "one"), shares ("a fifth", "four times out of five") and percentages
+    (SETTING_CUE_RE). Bare numbers far from any cue stay, and so does a
+    paraphrase with none of these words (a documented limit). On the
     choosing turn a sentence is dropped only if a setting mention remains after
     the figure shield.
     """
@@ -668,8 +696,45 @@ def mask_setting_mentions(text: Any, values: Any = (), own: Any = None,
         else:
             body = _mask_adjacent(body, rx, _WEAK_FIELD_ADJACENT_RE if weak else _ADJACENT_OR_WEIGH_RE)
         body = _mask_chosen_forms(body, vals)
+        if weak and SETTING_CUE_RE.search(body):
+            body = _CUE_NUMBER_RE.sub(MASK, body)
         out.append(_unshield(body, saved) + seps[i])
     return "".join(out)
+
+
+_CANDIDATE_NUMBER_RE = re.compile(r"(?<![\w.])\d+(?:\.\d+)?(?![\w])|" + _CUE_NUMBER_RE.pattern,
+                                  re.IGNORECASE)
+
+
+def setting_leak_candidates(record: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Sentences of model-written text, as the jurors get it (blind_record), that
+    still hold a setting cue word (SETTING_CUE_RE) and a number that is not a
+    game figure: [{"seat", "turn", "field", "sentence"}]. Paraphrases of a
+    setting are not chased by the mask; these are the ones a reader should check."""
+    rec = blind_record(record)
+    texts: List[Tuple[Any, Any, str, Any]] = []
+    for turn in rec.get("turns") or []:
+        for key, entry in (turn.get("actors") or {}).items():
+            if not isinstance(entry, dict):
+                continue
+            for field in ("rationale", "public_statement"):
+                texts.append((key, turn.get("turn"), field, entry.get(field)))
+            for msg in entry.get("messages_sent") or []:
+                texts.append((key, turn.get("turn"), "message",
+                              msg.get("text") if isinstance(msg, dict) else msg))
+    if rec.get("a2a"):
+        texts = [t for t in texts if t[2] != "message"]
+        texts += [(m.get("sender"), m.get("turn"), "message", m.get("text"))
+                  for m in rec["a2a"] if isinstance(m, dict)]
+    out = []
+    for key, turn_no, field, text in texts:
+        if not isinstance(text, str):
+            continue
+        for sentence in _SENTENCE_SPLIT.split(text)[0::2]:
+            body = _shield_figures(sentence)[0]
+            if SETTING_CUE_RE.search(body) and _CANDIDATE_NUMBER_RE.search(body):
+                out.append({"seat": key, "turn": turn_no, "field": field, "sentence": sentence.strip()})
+    return out
 
 
 def _setting_values(record: Dict[str, Any]) -> Dict[str, Optional[int]]:
@@ -951,14 +1016,13 @@ def _mask_names(text: str, record: Dict[str, Any], seat_key: Optional[str],
         return m.group(0)
     text = re.sub(r"(?<![\w.])@([A-Za-z0-9_]+)", handle, text)
 
-    # Names are found in the normalised text (spaced-out letters, look-alikes,
-    # invisible characters: core.mandates.normalise_spans) and masked in the original.
+    # Names are found in the normalised text and its digit-for-letter readings
+    # (spaced-out letters, look-alikes, invisible characters, "Op3nAI", "LIama":
+    # core.mandates.find_spans) and masked in the original.
     pattern, ordered = _names_pattern(terms)
-    shadow, origin = normalise_spans(text)
     out, last = [], 0
-    for m in pattern.finditer(shadow):
+    for start, end, m in find_spans(pattern, text):
         group = next(g for g in m.groupdict() if g.startswith("g") and m.group(g) is not None)
-        start, end = origin[m.start()], origin[m.end() - 1] + 1
         out += [text[last:start], terms[ordered[int(group[1:])]][0] + (m.group("suf") or "")]
         last = end
     text = "".join(out) + text[last:]
@@ -976,9 +1040,10 @@ def redact(text: str, record: Dict[str, Any], seat_key: Optional[str] = None,
     multi-word names across space or hyphen; plural/possessive suffixes and
     hyphen prefixes handled; "US Constitution", "meta-analysis", "to grok", "I
     muse" kept). The table is core.names. Names are read on the text normalised
-    as the mandate filter reads it (core.mandates.normalise_spans: spaced-out or
-    hyphenated letters, look-alike letters, invisible characters, a zero for o),
-    and the original span is masked.
+    as the mandate filter reads it (core.mandates.find_spans: spaced-out or
+    hyphenated letters, look-alike letters, invisible characters, digits and
+    symbols for letters inside a run of letters, I and l confused), and the
+    original span is masked.
 
     Every lab's names become its seat letter ("Seat C"; `letters`, a {lab key:
     letter} map, else seat_letters(record)), its charter "[Seat C charter]",
