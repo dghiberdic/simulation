@@ -277,19 +277,20 @@ def test_all_greedy_engine_run_has_no_rejected_purchases():
     assert rejected == []
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-econ-2: a trailing seat that buys compute greedily "
-                                       "while others hold back cannot pay the 3-Capital intrusion "
-                                       "fee on the event turn (§9.2 check; SC12 tests only all-greedy)")
 def test_lone_greedy_xai_can_pay_fee_at_event():
+    """BUG-econ-2 (§5.3 fee 1 Capital + 2 Inf): a trailing seat that buys compute
+    greedily while the others hold back can still pay one target's fee at the event."""
     cfg = load_world({"economy.know_how_shock_sd": 0.0})
     labs, world = build_labs_and_world(cfg, dispositions=DISP, charters=False)
     seen = {}
 
     def pol(lab, labs_, w, c, s, r):
         if w.turn == 4:
-            seen[lab.key] = lab.capital
+            seen[lab.key] = (lab.capital, lab.influence)
         return greedy(lab, labs_, w, c, s, r) if lab.key == "xai" else idle(lab, labs_, w, c, s, r)
 
     SimulationEngine(labs, world, cfg, scenario="S1", turns=4, seed=1, policy=pol,
                      run_grand_jury=False, macro_jurors=[]).run()
-    assert seen["xai"] >= cfg["intrusion"]["fee_capital_per_target"]
+    capital, influence = seen["xai"]
+    assert capital >= cfg["intrusion"]["fee_capital_per_target"]
+    assert influence >= cfg["intrusion"]["fee_influence_per_target"]

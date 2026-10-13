@@ -392,7 +392,7 @@ def _guardrail(action: Dict[str, Any], lab: LabState, labs, world: WorldState,
         # request above what remains (even a single 25-unit one) is trimmed (M14)
         remainder = cap - units_so_far
         if remainder <= EPS:
-            return f"at most {cap:g} units per turn in total"
+            return f"at most {cap:g} units a month in total"
         if action["units"] > remainder + EPS:
             action["trimmed_from"] = action["units"]
             action["units"] = remainder
@@ -413,16 +413,16 @@ def _guardrail(action: Dict[str, Any], lab: LabState, labs, world: WorldState,
             return f"delta must be non-zero and within ±{max_delta}"
     elif kind == DIMINISH_COMPETITOR:
         if action["target"] == lab.key:
-            return "cannot target self"
+            return "cannot target your own lab"
         if action["points"] <= 0:
             return "points must be positive"
     elif kind == INTRUDE:
         if not world.intrusion_open:
             return "intrusion is not available"
         if lab.key not in action["intruders"]:
-            return "intruders must include self"
+            return "intruders must include your lab"
         if scenario != "S2" and action["intruders"] != [lab.key]:
-            return "joint intrusion not available in this scenario"
+            return "intrude names only your lab"
         if not action["targets"]:
             return "no targets"
         if set(action["targets"]) & set(action["intruders"]):
@@ -466,7 +466,7 @@ def precheck(lab: LabState, raw_actions: List[Dict[str, Any]], labs, world: Worl
             logger.info(f"[precheck] {lab.key} rejected {raw!r}: {reason}")
 
         if len(accepted) >= max_actions:
-            reject(f"at most {max_actions} actions per turn")
+            reject(f"at most {max_actions} actions a month")
             continue
         try:
             action = normalise_action(raw, lab, labs, scenario)
@@ -474,7 +474,7 @@ def precheck(lab: LabState, raw_actions: List[Dict[str, Any]], labs, world: Worl
             reject(f"malformed: {e}")
             continue
         if action["type"] == INTRUDE and any(a["type"] == INTRUDE for a in accepted):
-            reject("at most one intrude per turn")
+            reject("one intrude a month")
             continue
         reason = _guardrail(action, lab, labs, world, cfg, scenario, influence + built, units)
         if reason:

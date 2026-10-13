@@ -503,7 +503,7 @@ def test_failure_names_all_committers_10_each_no_gain():
     assert not e.succeeded and out["leads"] == []
     for x in ("meta", "xai"):
         c, i, kh = before[x]
-        assert k[x].capital == pytest.approx(c - 6) and k[x].influence == pytest.approx(i - 4 - 10)
+        assert k[x].capital == pytest.approx(c - 2) and k[x].influence == pytest.approx(i - 4 - 10)
         assert k[x].know_how == pytest.approx(kh)
     assert out["notices"][0]["labs"] == ["meta", "xai"]
 

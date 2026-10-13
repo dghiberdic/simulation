@@ -41,7 +41,7 @@
   },
 
   "intrusion": {
-    "fee_capital_per_target": 3.0,
+    "fee_capital_per_target": 1.0,
     "fee_influence_per_target": 2.0,
     "gain_share": 0.3,
     "min_gain": 0.35,

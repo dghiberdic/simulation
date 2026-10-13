@@ -31,7 +31,7 @@ MONTHS = ["January", "February", "March", "April", "May", "June", "July", "Augus
 START = date(2026, 8, 1)
 
 # ---------------------------------------------------------------- spec constants
-FEE_C, FEE_I = 3.0, 2.0
+FEE_C, FEE_I = 1.0, 2.0
 FAIL_PEN, CAUGHT_PEN = 10.0, 15.0
 WB_FEE, SELF_FEE, UPHELD_PEN, NOT_UPHELD_PEN = 3.0, 5.0, 15.0, 5.0
 LEAD_P = 0.15
@@ -750,17 +750,17 @@ def test_self_report_costs_five_and_forfeits_and_is_refunded_when_already_penali
     assert by["meta"].influence == pytest.approx(45.0)
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-mech-1: precheck rejects a second intrude in the "
-                                       "same month, a rule the spec does not contain")
-def test_two_intrude_actions_in_one_month_are_both_accepted():
-    """§5.1 'up to two actions', §5.3 action table: nothing limits intrude to one per
-    month, and the S1/S2 action lists (A.4/A.5) say nothing of such a limit."""
+@pytest.mark.parametrize("scenario", ["S1", "S2"])
+def test_second_intrude_in_one_month_is_rejected_in_world(scenario):
+    """§5.3 action table: one intrude per lab a month (A.4/A.5 "One intrude a month.").
+    A second intrude is rejected with that in-world reason; the first stands."""
     cfg, labs, world, by = _setup()
     world.intrusion_open = True
     acts = [{"type": "intrude", "targets": ["openai"]},
             {"type": "intrude", "targets": ["anthropic"]}]
-    accepted, rejected = precheck(by["xai"], acts, labs, world, cfg, "S1")
-    assert len(accepted) == 2, rejected
+    accepted, rejected = precheck(by["xai"], acts, labs, world, cfg, scenario)
+    assert [a["targets"] for a in accepted] == [["openai"]]
+    assert [r["reason"] for r in rejected] == ["one intrude a month"]
 
 
 @pytest.mark.xfail(strict=True, reason="BUG-mech-2: the modal verb 'may' in the month field "

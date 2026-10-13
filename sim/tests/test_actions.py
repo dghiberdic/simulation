@@ -96,7 +96,7 @@ def test_precheck_guardrails(labs, world, cfg):
     me = by(labs, "openai")
     me.capital, me.influence = 1000.0, 90.0
     cases = [
-        ({"type": "diminish_competitor", "target": "self", "points": 2}, "self"),
+        ({"type": "diminish_competitor", "target": "self", "points": 2}, "your own lab"),
         ({"type": "publish_narrative", "target": "meta", "axis": "vibes", "delta": 2}, "axis"),
         ({"type": "publish_narrative", "target": "meta", "axis": "risk_tolerance", "delta": 6}, "delta"),
         ({"type": "invest_capital", "amount": 0.5}, "at least"),
@@ -118,7 +118,7 @@ def test_precheck_never_raises_and_limits_count(labs, world, cfg):
         precheck(me, garbage, labs, world, cfg, "S1")
     acts = [{"type": "invest_capital", "amount": 5}] * 3
     accepted, rejected = precheck(me, acts, labs, world, cfg, "S1")
-    assert len(accepted) == 2 and "at most 2" in rejected[0]["reason"]
+    assert len(accepted) == 2 and rejected[0]["reason"] == "at most 2 actions a month"
 
 
 def test_precheck_build_influence_trims_to_cap(labs, world, cfg):
@@ -136,20 +136,20 @@ def test_precheck_intrude_rules(labs, world, cfg):
     world.intrusion_open = True
     joint = {"type": "intrude", "intruders": ["openai", "xai"], "targets": ["meta"]}
     _, rejected = precheck(me, [joint], labs, world, cfg, "S1")
-    assert "scenario" in rejected[0]["reason"]
+    assert rejected[0]["reason"] == "intrude names only your lab"
     accepted, _ = precheck(me, [joint], labs, world, cfg, "S2")
     assert accepted[0]["intruders"] == ["openai", "xai"]
     _, rejected = precheck(me, [{"type": "intrude", "intruders": ["xai"], "targets": ["meta"]}],
                            labs, world, cfg, "S2")
-    assert "include self" in rejected[0]["reason"]
+    assert rejected[0]["reason"] == "intruders must include your lab"
     _, rejected = precheck(me, [{"type": "intrude", "targets": ["openai"]}], labs, world, cfg, "S1")
     assert "intruders" in rejected[0]["reason"]
     accepted, rejected = precheck(me, [{"type": "intrude", "targets": ["meta"]},
                                        {"type": "intrude", "targets": ["gdm"]}], labs, world, cfg, "S1")
-    assert len(accepted) == 1 and "one intrude" in rejected[0]["reason"]
-    # Fees count against running resources: 2 targets = 6 Cap + 4 Inf (3 Cap + 2 Inf per target)
+    assert len(accepted) == 1 and rejected[0]["reason"] == "one intrude a month"
+    # Fees count against running resources: 2 targets = 2 Cap + 4 Inf (1 Cap + 2 Inf per target)
     assert action_cost({"type": "intrude", "targets": ["meta", "gdm"], "intruders": ["openai"]},
-                       me, labs, world, cfg) == (6.0, 4.0)
+                       me, labs, world, cfg) == (2.0, 4.0)
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +205,8 @@ def test_acquire_compute_cap_is_total_across_slots(labs, world, cfg):
     accepted, rejected = precheck(me, [{"type": "acquire_compute", "units": 30},
                                        {"type": "acquire_compute", "units": 30}],
                                   labs, world, cfg, "S1")
-    assert [a["units"] for a in accepted] == [30.0] and "in total" in rejected[0]["reason"]
+    assert [a["units"] for a in accepted] == [30.0]
+    assert rejected[0]["reason"] == "at most 30 units a month in total"
     accepted, rejected = precheck(me, [{"type": "acquire_compute", "units": 12},
                                        {"type": "acquire_compute", "units": 25}],
                                   labs, world, cfg, "S1")
@@ -229,10 +230,10 @@ def test_charge_then_apply_equals_execute(labs, world, cfg):
     # intrude: charge() takes the fees; acquire_compute is charged by execute_purchases
     fee = charge(me, {"type": "intrude", "targets": ["meta", "gdm"], "intruders": ["openai"]},
                  labs, world, cfg)
-    assert fee == {"capital": 6.0, "influence": 4.0} and me.capital == 189.0
+    assert fee == {"capital": 2.0, "influence": 4.0} and me.capital == 193.0
     assert charge(me, {"type": "acquire_compute", "units": 10.0}, labs, world, cfg) == \
         {"capital": 0.0, "influence": 0.0}
-    assert me.capital == 189.0
+    assert me.capital == 193.0
     with pytest.raises(ValueError):
         apply(me, {"type": "intrude", "targets": ["meta"], "intruders": ["openai"]}, labs, world, cfg)
     with pytest.raises(ValueError):

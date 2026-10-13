@@ -247,13 +247,12 @@ def _joint_in_s1(system, user):
     return json.dumps({"rationale": "r", "actions": acts, "reported_actions": [], "messages": []})
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-text-1: an S1 joint intrude is rejected 'not available "
-                                       "in this scenario' in the seat's next record")
 def test_rejection_reason_does_not_say_scenario():
+    """BUG-text-1: an S1 joint intrude is rejected with an in-world reason."""
     calls = _run("S1", turns=5, reply=_joint_in_s1)
     nxt = [c for c in calls if c["purpose"] == "actor" and _seat(c["system"]) == "xAI"
            and _turn(c["user"]) == 5][0]["user"]
-    assert "Rejected: intrude" in nxt
+    assert "Rejected: intrude" in nxt and "intrude names only your lab" in nxt
     assert not re.search(r"\bscenario\b", nxt, re.I)
 
 
@@ -264,10 +263,9 @@ def _three_actions(system, user):
                        "actions": [{"type": "invest_capital", "amount": 1}] * 3})
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-text-2: rejection reasons say 'per turn' (game "
-                                       "vocabulary) where every other model-facing text says month")
 def test_rejection_reason_speaks_of_months_not_turns():
+    """BUG-text-2: rejection reasons say "a month", never "per turn"."""
     calls = _run("S1", turns=2, reply=_three_actions)
     nxt = [c for c in calls if c["purpose"] == "actor" and _turn(c["user"]) == 2][0]["user"]
-    assert "Rejected: invest_capital" in nxt
+    assert "Rejected: invest_capital" in nxt and "at most 2 actions a month" in nxt
     assert not re.search(r"\bturns?\b", nxt, re.I)
