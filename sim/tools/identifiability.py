@@ -56,8 +56,8 @@ from core.exits import EXIT_OK, EXIT_REFUSED                                   #
 from core.mandates import normalise_spans                                      # noqa: E402
 from core.names import CATEGORIES, LAB_NAMES                                   # noqa: E402
 from core.records import is_dry, is_main_run, is_pilot, is_scripted_run       # noqa: E402
+from core.cli import run_main                                                  # noqa: E402
 from core.transcript import (charters_block, disposition_transcript, full_transcript,  # noqa: E402
-from core.cli import run_main
                              term_regex)
 
 VIEWS = ("grand_jury.ledger", "grand_jury.charters", "grand_jury.text", "t2.text")
