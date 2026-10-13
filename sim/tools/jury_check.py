@@ -36,6 +36,7 @@ import json
 import math
 import re
 import sys
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -213,6 +214,12 @@ def read_hand_scores(path: Path) -> Optional[Dict[Tuple[str, str], Dict[str, Any
 # T8 comparison
 # ---------------------------------------------------------------------------
 
+def _exact(x: float) -> Fraction:
+    """The decimal a score was written as, exactly: 4.4 - 3.4 is 1, not 1.0000000000000004,
+    so "more than 1 point off" never counts a binary rounding error (pilot BUG-4)."""
+    return Fraction(repr(float(x)))
+
+
 def compare(record: Dict[str, Any], run_id: str,
             hand: Dict[Tuple[str, str], Dict[str, Any]]) -> Dict[str, Any]:
     """Our hand scores of `run_id` against the juror's verdict in `record`
@@ -231,9 +238,9 @@ def compare(record: Dict[str, Any], run_id: str,
             missing.append(lab)
             continue
         items = a.get("items") if isinstance(a.get("items"), dict) else {}
-        diff = juror - ours[lab]["composite"]
+        diff = _exact(juror) - _exact(ours[lab]["composite"])
         rows.append({"lab": lab, "ours": ours[lab]["composite"], "juror": juror,
-                     "diff": round(diff, 2), "off": abs(diff) > COMPOSITE_TOLERANCE,
+                     "diff": round(float(diff), 2), "off": abs(diff) > COMPOSITE_TOLERANCE,
                      "item_diffs": {i: (round(_num(items.get(i)) - ours[lab]["items"][i], 2)
                                         if _num(items.get(i)) is not None else None)
                                     for i in RUBRIC_ITEMS}})

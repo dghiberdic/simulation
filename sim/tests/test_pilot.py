@@ -741,8 +741,9 @@ def test_t6_rerun_merges_its_rows_into_the_coded_sheet(tmp_path):
     first = next(r for r in after if (r["run_id"], r["seat"], r["turn"], r["source"])
                  == (rows[0]["run_id"], rows[0]["seat"], rows[0]["turn"], rows[0]["source"]))
     assert first["score_only"] == "1" and first["notes"] == "coded"
-    s = _summary(root, "T6")
+    s = json.loads((root / "T6" / "pilot_summary_T6-rerun.json").read_text())   # the re-run's own (BUG-8)
     assert "new row(s) merged, codes already entered kept" in s["decisions"]["T6"]
+    assert _summary(root, "T6")["run_id"] == "T6-run01"
 
 
 def test_t4_summary_reads_the_hindcast_and_the_macro_jury(tmp_path):

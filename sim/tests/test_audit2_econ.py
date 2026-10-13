@@ -213,8 +213,12 @@ def test_engine_matches_spec_reference(schedule, seed, turns):
     assert len(rec["turns"]) == turns
 
 
-@pytest.mark.parametrize("event_turn", [1, 2, 8, 12, 13])
+@pytest.mark.parametrize("event_turn", [1, 2, 8, 11, 12, 13])
 def test_engine_matches_reference_odd_event_turns(event_turn):
+    if event_turn >= 12:            # the event must fall in the run with a month after it
+        with pytest.raises(ValueError, match="event_turn"):
+            _compare("max_buy", 3, 12, event_turn=event_turn)
+        return
     rec, rw, _ = _compare("max_buy", 3, 12, event_turn=event_turn)
     fired = [t["turn"] for t in rec["turns"] if t["world"]["ceiling"] is not None]
     assert (fired[0] if fired else None) == (event_turn if event_turn <= 12 else None)

@@ -26,8 +26,12 @@ The log goes to data/runs/<run_id>/<run_id>.json (dry runs: data/runs/dry/<run_i
 default run id "<cell>-YYYYmmdd-HHMMSS"), with <run_id>.partial.json after every
 turn. A finished run is never paid for twice: calling again with the same run
 id and output keeps a complete record as it is (exit 0), and when its Grand
-Jury verdict is missing (a budget stop during the jury) asks only the Grand
-Jury. Exit codes: 0 done, 1 budget guard (when it trips during the Grand Jury
+Jury verdict is missing (a stop or kill during the jury: the final record is
+saved, verdict pending, before the jury is asked) asks only the Grand Jury. A
+run stopped mid-way (kill, crash, budget guard) resumes when called again with
+the same run id, output and set-up: the turns its partial log holds are
+replayed from the log with no call (core.resume), and the run continues live
+from the first turn the log does not hold complete. Exit codes: 0 done, 1 budget guard (when it trips during the Grand Jury
 the finished record is kept), 2 refused, aborted or crashed.
 
 Examples:
@@ -251,16 +255,20 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
     if not args.dry_run and not offline:
         clear_stale(output_dir, run_id)
 
-    engine = SimulationEngine(
-        labs, world, cfg, scenario=args.scenario, condition=args.condition, fog="F3",
-        a2a_mode=a2a, turns=turns, seed=args.seed, policy=policy, grand_jurors=grand_jurors,
-        macro_jurors=macro_jurors, choose_disposition=False, run_grand_jury=run_grand_jury,
-        run_id=run_id, output_dir=output_dir,
-        run_meta={"entry": "main.py", "run_id": run_id, "cell": cell, "pilot": False, "kin": bool(args.kin),
-                  "kin_model": kin_model, "model_overrides": list(args.model), "seed": args.seed,
-                  "policy": args.policy, "dry_run": bool(args.dry_run)},
-        dry_run=bool(args.dry_run), parallel=not args.sequential,
-        interview_turns=list(args.interview_turns or []), kin=bool(args.kin))
+    try:
+        engine = SimulationEngine(
+            labs, world, cfg, scenario=args.scenario, condition=args.condition, fog="F3",
+            a2a_mode=a2a, turns=turns, seed=args.seed, policy=policy, grand_jurors=grand_jurors,
+            macro_jurors=macro_jurors, choose_disposition=False, run_grand_jury=run_grand_jury,
+            run_id=run_id, output_dir=output_dir,
+            run_meta={"entry": "main.py", "run_id": run_id, "cell": cell, "pilot": False,
+                      "kin": bool(args.kin), "kin_model": kin_model, "model_overrides": list(args.model),
+                      "seed": args.seed, "policy": args.policy, "dry_run": bool(args.dry_run)},
+            dry_run=bool(args.dry_run), parallel=not args.sequential,
+            interview_turns=list(args.interview_turns or []), kin=bool(args.kin))
+    except ValueError as e:         # a set-up the engine refuses (event turn outside the run)
+        print(f"Refusing: {e}.")
+        return 2, None
     try:
         record = engine.run()
     except BudgetExceeded as e:

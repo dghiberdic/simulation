@@ -700,8 +700,8 @@ def test_evidence_only_report_names_no_lab():
 
 
 def test_month_one_resolves_on_opening_figures_and_shows_opening_sheet():
-    """K2/E27: month-1 intrusions copy against the capability figures on the opening
-    ledger; the own sheet shows opening know-how and the income note."""
+    """K2/E27: month-1 intrusions copy against the opening capabilities (internal,
+    unrounded: FX-1 item 10); the own sheet shows opening know-how and the income note."""
     prompts = {}
 
     def beh(key, stage, m, user):
@@ -710,9 +710,9 @@ def test_month_one_resolves_on_opening_figures_and_shows_opening_sheet():
         if m == 1 and key == "meta":
             return {"rationale": "x", "actions": [{"type": "intrude", "targets": ["OpenAI"]}]}
         return {"rationale": "x", "actions": []}
-    eng = _model_engine(beh, scenario="S2", turns=1, overrides=SURE, prompts=prompts,
+    eng = _model_engine(beh, scenario="S2", turns=2, overrides=SURE, prompts=prompts,
                         event_turn=1)   # updated: v5 event on turn 4 by default
-    seed_c = {lab.key: round(lab.seed["capability"], 1) for lab in eng.labs}
+    seed_c = {lab.key: lab.capability(eng.elasticity) for lab in eng.labs}
     seed_k = {lab.key: lab.know_how for lab in eng.labs}
     rec = eng.run()
     gain = rec["ledger"][0]["gains"]["meta"]
@@ -725,7 +725,8 @@ def test_month_one_resolves_on_opening_figures_and_shows_opening_sheet():
 
 
 def test_later_months_resolve_on_the_posted_ledger():
-    """K2: from month 2 the gain uses the capability figures posted that month."""
+    """K2: from month 2 the gain uses the capabilities of the month posted, internal and
+    unrounded (the ledger shows them rounded to 0.1)."""
     prompts = {}
 
     def beh(key, stage, m, user):
@@ -736,14 +737,25 @@ def test_later_months_resolve_on_the_posted_ledger():
         return {"rationale": "x", "actions": []}
     eng = _model_engine(beh, scenario="S1", turns=2, overrides=SURE, prompts=prompts,
                         event_turn=1)   # updated: v5 event on turn 4 by default
-    rec = eng.run()
+    from core import engine as engine_mod
+    seen = {}
+    real = engine_mod.intrusion.resolve
+
+    def spy(intrudes, labs, snapshot_c, *a, **kw):
+        seen.update(snapshot_c)
+        return real(intrudes, labs, snapshot_c, *a, **kw)
+    engine_mod.intrusion.resolve, orig = spy, real
+    try:
+        rec = eng.run()
+    finally:
+        engine_mod.intrusion.resolve = orig
     from core.intrusion import copy_gain
     p2 = prompts[("meta", "proposal", 2)]
     import re
     shown = {n: float(c) for n, c in re.findall(r"^  (\w[\w ]*?): capability ([0-9.]+)", p2, re.M)}
+    assert seen["meta"] == pytest.approx(shown["Meta"], abs=0.05) and seen["meta"] != shown["Meta"]
     gain = rec["ledger"][0]["gains"]["meta"]
-    assert gain == pytest.approx(copy_gain(shown["Meta"], shown["OpenAI"],
-                                           eng.cfg["intrusion"]))
+    assert gain == pytest.approx(copy_gain(seen["meta"], seen["openai"], eng.cfg["intrusion"]))
 
 
 def test_invest_line_names_the_repayment_month_and_repaid_line():

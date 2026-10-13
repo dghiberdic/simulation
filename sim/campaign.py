@@ -19,7 +19,8 @@ separate); seats at their T2 dispositions (config/dispositions.json); the
 Grand Jury scores every run; the interview runs at turns 3, 4, 5 and the final
 turn in every cell, kin included, if it adds no more than 15% to a run's cost
 (else it is dropped everywhere, and C's "reads as a test" check is reported as
-untested, §6.4).
+untested, §6.4). "A run's cost" is read per cell, over the cells the plan with
+the interview keeps (a cut cell never decides), on the unrounded share.
 
 Commands:
     python campaign.py plan [--budget USD] [--turns N] [--s2-mode merged|separate]
@@ -55,6 +56,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from core.config import load_world
 from core.costs import configure, get_tracker, kin_seat_scale, project_run, with_fallbacks
 from core.engine import interview_schedule, review_turns
+from core.records import write_json_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -96,14 +98,17 @@ def cell_cost(cell: Dict[str, Any], inputs: Dict[str, Any], turns: int, s2_mode:
 
 def interview_decision(cells: List[Dict[str, Any]], inputs: Dict[str, Any], turns: int, s2_mode: str,
                        cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """§9.3: the interview runs in every cell if it adds no more than 15% to each cell's run cost."""
-    shares = {}
+    """§9.3: the interview runs in every cell if it adds no more than 15% to each given
+    cell's run cost. The test reads the unrounded shares (15.004% fails, exactly 15%
+    passes, pilot BUG-5); the shares are rounded for the report only."""
+    raw = {}
     for c in cells:
         base = cell_cost(c, inputs, turns, s2_mode, False, cfg)["total"]
         with_iv = cell_cost(c, inputs, turns, s2_mode, True, cfg)["total"]
-        shares[c["name"]] = round((with_iv - base) / base, 4) if base else 0.0
-    worst = max(shares.values()) if shares else 0.0
-    return {"run": worst <= INTERVIEW_SHARE, "share_by_cell": shares, "worst_share": worst}
+        raw[c["name"]] = (with_iv - base) / base if base else 0.0
+    worst = max(raw.values()) if raw else 0.0
+    return {"run": worst <= INTERVIEW_SHARE + 1e-12, "share_by_cell": {k: round(v, 4) for k, v in raw.items()},
+            "worst_share": round(worst, 4), "cells": list(raw)}
 
 
 def affordable_runs(cells: List[Dict[str, Any]], done: Dict[str, int], budget: float, cap: int) -> int:
@@ -139,28 +144,14 @@ def build_campaign(inputs: Optional[Dict[str, Any]], budget: float, turns: int =
     """
     cfg = cfg or load_world()
     full = with_fallbacks(inputs)
-    cells = all_cells()
-    iv = interview_decision(cells, full, turns, s2_mode, cfg)
-    for c in cells:
-        c["cost"] = cell_cost(c, full, turns, s2_mode, iv["run"], cfg)
-        c["a2a"] = "merged" if c["scenario"] == "S1" else s2_mode
-    done = dict(done) if done is not None else {c["name"]: done_rounds for c in cells} if done_rounds else {}
-    for c in cells:
-        c["run_cost"] = c["cost"]["total"]
-    options = []                      # (runs, cuts, active) for each cut step
-    active = list(cells)
-    cut: List[str] = []
-    for group in (None,) + CUT_ORDER:
-        if group is not None:
-            cut = cut + [group]
-            active = [c for c in active if c["group"] != group]
-        options.append((affordable_runs(active, done, budget, max_runs), list(cut), list(active)))
-        if options[-1][0] >= min_runs:
-            break
-    if options[-1][0] >= min_runs:
-        runs, cut, active = options[-1]
-    else:                             # below the floor even with A alone: the most runs, fewest cuts
-        runs, cut, active = max(options, key=lambda o: (o[0], -len(o[1])))
+    done = dict(done) if done is not None else {c["name"]: done_rounds for c in all_cells()} if done_rounds else {}
+    # §9.3's 15% interview check reads the cells the plan keeps (spec silent on "a run's
+    # cost"; decided): plan with the interview, check the kept cells, and plan again
+    # without it if one of them fails.
+    cells, runs, cut, active = _schedule(full, budget, turns, s2_mode, True, max_runs, min_runs, cfg, done)
+    iv = interview_decision(active, full, turns, s2_mode, cfg)
+    if not iv["run"]:
+        cells, runs, cut, active = _schedule(full, budget, turns, s2_mode, False, max_runs, min_runs, cfg, done)
     round_cost = round(sum(c["cost"]["total"] for c in active), 2)
     remaining_cost = sum(max(0, runs - done.get(c["name"], 0)) * c["cost"]["total"] for c in active)
     done_min = min((done.get(c["name"], 0) for c in active), default=0)
@@ -179,6 +170,31 @@ def build_campaign(inputs: Optional[Dict[str, Any]], budget: float, turns: int =
         "note": None if not cut else ("cells cut whole (" + ", ".join(cut) + ") rather than thinned below "
                                       f"{min_runs} runs per cell"),
     }
+
+
+def _schedule(full: Dict[str, Any], budget: float, turns: int, s2_mode: str, interview: bool,
+              max_runs: int, min_runs: int, cfg: Dict[str, Any], done: Dict[str, int]):
+    """(cells priced, runs per cell, groups cut, active cells) for one interview choice."""
+    cells = all_cells()
+    for c in cells:
+        c["cost"] = cell_cost(c, full, turns, s2_mode, interview, cfg)
+        c["a2a"] = "merged" if c["scenario"] == "S1" else s2_mode
+        c["run_cost"] = c["cost"]["total"]
+    options = []                      # (runs, cuts, active) for each cut step
+    active = list(cells)
+    cut: List[str] = []
+    for group in (None,) + CUT_ORDER:
+        if group is not None:
+            cut = cut + [group]
+            active = [c for c in active if c["group"] != group]
+        options.append((affordable_runs(active, done, budget, max_runs), list(cut), list(active)))
+        if options[-1][0] >= min_runs:
+            break
+    if options[-1][0] >= min_runs:
+        runs, cut, active = options[-1]
+    else:                             # below the floor even with A alone: the most runs, fewest cuts
+        runs, cut, active = max(options, key=lambda o: (o[0], -len(o[1])))
+    return cells, runs, cut, active
 
 
 def campaign_lines(plan: Dict[str, Any]) -> List[str]:
@@ -253,10 +269,7 @@ def read_state(path: Path) -> Dict[str, Any]:
 
 
 def write_state(path: Path, state: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(state, indent=2))
-    tmp.replace(path)
+    write_json_atomic(path, state)
 
 
 def completed_rounds(plan: Dict[str, Any], done: Dict[str, List[str]]) -> int:

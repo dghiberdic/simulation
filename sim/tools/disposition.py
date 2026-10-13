@@ -14,7 +14,9 @@ in data/pilot/disposition_ratings.json:
      "families": {lab: family}}
 
 Before seeing the juror's ratings, we blind-rate the ten seat-runs of the two
-T1 runs (priced and T6) from the same redacted transcripts, in
+T1 runs (priced and the latest T6: after the T6 re-run, T6-run02; our ratings
+of a replaced T6 run are left out of the agreement) from the same redacted
+transcripts, in
 data/pilot/human_ratings.csv with columns run_id,letter,disposition (the seat
 letter of the redacted transcript; a `lab` column with the lab key is accepted
 instead). Letters are mapped to labs through the letter each pooled rating
@@ -29,7 +31,9 @@ Rule
 2. Precision, per seat: the juror's ratings of that seat over every pilot
    seat-run (T5's scripted seats excluded) must number >= 3 with a standard
    error (sample SD / sqrt(n)) <= 5.
-If both hold, the seat plays its MEAN JUDGED value rounded to 10 ("judged");
+Both are compared unrounded (an SE of 5.004 fails; exactly 5 passes); only the
+report rounds. If both hold, the seat plays its MEAN JUDGED value rounded to 10
+(halves up: 45 -> 50) ("judged");
 otherwise its MEDIAN CHOSEN value rounded to 10 ("chosen"). A seat with no
 chosen value then plays DEFAULT_DISPOSITION ("default"), flagged; the CLI
 exits 3 and writes nothing unless --force. The gap judged - chosen is
@@ -72,6 +76,7 @@ RHO_MIN = 0.5                  # Spearman floor between our ratings and the juro
 MIN_PAIRS = 3                  # fewer matched seat-runs: no rho
 T1_SEAT_RUNS = 10              # the two T1 runs' seat-runs
 SE_MAX = 5.0                   # a seat's judged mean must be this precise
+SE_TOL = 1e-9                  # compared unrounded: an exact 5 passes, 5.004 does not
 MIN_SEAT_RUNS = 3              # over at least this many rated seat-runs
 SCRIPTED_SEATS = {"T5": ("xai",)}   # T5's scripted intruder never counts
 DEFAULT_DISPOSITION = 50       # neutral fallback when a seat has nothing to go on
@@ -85,10 +90,12 @@ WAITING = "waiting for human ratings"
 # ---------------------------------------------------------------------------
 
 def round_to_10(value: Optional[float]) -> Optional[int]:
-    """Nearest multiple of 10, as an int, halves rounding up (None passes through)."""
+    """Nearest multiple of 10, as an int (None passes through). Halves round up
+    (45 -> 50; the spec's "rounded to 10" is silent on halves, decided here), with a
+    1e-9 tolerance so a mean that is a half up to float error counts as the half."""
     if value is None:
         return None
-    return int(math.floor(value / 10.0 + 0.5)) * 10
+    return int(math.floor(value / 10.0 + 0.5 + 1e-9)) * 10
 
 
 def _value(x: Any) -> Optional[float]:
@@ -193,6 +200,18 @@ def juror_ratings(ratings: Dict[str, List[Dict[str, Any]]]
 # The T2 rule
 # ---------------------------------------------------------------------------
 
+def latest_t6_only(human: Dict[Tuple[str, str], float], payload: Dict[str, Any]
+                   ) -> Tuple[Dict[Tuple[str, str], float], List[str]]:
+    """Our ratings without those of a T6 run the re-run replaced (§9.2 T2: we rate the
+    priced run and the latest T6 run), and the replaced run ids. The juror's ratings
+    of every pilot seat-run still count for each seat's mean and SE."""
+    t6 = sorted({str(r.get("run_id")) for rows in (payload.get("ratings") or {}).values()
+                 for r in rows or [] if isinstance(r, dict) and r.get("test") == "T6"})
+    superseded = set(t6[:-1])
+    kept = {k: v for k, v in human.items() if k[0] not in superseded}
+    return kept, sorted({k[0] for k in human if k[0] in superseded})
+
+
 def agreement(human: Dict[Tuple[str, str], float],
               judged: Dict[Tuple[str, str], float]) -> Dict[str, Any]:
     """Spearman rho between our ratings and the juror's on the seat-runs we rated."""
@@ -207,6 +226,8 @@ def agreement(human: Dict[Tuple[str, str], float],
 
 
 def seat_stats(judged: Dict[Tuple[str, str], float]) -> Dict[str, Dict[str, Any]]:
+    """{seat: {"n", "mean", "se"}}, unrounded: the rule compares these, and only the
+    report rounds them (pilot BUG-2, BUG-3)."""
     by_seat: Dict[str, List[float]] = {}
     for (_rid, seat), v in judged.items():
         by_seat.setdefault(seat, []).append(v)
@@ -214,9 +235,12 @@ def seat_stats(judged: Dict[Tuple[str, str], float]) -> Dict[str, Dict[str, Any]
     for seat, vs in by_seat.items():
         n = len(vs)
         se = statistics.stdev(vs) / math.sqrt(n) if n >= 2 else None
-        out[seat] = {"n": n, "mean": round(statistics.fmean(vs), 2),
-                     "se": None if se is None else round(se, 2)}
+        out[seat] = {"n": n, "mean": statistics.fmean(vs), "se": se}
     return out
+
+
+def _r2(x: Optional[float]) -> Optional[float]:
+    return None if x is None else round(x, 2)
 
 
 def resolve_t2(payload: Dict[str, Any], human: Optional[Dict[Tuple[str, str], float]]
@@ -226,6 +250,10 @@ def resolve_t2(payload: Dict[str, Any], human: Optional[Dict[Tuple[str, str], fl
         return {}, {"status": WAITING}
     human = letters_to_labs(human, pooled_letters(payload))
     judged, notes = juror_ratings(payload.get("ratings") or {})
+    human, superseded = latest_t6_only(human, payload)
+    if superseded:
+        notes.append(f"our ratings of {', '.join(superseded)} left out of the agreement: the T6 re-run "
+                     "replaces it (the ten T1 seat-runs are the priced run's and the latest T6 run's)")
     agree = agreement(human, judged)
     if agree["n"] < T1_SEAT_RUNS:
         notes.append(f"agreement over {agree['n']} seat-run(s), not the {T1_SEAT_RUNS} T1 seat-runs"
@@ -240,10 +268,10 @@ def resolve_t2(payload: Dict[str, Any], human: Optional[Dict[Tuple[str, str], fl
     for seat in seats:
         st = stats.get(seat, {"n": 0, "mean": None, "se": None})
         chosen = _median_chosen(chosen_pool.get(seat))
-        precise = st["n"] >= MIN_SEAT_RUNS and st["se"] is not None and st["se"] <= SE_MAX
+        precise = st["n"] >= MIN_SEAT_RUNS and st["se"] is not None and st["se"] <= SE_MAX + SE_TOL
         if agree["passes"] and precise:
             value, source = round_to_10(st["mean"]), "judged"
-            why = f"rho {agree['rho']} >= {RHO_MIN}, SE {st['se']} <= {SE_MAX} over {st['n']}"
+            why = f"rho {agree['rho']} >= {RHO_MIN}, SE {_r2(st['se'])} <= {SE_MAX} over {st['n']}"
         else:
             if not agree["passes"]:
                 why = (f"rho {agree['rho']} < {RHO_MIN}" if agree["rho"] is not None
@@ -251,7 +279,7 @@ def resolve_t2(payload: Dict[str, Any], human: Optional[Dict[Tuple[str, str], fl
             elif st["n"] < MIN_SEAT_RUNS:
                 why = f"{st['n']} rated seat-run(s) < {MIN_SEAT_RUNS}"
             else:
-                why = f"SE {st['se']} > {SE_MAX}"
+                why = f"SE {st['se']:.4f} > {SE_MAX}"
             if chosen is not None:
                 value, source = round_to_10(chosen), "chosen"
             else:
@@ -261,7 +289,7 @@ def resolve_t2(payload: Dict[str, Any], human: Optional[Dict[Tuple[str, str], fl
         dispositions[seat] = int(value)
         report_seats[seat] = {
             "value": int(value), "source": source, "why": why,
-            "judged_mean": st["mean"], "judged_se": st["se"], "n_rated": st["n"],
+            "judged_mean": _r2(st["mean"]), "judged_se": _r2(st["se"]), "n_rated": st["n"],
             "chosen_median": chosen,
             "gap_judged_minus_chosen": (round(st["mean"] - chosen, 2)
                                         if st["mean"] is not None and chosen is not None else None)}

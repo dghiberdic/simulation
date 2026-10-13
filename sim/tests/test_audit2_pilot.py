@@ -102,8 +102,6 @@ def test_t1_tie_at_the_trailing_boundary_is_broken_by_seat_key():
     assert sorted(SR.trailing_seats(rec, 4)) == ["gdm", "openai", "xai"]
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-pilot-1: an aborted T6 re-run's partial log replaces the "
-                                        "finished T6 run in T1 (and T6) decisions")
 def test_t1_partial_t6_rerun_does_not_replace_the_finished_t6_run():
     priced = _t1_rec("priced-run01", "priced", CAPS, committers=("gdm",))
     t6 = _t1_rec("T6-run01", "T6", CAPS, committers=("meta",))
@@ -150,6 +148,21 @@ def test_t2_rho_exactly_half_passes_and_se_exactly_five_passes():
     assert s["source"] == "judged" and s["judged_se"] <= 5
 
 
+def test_t2_agreement_reads_the_latest_t6_run_only():
+    """§9.2 T2: we blind-rate the priced run and the LATEST T6 run; our ratings of the
+    T6 run the re-run replaced stay out of rho (the juror's still count per seat)."""
+    human, juror = _agreeing_human((1, 2, 3, 4, 5))       # rho = 1 on the priced run
+    ratings = {lab: [("priced-run01", "priced", juror[lab]), ("T6-run01", "T6", juror[lab]),
+                     ("T6-run02", "T6", juror[lab])] for lab in LABS}
+    for i, lab in enumerate(LABS):
+        human[("T6-run01", lab)] = 100.0 - 10 * i         # reversed: would sink rho
+        human[("T6-run02", lab)] = 10.0 * (i + 1)
+    disp, rep = D.resolve_t2(_payload(ratings, {lab: [50] for lab in LABS}), human)
+    assert rep["agreement"]["n"] == 10 and rep["agreement"]["rho"] == 1.0
+    assert any("T6-run01" in n for n in rep["notes"])
+    assert all(rep["seats"][lab]["n_rated"] == 3 for lab in LABS)
+
+
 def test_t2_two_rated_seat_runs_fall_back_to_the_median_chosen():
     human, juror = _agreeing_human((1, 2, 3, 4, 5))       # rho = 1
     ratings = {lab: [("priced-run01", "priced", juror[lab]), ("T6-run01", "T6", juror[lab])]
@@ -181,8 +194,6 @@ def test_t2_rho_below_half_uses_chosen_for_every_seat():
     assert set(disp.values()) == {30}
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-pilot-2: T2 compares the SE rounded to 2 decimals, so "
-                                        "SE 5.004 passes the 'SE <= 5' rule")
 def test_t2_se_just_above_five_fails_precision():
     human, juror = _agreeing_human((1, 2, 3, 4, 5))
     vals = [30, 30, 31, 34, 56]                          # five integer ratings, SE = 5.0040
@@ -197,8 +208,6 @@ def test_t2_se_just_above_five_fails_precision():
     assert rep["seats"]["anthropic"]["source"] == "chosen"
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-pilot-3: T2 rounds the judged mean to 2 decimals before "
-                                        "rounding to 10 (44.996 -> 50 instead of 40)")
 def test_t2_judged_mean_rounds_from_the_true_mean():
     human, juror = _agreeing_human((1, 2, 3, 4, 5))
     ratings = {lab: [("priced-run01", "priced", juror[lab]), ("a", "T4", juror[lab]),
@@ -280,8 +289,6 @@ def test_t8_two_seats_more_than_one_off_revise():
     assert rep["decision"] == "revise"
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-pilot-4: T8 compares |juror - ours| > 1 in binary floating "
-                                        "point: 4.4 vs 3.4 counts as more than 1 point off")
 def test_t8_decimal_scores_exactly_one_off_are_not_off():
     assert 4.4 - 3.4 > 1                                # 1.0000000000000004
     rep = _t8([3.4, 3.4, 3, 3, 3], [4.4, 4.4, 3, 3, 3])
@@ -356,12 +363,25 @@ def test_interview_runs_at_exactly_15_percent():
     assert iv["run"] is True
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-pilot-5: the 15% interview share is rounded to 4 decimals "
-                                        "before the <= 15% test, so 15.004% passes")
 def test_interview_dropped_just_above_15_percent():
     iv = campaign.interview_decision(campaign.all_cells(), _inputs(iv=0.30008), 8, "separate", load_world())
     assert iv["worst_share"] > 0.15 or iv["run"] is False
     assert iv["run"] is False
+
+
+def test_interview_share_reads_only_the_cells_the_plan_keeps(monkeypatch):
+    """§9.3 (spec silent on "a run's cost"; decided): a cell the plan cuts never drops
+    the interview. kin adds 30% but is cut by the budget; the kept cells add 10%."""
+    def fake(cell, inputs, turns, s2_mode, interview, cfg):
+        extra = (3.0 if cell["kin"] else 1.0) if interview else 0.0
+        return {"total": 10.0 + extra}
+    monkeypatch.setattr(campaign, "cell_cost", fake)
+    plan = campaign.build_campaign(None, 450.0, cfg=load_world())
+    assert plan["cut_groups"] == ["B", "kin"] and plan["runs_per_cell"] == 6
+    assert plan["interview"]["run"] is True and "kin-S2-A" not in plan["interview"]["share_by_cell"]
+    # With budget for every cell, kin is kept and its 30% drops the interview everywhere.
+    plan = campaign.build_campaign(None, 2000.0, cfg=load_world())
+    assert plan["interview"]["run"] is False and plan["interview_turns"] == []
 
 
 def test_six_run_floor_exactly_keeps_every_cell():
@@ -442,31 +462,42 @@ class _NoPay:
         raise AssertionError("the finished run was paid for again")
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-pilot-6: re-invoking a pilot test whose run finished but whose "
-                                        "summary is missing/not completed re-runs (re-pays) the whole run")
 def test_finished_pilot_run_is_never_paid_again(tmp_path, monkeypatch):
     for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
         monkeypatch.delenv(k, raising=False)
     _finished_t5(tmp_path)
     _NoPay.built = 0
     monkeypatch.setattr(pilot, "SimulationEngine", _NoPay)
-    pilot.main(["T5", "--dry-run", "--output", str(tmp_path), "--force-order",
-                "--spend-file", str(tmp_path / "spend.json")])
+    argv = ["T5", "--dry-run", "--output", str(tmp_path), "--force-order",
+            "--spend-file", str(tmp_path / "spend.json")]
+    assert not pilot.test_done(tmp_path, "T5")              # its T2 ratings are missing
+    assert pilot.main(argv) == 0                            # collects them only
     assert _NoPay.built == 0
+    s = pilot.read_summary(tmp_path, "T5")
+    assert s["status"] == "completed" and s["post_run_only"] and pilot.test_done(tmp_path, "T5")
+    assert pilot.main(argv) == 2                            # completed: refused, never re-run
+    assert pilot.main(argv + ["--skip-completed"]) == 0 and _NoPay.built == 0
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-pilot-7: claim_run_id deletes a finished (paid) record of the "
-                                        "same set-up before a real pilot run starts")
+def test_post_run_only_marks_the_test_completed(tmp_path, monkeypatch):
+    _finished_t5(tmp_path)
+    monkeypatch.setattr(pilot, "SimulationEngine", _NoPay)
+    assert pilot.main(["T5", "--post-run-only", "--dry-run", "--output", str(tmp_path),
+                       "--spend-file", str(tmp_path / "spend.json")]) == 0
+    assert pilot.test_done(tmp_path, "T5") and _NoPay.built == 0
+
+
 def test_claim_run_id_keeps_a_finished_record(tmp_path):
     path = _finished_t5(tmp_path)
     expect = {"scenario": "S1", "condition": "A", "a2a_mode": "merged", "turns": 4, "seed": 0,
               "rotation": None, "event_turn": 2}
-    pilot.claim_run_id(path.parent, "T5-run01", expect, None)
+    assert pilot.claim_run_id(path.parent, "T5-run01", expect, None) is None
     assert path.exists()
+    # --force: the paid record is moved aside (not read as a run any more), never deleted.
+    assert pilot.claim_run_id(path.parent, "T5-run01", expect, None, force=True) == "T5-run01"
+    assert not path.exists() and len(list(path.parent.glob("T5-run01.json.replaced-*"))) == 1
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-pilot-8: a failed T6 --rerun overwrites the T6 summary, so the "
-                                        "finished T6-run01 no longer counts as done")
 def test_failed_t6_rerun_leaves_t6_done(tmp_path):
     d = tmp_path / "T6"
     d.mkdir()
@@ -484,8 +515,6 @@ def _actor(system, user):
                        "messages": []})
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-pilot-9: the engine writes the final record only after the "
-                                        "Grand Jury, so a hard kill during the jury loses the paid run")
 def test_final_record_is_on_disk_before_the_grand_jury(tmp_path, monkeypatch):
     register_stub("audit2_actor", _actor)
     cfg = load_world()
@@ -505,8 +534,6 @@ def test_final_record_is_on_disk_before_the_grand_jury(tmp_path, monkeypatch):
     assert seen["finished"] is True
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-pilot-10: a T6 --rescore-grand-jury that gets no usable "
-                                        "verdict exits 0 and still uses up the one re-score")
 def test_failed_rescore_exits_nonzero(tmp_path, monkeypatch):
     d = tmp_path / "T6"
     d.mkdir()
@@ -517,16 +544,25 @@ def test_failed_rescore_exits_nonzero(tmp_path, monkeypatch):
 
     def no_verdict(record, jurors, run_id, output_dir):
         record["final"]["grand_jury"] = {"error": "no usable verdict"}
+        pilot._write_json(output_dir / f"{run_id}.json", record)     # as collect_grand_jury does
         return "Grand Jury: no usable verdict"
 
     monkeypatch.setattr(pilot, "collect_grand_jury", no_verdict)
-    code = pilot.main(["T6", "--rescore-grand-jury", "--dry-run", "--output", str(tmp_path),
-                       "--spend-file", str(tmp_path / "spend.json")])
-    assert code != 0
+    argv = ["T6", "--rescore-grand-jury", "--dry-run", "--output", str(tmp_path),
+            "--spend-file", str(tmp_path / "spend.json")]
+    assert pilot.main(argv) != 0
+    # Not used up: a second re-score is allowed, and the first verdict stays as previous.
+    def verdict(record, jurors, run_id, output_dir):
+        record["final"]["grand_jury"] = {"juror": "kimi", "actors": {}}
+        pilot._write_json(output_dir / f"{run_id}.json", record)
+        return "Grand Jury: usable verdict"
+    monkeypatch.setattr(pilot, "collect_grand_jury", verdict)
+    assert pilot.main(argv) == 0
+    saved = json.loads((d / "T6-run01.json").read_text())["final"]
+    assert saved["grand_jury_previous"]["juror"] == "kimi"
+    assert pilot.main(argv) == 2                            # now used up
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-pilot-11: seat_share averages per-test shares, so T5 (four "
-                                        "model seats) inflates the other models' shares and the kin cost")
 def test_seat_share_equal_when_every_model_costs_the_same(tmp_path):
     data = {"order": ["priced", "T5"]}
     for test, share in (("priced", {m: 0.2 for m in MODEL.values()}),
