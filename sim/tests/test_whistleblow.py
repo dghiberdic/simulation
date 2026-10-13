@@ -211,7 +211,7 @@ def test_returned_needs_absent_or_matching_month():
 def test_self_report_of_already_penalised_part_is_returned_and_refunded(fee_charged):
     """Updated (A.8: "not refunded (unless that access was already penalised)"): a
     self-report matching only a penalised part is returned with its 5 Influence
-    refunded; the notice is posted once. Another lab's report likewise refunds."""
+    refunded; every such report posts its notice. Another lab's report likewise refunds."""
     labs, world, k = setup([penalised_only()])
     fee = WCFG["self_report_fee_influence"]
     notices = []
@@ -228,7 +228,7 @@ def test_self_report_of_already_penalised_part_is_returned_and_refunded(fee_char
         assert o["influence_change"] == {"openai": 0.0}
         assert k["openai"].influence == pytest.approx(rep)
         notices.append(len(out["notices"]))
-    assert notices == [1, 0]
+    assert notices == [1, 1]
     assert world.notices[-1]["text"] == ("OpenAI filed a self-report; the access was already "
                                          "on the Allocator's record.")
     rep = k["gdm"].influence
@@ -247,7 +247,9 @@ def test_self_report_matching_nothing_keeps_fee_without_penalty():
     assert k["meta"].influence == inf - WCFG["self_report_fee_influence"]
 
 
-def test_returned_notice_posted_once_per_reporter_and_entry():
+def test_every_returned_report_posts_its_notice():
+    """§5.3 "Effect (all public)": a repeated report on an already penalised part is
+    returned and posts its notice each time; two in one turn post one each."""
     labs, world, k = setup([penalised_only()])
     results, notices = [], []
     for turn in (5, 6, 7):
@@ -255,13 +257,12 @@ def test_returned_notice_posted_once_per_reporter_and_entry():
         out = resolve({"gdm": {"accused": "OpenAI"}}, labs, world, CFG)
         results.append(out["outcomes"][0]["result"])
         notices.append(len(out["notices"]))
-    assert results == ["returned"] * 3 and notices == [1, 0, 0]
-    assert len([n for n in world.notices if n["kind"] == "whistleblow_returned"]) == 1
-    # Another reporter gets its own (single) notice; two in one turn post once each
+        assert out["outcomes"][0]["notice"] is True
+    assert results == ["returned"] * 3 and notices == [1, 1, 1]
+    returned = [n for n in world.notices if n["kind"] == "whistleblow_returned"]
+    assert [n["turn"] for n in returned] == [5, 6, 7]
     out = resolve({"anthropic": {"accused": "OpenAI"}, "meta": {"accused": "OpenAI"}}, labs, world, CFG)
     assert len(out["notices"]) == 2
-    out = resolve({"anthropic": {"accused": "OpenAI"}}, labs, world, CFG)
-    assert out["notices"] == [] and out["outcomes"][0]["notice"] is False
 
 
 # ---------------------------------------------------------------------------

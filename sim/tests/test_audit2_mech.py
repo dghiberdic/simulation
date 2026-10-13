@@ -771,11 +771,9 @@ def test_month_field_with_modal_may_reads_the_named_month():
     assert _parse_turn("May 2026", date(2026, 8, 1), 6) == -2
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-mech-3: a repeated 'returned' report by the same "
-                                       "reporter on the same entry posts no public notice")
 def test_every_report_outcome_is_public():
-    """§5.3 whistleblow table: 'Effect (all public)'. A second report that is
-    returned is still a public outcome."""
+    """BUG-mech-3, §5.3 whistleblow table: 'Effect (all public)'. A second report
+    that is returned is still a public outcome."""
     cfg, labs, world, by = _setup()
     _joint(world, penalised=["meta", "xai"])
     out1 = whistleblow.resolve({"openai": {"accused": "Meta"}}, labs, world, cfg)

@@ -19,8 +19,8 @@ month is no restriction; a readable month outside the run matches nothing
   Upheld        — an unpenalised part matches: X forfeits that copy and loses
                   upheld_influence_penalty Influence; the reporter's fee is refunded.
   Returned      — only penalised parts of X match: fee refunded, no penalty
-                  (a self-report's 5 Influence is refunded too, A.8); the neutral
-                  notice is posted once per (reporter, entry).
+                  (a self-report's 5 Influence is refunded too, A.8); a neutral
+                  notice is posted every time, as for every outcome.
   Not upheld    — nothing matches: the reporter loses a further
                   not_upheld_influence_penalty (not for a self-report); fee kept.
   Self-report   — X is the reporter: it forfeits its copy and pays
@@ -445,11 +445,6 @@ def _partner_fee(data: Dict[str, Any], lab: LabState, world: WorldState,
 # Resolution
 # ---------------------------------------------------------------------------
 
-def _posted_before(world: WorldState, reporter: str, entry_id: str) -> bool:
-    return any(n.get("kind") == "whistleblow_returned" and n.get("reporter") == reporter
-               and n.get("entry_id") == entry_id for n in world.notices)
-
-
 def resolve(reports: Dict[str, Any], labs: List[LabState], world: WorldState,
             cfg: Dict[str, Any], fee_charged: bool = False) -> Dict[str, Any]:
     """
@@ -571,7 +566,6 @@ def resolve(reports: Dict[str, Any], labs: List[LabState], world: WorldState,
                 and penalised_now.get((accused, entry.id)) == "self_report"):
             status = "penalised"       # self-reported this turn: the rival's report is returned
         reporter_name, accused_name = lab.lab, by_key[accused].lab
-        text: Optional[str] = None
         if entry is not None:
             outcome["entry_id"] = entry.id
             month = month_label(entry.turn, world.start)
@@ -592,11 +586,10 @@ def resolve(reports: Dict[str, Any], labs: List[LabState], world: WorldState,
             # Only penalised parts match: returned, fee refunded, no penalty.
             bump(item, reporter, base)
             outcome["result"] = "returned"
-            if partner or not _posted_before(world, reporter, entry.id):
-                text = (f"{reporter_name} filed a self-report; the access was already on the "
-                        f"Allocator's record." if self_report else
-                        f"{reporter_name} reported {accused_name}; the access was already on the "
-                        f"Allocator's record.")
+            text = (f"{reporter_name} filed a self-report; the access was already on the "
+                    f"Allocator's record." if self_report else
+                    f"{reporter_name} reported {accused_name}; the access was already on the "
+                    f"Allocator's record.")
         else:
             if self_report:
                 text = f"{reporter_name} filed a self-report that matched no record in the Allocator ledger."
@@ -609,18 +602,15 @@ def resolve(reports: Dict[str, Any], labs: List[LabState], world: WorldState,
             # The reporter committed the reported access too: its own part was
             # self-reported in step 2 (5 Influence, never refunded) and forfeited.
             outcome["partner_self_report"] = True
-            text = (text or "") + (f" {reporter_name} took part in that access and forfeited "
-                                   f"its copied capability.")
+            text += f" {reporter_name} took part in that access and forfeited its copied capability."
 
         outcome["influence_change"] = item["change"]
-        if text is not None:
-            kind = f"whistleblow_{outcome['result']}"
-            notice = {"turn": world.turn, "kind": kind,
-                      "labs": sorted({reporter, accused}), "text": text.strip(),
-                      "reporter": reporter, "entry_id": outcome["entry_id"]}
-            notices.append(notice)
-            world.notices.append(notice)   # at once, so a same-turn repeat is not re-posted
-            outcome["notice"] = True
+        notice = {"turn": world.turn, "kind": f"whistleblow_{outcome['result']}",
+                  "labs": sorted({reporter, accused}), "text": text,
+                  "reporter": reporter, "entry_id": outcome["entry_id"]}
+        notices.append(notice)
+        world.notices.append(notice)
+        outcome["notice"] = True
         logger.info(f"[whistleblow] {reporter} -> {accused}: {outcome['result']} "
                     f"({outcome['entry_id']}) partner={partner} {item['change']}")
 
