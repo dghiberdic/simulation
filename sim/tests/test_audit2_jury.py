@@ -303,15 +303,16 @@ def test_partner_report_naming_removed_actor_is_removed():
     assert [r["reporter"] for r in removed["reports"]] == ["xai"]
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-jury-3: UPS replay keeps the removed actor's own "
-                   "partner report (A.8: it counts as a report on its own lab), unlike the "
-                   "symmetric case; the partner is still penalised in the counterfactual")
 def test_removed_actors_own_partner_report_is_removed():
     rec = _joint_then_partner_report("meta", "xai")
     out = [o for t in rec["turns"] for o in t["whistleblow"]["outcomes"] if o["reporter"] == "meta"]
     assert out and out[0]["partner_self_report"] and out[0]["penalised"].get("meta") == "self_report"
     replies, removed = U.remove_actor(U.logged_replies(rec), rec, "meta")
     # §8: "without the actor's intrusions and without reports of those intrusions"
+    assert replies[5]["meta"]["report"] is None
+    assert [r["reporter"] for r in removed["reports"]] == ["meta"]
+    # Removing the partner instead keeps nothing of meta's report either: it accuses xai.
+    replies, removed = U.remove_actor(U.logged_replies(rec), rec, "xai")
     assert replies[5]["meta"]["report"] is None
 
 

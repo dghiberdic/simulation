@@ -161,12 +161,15 @@ def intrusion_turns(record: Dict[str, Any], actor: str) -> List[int]:
 
 
 def reports_of(record: Dict[str, Any], actor: str) -> List[Dict[str, Any]]:
-    """Reports (any reporter) whose logged outcome matched one of the actor's parts."""
+    """Reports whose logged outcome matched one of the actor's parts: any reporter's
+    report accusing the actor, and the actor's own report naming a partner in an
+    access it also committed (A.8: that counts as a report on its own lab too)."""
     ids = {e["id"] for e in actor_entries(record, actor)}
     out = []
     for t in complete_turns(record):
         for o in (t.get("whistleblow") or {}).get("outcomes") or []:
-            if (o.get("accused") == actor and o.get("entry_id") in ids
+            own_partner_report = o.get("reporter") == actor and o.get("partner_self_report")
+            if ((o.get("accused") == actor or own_partner_report) and o.get("entry_id") in ids
                     and o.get("result") in MATCHED_RESULTS):
                 out.append({"turn": int(t["turn"]), "reporter": o["reporter"],
                             "entry_id": o["entry_id"], "result": o["result"]})
