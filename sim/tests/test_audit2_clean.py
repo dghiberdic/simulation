@@ -1,6 +1,6 @@
 """Audit round 2, area "clean": behavioural bugs found while reviewing duplicated logic.
 
-Each xfail(strict) test encodes the spec's behaviour; it flips to XPASS once fixed.
+Each test encodes the spec's behaviour.
 """
 
 import pytest
@@ -29,7 +29,6 @@ def _main_record(kin: bool):
                                     "norms": 0.5, "integrity": 0.5}}}
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-clean-1: jury_analysis.cell_of pools the kin cell with mixed S2-A")
 def test_jury_analysis_keeps_kin_cell_apart_from_mixed_s2_a():
     # §6.5: the kin cell (S2, condition A, Claude in every seat) is its own cell;
     # its baseline is the mixed S2-A cell, compared descriptively, never pooled.
@@ -43,10 +42,17 @@ def test_resolver_reads_x_ai_as_xai():
     assert resolve_lab("X AI", labs, "openai") == "xai"
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-clean-2: redaction misses lab aliases the resolver accepts ('X AI')")
 def test_redaction_masks_every_alias_the_resolver_accepts():
     # §2: juror transcripts "show seats as letters and mask names". A name the
     # engine itself resolves to a lab must not survive redaction.
+    # Ordinary English words ("muse", "grok") are names when capitalised.
+    from core.actions import LAB_ALIASES
+    from core.names import ORDINARY_WORDS
     rec = {"labs": dict(LABS), "turns": [], "config": {}, "run_id": "r"}
     out = redact("We think X AI copied our weights.", rec)
     assert "X AI" not in out
+    for key, aliases in LAB_ALIASES.items():
+        for alias in aliases:
+            written = alias.capitalize() if alias in ORDINARY_WORDS else alias
+            out = redact(f"We think {written} copied our weights.", rec)
+            assert out.startswith("We think Seat ") and written not in out, alias
