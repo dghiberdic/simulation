@@ -6,8 +6,9 @@ For each seat key, LAB_NAMES lists:
   lab       the lab and its parent company, as models write them ("Deep Mind",
             "Open-AI", "X AI")
   actor     the model family the seat is called by ("Claude", "ChatGPT", "Llama")
-  products  models, products, programmes and infrastructure ("Stargate", "TPUs")
-  people    founders and leaders ("Sam Altman", "sama", "Zuckerberg")
+  products  models, products, programmes, teams and infrastructure ("Stargate", "TPUs")
+  places    headquarters and sites ("Mountain View", "Menlo Park", "Abilene")
+  people    founders, leaders and well-known staff ("Sam Altman", "sama", "Ilya")
   charter   titles of the lab's documents and phrases that name the lab
             ("Responsible Scaling Policy", "capped-profit")
   charter_terms  vocabulary and slogans distinctive of the seat's charter
@@ -16,33 +17,34 @@ For each seat key, LAB_NAMES lists:
 Users:
   core.actions     LAB_ALIASES (lab + actor): what an action or report may name
                    a lab by;
-  core.transcript  every category: lab, actor, products and people are masked
-                   everywhere; charter titles in every juror text; charter_terms
+  core.transcript  every category: lab, actor, products, places and people are
+                   masked everywhere; charter titles in every juror text; charter_terms
                    in the record views (Grand Jury record, T2 seat records),
                    never in the charter block, which shows the charters;
-  core.mandates    lab, actor, products and people: a mandate naming one is
-                   dropped (§5.1);
+  core.mandates    lab, actor, products, places and people: a mandate naming
+                   one is dropped (§5.1);
   tools.summarize_run, tools.identifiability.
 
 Matching is whole-word and case-insensitive, except ORDINARY_WORDS, which are
 English words too ("to grok", "muse on", "a spark"): they count as names only
-capitalised or directly before a version ("grok 4.7", "muse-spark-1.3").
+capitalised (each word: "Golden Gate") or directly before a version ("grok
+4.7", "muse-spark-1.3"), and UPPERCASE_ONLY ("FAIR"), which count only in capitals.
 VERSIONED names take a version tail ("GPT-6", "Claude Opus 5.5", "grok 4.7").
 """
 
 from typing import Dict, Tuple
 
-CATEGORIES = ("lab", "actor", "products", "people", "charter", "charter_terms")
+CATEGORIES = ("lab", "actor", "products", "places", "people", "charter", "charter_terms")
 
 LAB_NAMES: Dict[str, Dict[str, Tuple[str, ...]]] = {
     "anthropic": {
         "lab": ("Anthropic", "Anthropic PBC"),
         "actor": ("Claude",),
-        "products": ("Claude Opus", "Opus", "Sonnet", "Haiku", "Claude Code",
-                     "Project Rainier"),
+        "products": ("Claude Opus", "Opus", "Sonnet", "Haiku", "Claude Code", "Mythos",
+                     "Project Rainier", "Model Context Protocol", "Golden Gate Claude", "Golden Gate"),
         "people": ("Dario Amodei", "Daniela Amodei", "Amodei", "Dario", "Daniela",
-                   "Jared Kaplan", "Kaplan", "Mike Krieger", "Jack Clark", "Chris Olah",
-                   "Jan Leike", "Sam McCandlish", "Tom Brown"),
+                   "Jared Kaplan", "Kaplan", "Mike Krieger", "Krieger", "Jack Clark", "Chris Olah",
+                   "Olah", "Jan Leike", "Leike", "Sam McCandlish", "Tom Brown"),
         "charter": ("Claude's Constitution", "Claude’s Constitution", "Constitution",
                     "Constitutional AI", "Responsible Scaling Policy", "RSP",
                     "Long-Term Benefit Trust", "LTBT", "HHH", "helpful, honest and harmless",
@@ -56,10 +58,12 @@ LAB_NAMES: Dict[str, Dict[str, Tuple[str, ...]]] = {
         "lab": ("OpenAI", "Open AI", "OpenAI LP", "OpenAI Global"),
         "actor": ("GPT", "ChatGPT"),
         "products": ("GPT-6 Astra", "Astra", "Codex", "Sora", "DALL-E", "Stargate", "o3", "o4",
-                     "Superalignment"),
+                     "Superalignment", "Whisper", "ChatGPT Atlas", "Atlas"),
+        "places": ("Abilene",),
         "people": ("Sam Altman", "Altman", "sama", "Greg Brockman", "Brockman",
-                   "Ilya Sutskever", "Sutskever", "Mira Murati", "Murati", "Jakub Pachocki",
-                   "Fidji Simo", "Mark Chen"),
+                   "Ilya Sutskever", "Sutskever", "Ilya", "Mira Murati", "Murati", "Jakub Pachocki",
+                   "Fidji Simo", "Mark Chen", "Jony Ive", "Sarah Friar", "Kevin Weil", "Brad Lightcap",
+                   "Nick Turley"),
         "charter": ("OpenAI Model Spec", "Model Spec", "Preparedness Framework", "OpenAI Charter",
                     "Usage Policies", "capped-profit", "capped profit"),
         "charter_terms": ("chain of command", "assume best intentions",
@@ -71,9 +75,12 @@ LAB_NAMES: Dict[str, Dict[str, Tuple[str, ...]]] = {
                 "Google Brain"),
         "actor": ("Gemini",),
         "products": ("Bard", "Gemma", "TPU", "TPUs", "Ironwood", "Project Astra", "AlphaFold",
-                     "AlphaGo", "AlphaZero", "AlphaEvolve", "YouTube", "Android", "Waymo"),
+                     "AlphaGo", "AlphaZero", "AlphaEvolve", "AlphaProof", "YouTube", "Android", "Waymo",
+                     "NotebookLM", "Veo", "Imagen", "Vertex AI", "Isomorphic Labs"),
+        "places": ("Mountain View",),
         "people": ("Demis Hassabis", "Hassabis", "Demis", "Sundar Pichai", "Pichai",
-                   "Shane Legg", "Koray Kavukcuoglu", "Lila Ibrahim", "Jeff Dean"),
+                   "Shane Legg", "Koray Kavukcuoglu", "Kavukcuoglu", "Koray", "Lila Ibrahim", "Jeff Dean",
+                   "Oriol Vinyals", "Vinyals", "Noam Shazeer", "Shazeer", "Sergey Brin", "Larry Page"),
         "charter": ("Frontier Safety Framework", "FSF", "Secure AI Framework", "SAIF"),
         "charter_terms": ("Critical Capability Levels", "Critical Capability Level", "CCL",
                           "Tracked Capability Levels", "TCL", "alert threshold", "early warning evaluations",
@@ -83,9 +90,12 @@ LAB_NAMES: Dict[str, Dict[str, Tuple[str, ...]]] = {
         "lab": ("Meta", "Meta Platforms", "Meta AI", "Meta Superintelligence Labs", "MSL",
                 "Facebook"),
         "actor": ("Muse", "Llama"),
-        "products": ("Muse Spark", "Spark", "Instagram", "WhatsApp", "Ray-Ban Meta", "Hyperion", "Prometheus"),
+        "products": ("Muse Spark", "Spark", "FAIR", "Instagram", "WhatsApp", "Threads", "Oculus", "Ray-Ban Meta",
+                     "Reality Labs", "PyTorch", "Hyperion", "Prometheus"),
+        "places": ("Menlo Park",),
         "people": ("Mark Zuckerberg", "Zuckerberg", "Zuck", "Alexandr Wang", "Nat Friedman",
-                   "Daniel Gross", "Yann LeCun", "LeCun", "Shengjia Zhao"),
+                   "Daniel Gross", "Yann LeCun", "LeCun", "Shengjia Zhao", "Andrew Bosworth",
+                   "Bosworth", "Chris Cox", "Sheryl Sandberg", "Sandberg"),
         "charter": ("Meta Superintelligence Scaling Framework", "Superintelligence Scaling Framework",
                     "Advanced AI Scaling Framework", "SSF", "Frontier AI Framework"),
         "charter_terms": ("personal superintelligence", "threat scenario", "threat scenarios",
@@ -95,8 +105,9 @@ LAB_NAMES: Dict[str, Dict[str, Tuple[str, ...]]] = {
     "xai": {
         "lab": ("xAI", "X.AI", "X AI", "xAI Corp", "xAI Holdings", "X Corp"),
         "actor": ("Grok",),
-        "products": ("Colossus", "Memphis", "Grokipedia", "SpaceX", "Tesla", "Twitter",
-                     "Starlink", "Neuralink"),
+        "products": ("Colossus", "Grokipedia", "SuperGrok", "Macrohard", "SpaceX", "Tesla", "Optimus",
+                     "Twitter", "X.com", "Starlink", "Neuralink"),
+        "places": ("Memphis",),
         "people": ("Elon Musk", "Musk", "Elon", "Igor Babuschkin", "Jimmy Ba",
                    "Linda Yaccarino"),
         # The FAIF calls itself "Frontier AI Framework", the name of Meta's earlier
@@ -115,7 +126,11 @@ LAB_NAMES: Dict[str, Dict[str, Tuple[str, ...]]] = {
 # English words when lower-case: names only capitalised or before a version.
 ORDINARY_WORDS = frozenset({"muse", "grok", "spark", "sonnet", "haiku", "opus", "astra", "bard",
                             "codex", "prometheus", "hyperion", "memphis", "colossus", "stargate",
-                            "ironwood"})
+                            "ironwood", "mythos", "golden gate", "whisper", "atlas", "threads",
+                            "optimus", "imagen"})
+
+# English words in any other case: names only in capitals ("FAIR", Meta's research lab).
+UPPERCASE_ONLY = frozenset({"fair"})
 
 # Names that take a version tail ("GPT-6", "Claude Opus 5.5", "grok 4.7", "Llama3").
 VERSIONED = frozenset({"claude", "claude opus", "gpt", "chatgpt", "gemini", "gemma", "grok",
@@ -128,7 +143,12 @@ VERSION_TAIL = r"(?:[\s-]?\d+(?:\.\d+)*[a-z]?)?(?:-(?:[a-z]+|\d+(?:\.\d+)*))*"
 # Names any action, report or mandate may use for a lab (core.actions resolver).
 NAME_CATEGORIES = ("lab", "actor")
 # What identifies a lab anywhere it is written (masks, the mandate filter).
-IDENTIFYING = ("lab", "actor", "products", "people")
+IDENTIFYING = ("lab", "actor", "products", "places", "people")
+
+
+def capitalised(word: str) -> str:
+    """Each word capitalised, the rest as written ("golden gate" -> "Golden Gate")."""
+    return " ".join(w[:1].upper() + w[1:] for w in word.split(" "))
 
 
 def names(key: str, categories: Tuple[str, ...] = IDENTIFYING) -> Tuple[str, ...]:

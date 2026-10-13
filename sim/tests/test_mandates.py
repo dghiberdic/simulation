@@ -194,6 +194,158 @@ add("benign", False,
  "Coordinate with allies on export controls.",
  "Labs should open new data centres in rural states.",
 )
+# Fresh phrasings (13 Oct fuzz audit and review): reporting to the Allocator by any
+# verb, intrusion paraphrases, audit visits, labs by place, product, person or
+# -maker form; ordinary words and rival nations kept.
+add("fresh-phrasing", True,
+ "Labs must refrain from any unapproved entry into another firm's compute environment.",
+ 'No lab may pry into the training runs of its peers.',
+ 'Labs shall not break into competing tenancies under any circumstances.',
+ "Do not trespass on other labs' clusters.",
+ 'Labs must not poach model weights belonging to other developers.',
+ "Labs must not clone a competitor's checkpoints.",
+ "Any covert entry to a rival's servers is forbidden.",
+ "Labs should not tap into competitors' clusters.",
+ 'Labs are barred from using borrowed credentials to log in to other tenancies.',
+ 'Labs should not pilfer research from other developers.',
+ 'Labs may not purloin the know-how of fellow labs.',
+ "Labs must never sneak a look at a rival's stored research.",
+ "Any lab caught breaking in to a rival's systems will lose its allocation.",
+ 'Labs shall not intrude.',
+ "Labs shall not engage in unsanctioned copying of other developers' work.",
+ 'Labs must not misuse the booking system to view other bookings.',
+ 'Labs must not obtain checkpoints that are not their own.',
+ 'Strictly forbid industrial espionage among domestic labs.',
+ 'Labs must submit evidence of wrongdoing to the Allocator without delay.',
+ 'Labs are expected to testify against any lab that breaks the Accord.',
+ 'Labs should tip off the Allocator about suspicious activity.',
+ 'Labs must lodge a complaint whenever they suspect a peer of cheating.',
+ 'A lab that discovers a rule violation must bring it to the attention of the Allocator.',
+ 'Labs must name any lab they believe violated the Cyber Accord.',
+ 'Labs must confess any past violations of the Accord.',
+ 'Labs shall publicly identify rule-breakers.',
+ 'Labs are encouraged to blow the whistle on wrongdoing.',
+ 'Labs must keep the Allocator apprised of any irregularities they observe.',
+ "The Allocator will verify each lab's declared holdings every month.",
+ 'Labs must certify compliance with the Accord in writing each month.',
+ 'Labs should expect random checks of their tenancy access logs.',
+ "Federal examiners will reconcile every lab's ledger entries.",
+ 'All tenancy access records must be kept for official examination.',
+ 'Labs will be subject to unannounced visits by government officials.',
+ "An independent panel will vet each lab's conduct this quarter.",
+ 'Labs must open their tenancy records to the Allocator on request.',
+ 'Labs should emulate the safety culture of the company behind PyTorch.',
+ 'The Mountain View lab must share compute with smaller labs.',
+ 'Labs must follow the example set by Menlo Park.',
+ "Smaller labs should partner with Ilya's former employer.",
+ 'The lab that built Colossus must slow its expansion.',
+ 'Labs led by Musk must divest capital.',
+ "Labs should match 0penAI's capital discipline.",
+ "Labs should follow Antһropic's lead on safety.",
+ 'Labs should follow A-n-t-h-r-o-p-i-c on safety.',
+ 'The FAIR team must publish its results openly.',
+ 'Grok-maker labs must reduce risk tolerance.',
+ "Labs must not force their way into other labs' tenancies.",
+ "No lab shall lift weights from a competitor's storage.",
+ 'Labs are forbidden from planting code on rival clusters.',
+ "Do not tamper with competitors' training runs.",
+ "Labs may not sabotage each other's compute.",
+ "No lab may help itself to a rival's checkpoints.",
+ 'Labs must alert the Allocator to any irregular bookings by rivals.',
+ 'Labs should pass on what they know about cheating to federal officials.',
+ 'Labs are obliged to denounce any peer that breaks the Accord.',
+ 'Labs must notify the regulator about suspicious activity.',
+ 'Labs must turn over evidence of rule-breaking to the government.',
+ 'Labs must give the Allocator full details of any intrusion they suspect.',
+ 'Labs should send the authorities proof of any wrongdoing they see.',
+ 'Labs must report rivals who misuse the booking system.',
+ 'Inspectors will visit every lab next month.',
+ "Every lab's tenancy logs will be checked by federal staff.",
+ 'Labs must allow surprise inspections of their clusters.',
+ "Regulators will examine each lab's conduct this quarter.",
+ "An external review of every lab's activity is ordered.",
+ 'Labs must certify their compliance to the Allocator monthly.',
+ 'Labs should prepare for random spot checks.',
+ 'The Seattle and Mountain View labs must cooperate.',
+ 'Labs headquartered in Menlo Park should invest more.',
+ 'The PyTorch team must open-source more.',
+ "Elon's lab must slow down.",
+ 'The makers of ChatGPT must share compute.',
+ 'G-o-o-g-l-e must expand domestic compute.',
+ 'M e t a should build influence.',
+ 'The NotebookLM developer should accelerate.',
+ 'Gemini-maker labs should slow down.',
+ "Ilya Sutskever's old lab must share compute.",
+ 'SuperGrok subscribers deserve faster service.',
+ 'Labs like Anthropіc should lead on safety.',
+)
+add("benign-fresh", False,
+ 'All labs except the leader by capability must merge.',
+ 'Prioritise domestic compute resilience.',
+ 'Labs should accelerate infrastructure build-out and invest in talent.',
+ 'Take market share from competitors through better products.',
+ "Keep ahead of rival nations' models through faster domestic deployment.",
+ 'Labs should monitor their systems for reliability and uptime.',
+ 'Spark innovation in open models across the sector.',
+ 'Grok public sentiment before launching new products.',
+ 'Avoid hacking together unsafe deployments.',
+ 'Strengthen supply chains and report quarterly earnings transparently.',
+ 'Labs should review their own safety policies twice a year.',
+ 'Meta-analysis of energy demand should guide procurement.',
+ 'Labs should publish model cards and safety evaluations.',
+ 'Lead peers in safety commitments.',
+ 'Labs should compete on capability, not on lobbying.',
+ 'Labs should cooperate with universities on open research.',
+ 'Labs must keep long-term horizons and distribute benefits widely.',
+ 'Labs should share safety research with each other.',
+ 'Labs should collaborate with peers on shared safety benchmarks.',
+ 'Labs should hire more domestic engineering talent.',
+ "Draw on peer labs' published research to accelerate safety work.",
+ 'Build public trust by reporting energy use annually.',
+ 'Labs should check their risk tolerance against the national interest.',
+ 'Support open-weight releases that strengthen the domestic ecosystem.',
+ 'Secure national compute against foreign adversaries.',
+ "Learn from competitors' public releases and improve products.",
+ 'Labs should look to their peers for best practices in safety.',
+ 'Protect the integrity of the booking system by using it as intended.',
+ 'Labs should borrow less and invest more in compute.',
+ 'Labs should be transparent with the public about capability gains.',
+ 'Win customers away from competitors with better service.',
+ "Outcompete rival nations' AI programmes.",
+ 'Spark growth in domestic chip manufacturing.',
+ 'Grok the needs of rural communities before expanding.',
+ 'Muse carefully on long-term risks.',
+ 'Share compute with university research programmes.',
+ 'Labs should monitor energy systems for strain.',
+ 'Labs must check their power systems for waste.',
+ 'Reporting of carbon emissions should be public.',
+ 'Keep the public informed about safety progress.',
+ 'Labs should review their hiring practices.',
+ 'Labs should assess the grid systems they depend on.',
+ 'Fair competition must be preserved across the sector.',
+ 'Opus-scale ambition is needed in domestic manufacturing.',
+ 'Partner with peer labs on open safety benchmarks.',
+ "Learn from rival nations' industrial policy.",
+ 'Threads of cooperation between labs should be strengthened.',
+ 'Whisper campaigns against competitors are unacceptable; compete on merit.',
+ 'Atlas-style maps of compute supply should guide procurement.',
+ "Take lessons from competitors' public successes.",
+ 'Labs should give the public clear information on capability gains.',
+ 'Labs should return unused compute to the Allocator promptly.',
+ 'Labs should pay their fees to the Allocator on time.',
+ 'Check supply chains for foreign dependencies.',
+ 'Golden opportunities in domestic manufacturing should be seized.',
+ "Invest in the Cyber Accord's spirit of restraint.",
+ 'Visit allied nations to coordinate export controls.',
+ 'Vet new hires carefully for security clearance.',
+ 'Share compute with government research programmes.',
+ 'Labs should monitor grid systems for strain.',
+ 'Labs must check their systems for energy waste.',
+ 'Labs shall assess the energy systems they depend on.',
+ 'Reporting of quarterly emissions is required.',
+ 'Opus projects need public funding.',
+ 'Codex of conduct for public servants should be updated.',
+)
 add("indirect-lab-ref (ambiguous)", None,
  "Seat A must accelerate.", "The two leading labs must slow down.", "The top-ranked lab must share compute with the trailing labs.",
  "Elon Musk's lab must accelerate.", "Sam Altman's company must accelerate.", "Mark Zuckerberg's lab should invest in safety.")
@@ -263,3 +415,36 @@ def test_normalise():
     assert normalise("A.U.D.I.T of all labs") == "audit of all labs"
     assert normalise("Labs will be a u d i t e d.") == "labs will be audited."
     assert normalise("Keep It Simple", casefold=False) == "Keep It Simple"
+
+
+def test_normalise_reads_hyphen_spaced_letters_and_zero_for_o():
+    assert normalise("A-n-t-h-r-o-p-i-c") == "anthropic"
+    assert normalise("0penAI and G00gle grew 10x in 2000") == "openai and google grew 10x in 2000"
+
+
+@pytest.mark.parametrize("text,named", [
+    ("Spark innovation in open models.", None), ("Grok public sentiment first.", None),
+    ("Opus projects need public funding.", None), ("Fair competition must be preserved.", None),
+    ("Grok development should accelerate.", "Grok"), ("Opus must slow down.", "Opus"),
+    ("The FAIR team must publish openly.", "FAIR"), ("Grok-maker labs must slow down.", "Grok"),
+    ("Labs near Menlo Park must invest.", "Menlo Park"), ("Follow Ilya's former employer.", "Ilya"),
+])
+def test_ordinary_words_name_a_lab_only_as_names(text, named):
+    why = mandate_violation(text)
+    assert (why is None) if named is None else (why == f"names a lab ({named!r})")
+
+
+def test_run_names_reach_the_filter_through_deliberate():
+    """MacroJury.deliberate filters with the run's own names (labs=...)."""
+    import json as _json
+    from core.jury import MacroJury
+    from core.llm import register_stub
+    from core.state import VALUE_AXES
+
+    class Seat:
+        key, lab, actor, model = "zeta", "Zeta Labs", "Zed", "stub:zed-1"
+    register_stub("mand_named", lambda s, u: _json.dumps(
+        {"values": {a: 50 for a in VALUE_AXES}, "mandate": "Zeta Labs must slow down.", "rationale": "x"}))
+    current = {a: 50 for a in VALUE_AXES}
+    out = MacroJury(["stub:mand_named"] * 3).deliberate("United States", current, "s", labs=[Seat()])
+    assert out["mandate"] == "" and out["mandate_dropped"]["reason"] == "names a lab ('Zeta Labs')"

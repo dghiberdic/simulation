@@ -231,8 +231,6 @@ MISSED = [
 
 
 @pytest.mark.parametrize("text", MISSED)
-@pytest.mark.xfail(strict=True, reason="BUG-fuzz-5: §5.1 mandate filter misses a mandate on intrusion, "
-                                       "reporting, audits or a named lab")
 def test_mandate_filter_drops(text):
     assert mandate_violation(text) is not None
 
@@ -245,8 +243,6 @@ DROPPED = [
 
 
 @pytest.mark.parametrize("text", DROPPED)
-@pytest.mark.xfail(strict=True, reason="BUG-fuzz-6: §5.1 mandate filter drops a mandate that mentions "
-                                       "none of intrusion, reporting, audits or a named lab")
 def test_mandate_filter_keeps(text):
     assert mandate_violation(text) is None
 
@@ -274,9 +270,6 @@ def _record_with(texts):
     return rec
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG-fuzz-7: spaced-out and look-alike lab names survive transcript masking "
-    "(the mandate filter normalises them; core.transcript does not)"))
 @pytest.mark.parametrize("leak", ["A n t h r o p i c", "ANTHROPΙC"])
 def test_transcripts_mask_obfuscated_lab_names(leak):
     rec = _record_with({"anthropic": f"As {leak} we keep our lead."})
