@@ -65,7 +65,7 @@ nothing.
 ## Verify offline (no keys, $0)
 
 ```bash
-python -m pytest -q -p no:cacheprovider    # ~1,300 offline tests
+python -m pytest -q -p no:cacheprovider    # ~1,660 offline tests
 python checks/scripted_checks.py           # SC1–SC15, exit 0 when all pass
 python pilot.py plan --dry-run             # the pilot plan at estimated costs
 python pilot.py priced --dry-run           # the pilot pipeline on stubs (logs: data/pilot/dry/)
