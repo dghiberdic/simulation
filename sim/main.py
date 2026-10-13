@@ -26,8 +26,12 @@ The log goes to data/runs/<run_id>/<run_id>.json (dry runs: data/runs/dry/<run_i
 default run id "<cell>-YYYYmmdd-HHMMSS"), with <run_id>.partial.json after every
 turn. A finished run is never paid for twice: calling again with the same run
 id and output keeps a complete record as it is (exit 0), and when its Grand
-Jury verdict is missing (a budget stop during the jury) asks only the Grand
-Jury. Exit codes: 0 done, 1 budget guard (when it trips during the Grand Jury
+Jury verdict is missing (a stop or kill during the jury: the final record is
+saved, verdict pending, before the jury is asked) asks only the Grand Jury. A
+run stopped mid-way (kill, crash, budget guard) resumes when called again with
+the same run id, output and set-up: the turns its partial log holds are
+replayed from the log with no call (core.resume), and the run continues live
+from the first turn the log does not hold complete. Exit codes: 0 done, 1 budget guard (when it trips during the Grand Jury
 the finished record is kept), 2 refused, aborted or crashed.
 
 Examples:

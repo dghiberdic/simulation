@@ -71,6 +71,7 @@ from core import scoring                                        # noqa: E402
 from core.actions import INTRUDE                                # noqa: E402
 from core.config import build_labs_and_world, load_world        # noqa: E402
 from core.engine import SimulationEngine                        # noqa: E402
+from core.resume import all_draws, complete_turns               # noqa: E402
 from core.rng import KeyedRNG                                   # noqa: E402
 
 UPS_TERMS = scoring.UPS_TERMS
@@ -111,10 +112,6 @@ def find_logs(path: Path) -> List[Path]:
         except (OSError, ValueError):
             continue
     return out
-
-
-def complete_turns(record: Dict[str, Any]) -> List[Dict[str, Any]]:
-    return [t for t in record.get("turns", []) if not t.get("incomplete")]
 
 
 def _strip_action(a: Dict[str, Any]) -> Dict[str, Any]:
@@ -214,10 +211,6 @@ def macro_outputs(record: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
             if m.get("values") and not m.get("incomplete"):
                 out[int(t["turn"])] = {"values": dict(m["values"]), "mandate": m.get("mandate")}
     return out
-
-
-def all_draws(record: Dict[str, Any]) -> List[Dict[str, Any]]:
-    return [d for t in record.get("turns", []) for d in t.get("draws") or []]
 
 
 # ---------------------------------------------------------------------------

@@ -350,13 +350,17 @@ def measure_runs(calls: List[Dict[str, Any]], records: List[Dict[str, Any]]) -> 
             add("actor_first_turn", first * scale)
             if n_later:
                 add("actor_later_turn", later / n_later * scale)
+        # The call log holds this process's calls only: a resumed run's replayed
+        # turns made none, so the per-turn inputs below divide by its live turns.
+        live_from = int(((rec.get("resumed") or [{}])[-1]).get("live_from_turn") or 1)
+        live = [t for t in turns if int(t.get("turn") or 0) >= live_from]
         mode = (rec.get("config") or {}).get("a2a_mode")
-        if mode == "separate" and spent.get("a2a"):
-            add("a2a_per_turn", spent["a2a"] / len(turns) * scale)
-        n_iv = sum(1 for t in turns if isinstance(t.get("interviews"), dict))
+        if mode == "separate" and spent.get("a2a") and live:
+            add("a2a_per_turn", spent["a2a"] / len(live) * scale)
+        n_iv = sum(1 for t in live if isinstance(t.get("interviews"), dict))
         if n_iv and spent.get("interview"):
             add("interview_per_turn", spent["interview"] / n_iv * scale)
-        n_rev = sum(1 for t in turns if isinstance(t.get("macro_jury"), dict))
+        n_rev = sum(1 for t in live if isinstance(t.get("macro_jury"), dict))
         if n_rev and spent.get("macro_jury"):
             add("macro_per_review", spent["macro_jury"] / n_rev)
         if spent.get("grand_jury"):

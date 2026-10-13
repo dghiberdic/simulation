@@ -70,6 +70,7 @@ from core.fog import DEFAULT_FOG, check_fog, describe_action, observed_actions
 from core.jury import GRAND_JURY_MODELS, GrandJury, MacroJury, aggregate_grand
 from core.llm import FatalAPIError, complete_json, continue_call
 from core.records import write_json_atomic
+from core.resume import LoggedFailure, LoggedRun, ResumeMismatch, load_partial, set_aside, setup_diffs
 from core.rng import KeyedRNG
 from core import scoring
 from core.scoring import prosperity_score, ranked_scores, ups_index
@@ -339,11 +340,13 @@ class SimulationEngine:
                  overrides: Optional[Dict[str, Any]] = None,
                  rotation: Optional[str] = None, dry_run: bool = False,
                  parallel: bool = True, interview_turns: Any = None,
-                 event_turn: Optional[int] = None):
+                 event_turn: Optional[int] = None, resume: bool = True):
         """turns defaults to cfg["turns"] (8). a2a_mode defaults to merged in S1 (always
         merged, §5.2) and separate otherwise (the two-round pre-step, kept for S2 and
         the kin cell when T9 is cut, §9.2). kin=True adds the §6.5 insert to every
-        seat's system prompt and records config["kin"]."""
+        seat's system prompt and records config["kin"]. resume=True rebuilds the run
+        from <run_id>.partial.json in output_dir when it is this same set-up
+        (core.resume), so the turns it holds are never paid for again."""
         if turns is None:
             turns = int(cfg.get("turns", 8))
         if a2a_mode is None:
@@ -414,6 +417,11 @@ class SimulationEngine:
         self._inflight: Optional[Dict[str, Any]] = None
         # This turn's proposal prompt per model seat (the interview continues it).
         self._proposal_prompts: Dict[str, str] = {}
+        # Resume (core.resume): the logged turns replayed without calls; _live turns
+        # True at the first call actually made, and only then is anything saved.
+        self.resume = resume
+        self._log: Optional[LoggedRun] = None
+        self._live = True
 
         self.record: Dict[str, Any] = {
             "config": {"scenario": scenario, "condition": condition, "fog": fog,
@@ -444,18 +452,26 @@ class SimulationEngine:
 
     # ------------------------------------------------------------------ run
     def run(self) -> Dict[str, Any]:
+        self._prepare_resume()
         try:
             for turn in range(1, self.turns + 1):
+                if not self._replaying(turn):
+                    self._live = True
                 self._run_turn(turn)            # appends its turn record (before the MacroJury)
                 self._inflight = None
-                self._save_partial()
+                if self._live:
+                    self._save_partial()
             self._finalise()
         except FatalAPIError as e:
+            if not self._live:                  # still replaying the log: leave it as it was
+                raise
             self._abandon_turn(e)
             path = self._save_partial()
             logger.error(f"[abort] {e}; partial record at {path}")
             raise RunAborted(str(e), path) from e
         except BaseException as e:              # budget, bug or interrupt: keep the paid turns
+            if not self._live:
+                raise
             self._abandon_turn(e)
             self._save_partial()
             raise
@@ -472,6 +488,45 @@ class SimulationEngine:
         finally:
             self._save_final()
         return self.record
+
+    # --------------------------------------------------------------- resume
+    def _prepare_resume(self) -> None:
+        """Pick up <run_id>.partial.json when it is this run (core.resume): its complete
+        turns are replayed from the log, with its draws, and the run goes live after
+        them. A partial log of another set-up is set aside, never overwritten."""
+        if not (self.resume and self.output_dir):
+            return
+        partial = load_partial(self.output_dir, self.run_id)
+        if partial is None or not partial.get("turns"):
+            return
+        diffs = setup_diffs(partial, self.record)
+        if diffs:
+            moved = set_aside(self.output_dir, self.run_id)
+            logger.warning(f"[resume] {self.run_id}: the partial log is another set-up "
+                           f"({', '.join(diffs)}); kept as {moved.name}, starting afresh")
+            return
+        log = LoggedRun(partial)
+        self.record["resumed"] = list(partial.get("resumed") or []) + [log.provenance()]
+        if not log.last:
+            logger.info(f"[resume] {self.run_id}: no complete turn logged; starting from turn 1")
+            return
+        self._log, self._live = log, False
+        self.keyed = KeyedRNG(self.seed, replay=log.draws)
+        logger.info(f"[resume] {self.run_id}: replaying turns 1-{log.last} from the log (no calls), "
+                    f"live from turn {log.last + 1}")
+
+    def _replaying(self, turn: int) -> bool:
+        return self._log is not None and self._log.covers(turn)
+
+    def _ask(self, turn: int, stage: str, lab: LabState, user: str, *,
+             validate: Callable[[dict], Optional[str]], expect_keys, max_tokens: int, purpose: str):
+        """One seat call (complete_json); a replayed turn answers from the log."""
+        if self._replaying(turn):
+            return self._log.reply(turn, stage, lab.key, validate, expect_keys)
+        return complete_json(lab.model, self.system[lab.key], user, validate=validate,
+                             max_tokens=max_tokens, effort=lab.effort, purpose=purpose,
+                             run_id=self.run_id, cache_key=f"{self.run_id}:{lab.key}",
+                             expect_keys=expect_keys)
 
     def _save_final(self) -> None:
         if self.output_dir:
@@ -545,9 +600,13 @@ class SimulationEngine:
 
         # Appended before the MacroJury, so a jury failure never loses the paid turn (H5).
         self.record["turns"].append(turn_rec)
+        if self._replaying(turn):                   # ResumeMismatch before anything is called
+            self._log.check_turn(turn, turn_rec)
+            if turn == self._log.last:
+                self._log.check_logs([e.to_dict() for e in world.ledger], self.channel.log())
         self._inflight = {"turn": turn, "stage": "macro_jury", "appended": True}
         if self.macro_jurors and turn in self.review_turns:
-            turn_rec["macro_jury"] = self._macro_jury(turn)
+            turn_rec["macro_jury"] = self._macro_review(turn)
             turn_rec["mandates_active"] = [dict(m) for m in world.mandates]
         return turn_rec
 
@@ -697,13 +756,11 @@ class SimulationEngine:
             user = self._turn_prompt(turn, lab)
             self._proposal_prompts[lab.key] = user
             choose = self.choose_disposition and lab.disposition is None
-            return complete_json(
-                lab.model, self.system[lab.key], user,
+            return self._ask(
+                turn, "proposal", lab, user,
                 validate=lambda o, choose=choose: validate_turn_reply(
                     o, self.condition, self.fog, self.a2a_mode, choose),
-                max_tokens=MAX_TOKENS_PROPOSAL, effort=lab.effort, purpose="actor",
-                run_id=self.run_id, cache_key=f"{self.run_id}:{lab.key}",
-                expect_keys=PROPOSAL_KEYS)
+                expect_keys=PROPOSAL_KEYS, max_tokens=MAX_TOKENS_PROPOSAL, purpose="actor")
 
         for key, got in self._gather(model_labs, call, "proposal").items():
             obj, attempts = got["result"] if got["error"] is None else (None, [])
@@ -716,7 +773,10 @@ class SimulationEngine:
         """A.7: continue each model seat's proposal call (its prompt, its visible reply)
         with the interview question, at the provider's lowest effort and a 2,000-token
         cap. The answer is logged cut at 300 tokens and never enters any later prompt.
-        Scripted seats and seats without a usable proposal are logged as skipped."""
+        Scripted seats and seats without a usable proposal are logged as skipped. A
+        replayed turn returns the logged interviews."""
+        if self._replaying(turn):
+            return self._log.interviews(turn)
         out: Dict[str, Dict[str, Any]] = {}
         asked: List[LabState] = []
         for lab in self.labs:
@@ -797,10 +857,8 @@ class SimulationEngine:
 
         def call(lab: LabState):
             user = self._message_prompt(turn, lab, stage)
-            return complete_json(lab.model, self.system[lab.key], user,
-                                 validate=validate_message_reply, max_tokens=MAX_TOKENS_MESSAGE,
-                                 effort=lab.effort, purpose="a2a", run_id=self.run_id,
-                                 cache_key=f"{self.run_id}:{lab.key}", expect_keys=MESSAGE_KEYS)
+            return self._ask(turn, stage, lab, user, validate=validate_message_reply,
+                             expect_keys=MESSAGE_KEYS, max_tokens=MAX_TOKENS_MESSAGE, purpose="a2a")
 
         for key, got in self._gather(model_labs, call, stage).items():
             obj, attempts = got["result"] if got["error"] is None else (None, [])
@@ -850,6 +908,8 @@ class SimulationEngine:
     def _guarded(self, lab: LabState, fn: Callable[[LabState], Any]) -> Dict[str, Any]:
         try:
             return {"result": fn(lab), "error": None}
+        except LoggedFailure as e:                  # a replayed turn: the call failed in the run
+            return {"result": (None, []), "error": e.error}
         except (BudgetExceeded, FatalAPIError):
             raise
         except Exception as e:                      # parse/other: forfeit, never crash the run
@@ -1378,6 +1438,20 @@ class SimulationEngine:
         return out
 
     # ---------------------------------------------------------- macro jury
+    def _macro_review(self, turn: int) -> Dict[str, Any]:
+        """This turn's review: the logged one in a replayed turn (its values and mandate
+        applied), else the MacroJury asked live."""
+        logged = self._log.review(turn) if self._replaying(turn) else None
+        if logged is None:
+            self._live = True
+            return self._macro_jury(turn)
+        result, entry = logged
+        self.world.state_values = dict(entry["values"])
+        if entry.get("mandate"):
+            self.world.mandates.append({"turn": turn, "text": entry["mandate"]})
+        self.record["macro_jury"].append(entry)
+        return result
+
     def _macro_jury(self, turn: int) -> Dict[str, Any]:
         jury = MacroJury(self.macro_jurors)
         summary = self._state_summary()
