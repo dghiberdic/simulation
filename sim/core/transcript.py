@@ -861,21 +861,35 @@ def new_letter_salt() -> str:
     return secrets.token_hex(16)
 
 
+def legacy_letter_seed(record: Dict[str, Any]) -> str:
+    """The letter seed of a record written before runs carried a secret salt: its
+    run id, else its config (the letters such a record was judged under)."""
+    cfg = record.get("config") or {}
+    run_id = record.get("run_id") or (cfg.get("run_meta") or {}).get("run_id")
+    if run_id:
+        return f"run:{run_id}"
+    first = next((t.get("date") for t in record.get("turns") or [] if t.get("date")), None)
+    ident = [cfg.get(k) for k in ("seed", "scenario", "condition", "fog", "a2a_mode", "rotation",
+                                  "turns")] + [first, sorted(record.get("labs") or {})]
+    return "cfg:" + json.dumps(ident, sort_keys=True, default=str)
+
+
 def seat_letters(record: Dict[str, Any]) -> Dict[str, str]:
     """The run's fixed seat letters (code contract, "Juries"): record["seat_letters"]
     if the record carries a complete map, else a permutation of A-E seeded by the
-    run's secret salt, record["letter_salt"] (also written to key/letters.csv), so
-    the juror and our own blind ratings see the same letters, a letter does not
-    name the same lab in every run, and no one can rebuild the key from the run id
-    the raters see. A record without a salt gets one drawn now and stored in it;
-    save the record afterwards (the engine stores the salt at run start)."""
+    run's secret salt, record["letter_salt"] (set by the engine at run start, also
+    written to key/letters.csv), so the juror and our own blind ratings see the
+    same letters, a letter does not name the same lab in every run, and no one
+    can rebuild the key from the run id the raters see. A record without a salt
+    (written before salts) keeps the letters of its legacy seed
+    (legacy_letter_seed). Pure: the record is never changed."""
     keys = list(record.get("labs") or {})
     given = record.get("seat_letters")
     if isinstance(given, dict) and set(given) >= set(keys) and \
             len({given[k] for k in keys}) == len(keys):
         return {k: str(given[k]) for k in keys}
     if not record.get("letter_salt"):
-        record["letter_salt"] = new_letter_salt()
+        return letters_for(keys, legacy_letter_seed(record))
     return letters_for(keys, "salt:" + str(record["letter_salt"]))
 
 

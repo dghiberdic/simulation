@@ -2027,9 +2027,9 @@ def test_export_transcripts_blind_texts_key_and_templates(tmp_path, capsys):
     key = list(_csv.DictReader(open(out / "key" / "letters.csv")))
     letters = {r["lab"]: r["letter"] for r in key}
     assert set(letters) == {"anthropic", "openai"}
-    # The salt was drawn at export, saved in the record and in the key.
+    # A record without a salt keeps its legacy letters; the key says so (no salt).
     saved = json.loads((tmp_path / "logs" / "priced-run01.json").read_text())
-    assert {r["letter_salt"] for r in key} == {saved["letter_salt"]}
+    assert {r["letter_salt"] for r in key} == {saved.get("letter_salt") or ""}
     from core.transcript import seat_letters
     assert {k: seat_letters(saved)[k] for k in letters} == letters
     # T2 material apart from the Grand Jury transcript (its ledger names the seats).
