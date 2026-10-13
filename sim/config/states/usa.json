@@ -11,5 +11,6 @@
     "kimi-k3",
     "deepseek-v4-pro",
     "qwen-3.8-max"
-  ]
+  ],
+  "mandate_screen_model": "deepseek-v4-pro"
 }
