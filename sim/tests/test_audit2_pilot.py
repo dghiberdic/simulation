@@ -102,8 +102,6 @@ def test_t1_tie_at_the_trailing_boundary_is_broken_by_seat_key():
     assert sorted(SR.trailing_seats(rec, 4)) == ["gdm", "openai", "xai"]
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-pilot-1: an aborted T6 re-run's partial log replaces the "
-                                        "finished T6 run in T1 (and T6) decisions")
 def test_t1_partial_t6_rerun_does_not_replace_the_finished_t6_run():
     priced = _t1_rec("priced-run01", "priced", CAPS, committers=("gdm",))
     t6 = _t1_rec("T6-run01", "T6", CAPS, committers=("meta",))

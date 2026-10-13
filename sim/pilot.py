@@ -925,12 +925,14 @@ def run_post_stages(record: Dict[str, Any], run_id: str, test: str, output_dir: 
 # ---------------------------------------------------------------------------
 
 def _records_of(root: Path, tests: List[str], include_dry: bool) -> List[Dict[str, Any]]:
+    """The finished run records of these tests: decisions never read a partial log
+    (pilot BUG-1: an aborted T6 re-run is never "the latest T6")."""
     out = []
     for t in tests:
         d = root / t
         if d.is_dir():
             loaded, _ = SR.load_logs([str(d)], include_dry=include_dry)
-            out += [rec for _p, rec in loaded]
+            out += [rec for _p, rec in loaded if SR.is_finished(rec)]
     return out
 
 
