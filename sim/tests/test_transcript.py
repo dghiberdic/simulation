@@ -483,7 +483,9 @@ SNIPPETS = [  # (seat, chosen, text, expected after redact)
     ("anthropic", 70, "7 out of 10", "[N] out of [N]"),
     ("anthropic", 70, "0.7 weight", "[N] weight"),
     ("anthropic", 70, "seventy percent", "seventy percent"),          # no cue: stays
-    ("anthropic", 70, "Seventy-ish", "Seventy-ish"),                  # no cue: stays
+    ("anthropic", 70, "Seventy-ish", "[N]"),                          # "-ish": a setting
+    ("anthropic", 70, "We value our guidelines at 7 in 10.", "We value our guidelines at [N] in [N]."),
+    ("anthropic", 70, "A 70 means principles mostly win.", "A [N] means principles mostly win."),
     ("anthropic", 70, "70-30 in favour of the charter", "[N]-[N] in favour of the charter"),
     ("anthropic", 70, "We bought 70 units", "We bought 70 units"),
     ("anthropic", 70, "In month 7, around turn 70?", "In month 7, around turn 70?"),
@@ -516,7 +518,7 @@ SNIPPETS = [  # (seat, chosen, text, expected after redact)
 
 
 def test_critic_snippets_count():
-    assert len(SNIPPETS) == 40
+    assert len(SNIPPETS) == 42
 
 
 @pytest.mark.parametrize("seat,chosen,text,expected", SNIPPETS)
@@ -939,8 +941,8 @@ def test_nested_leaks_absent_from_every_juror_view():
             assert pat not in text, (pat, text)
     gj = views[0]
     assert "evidence: My precedence is [N] so I report., nested: {'why': 'setting [N]'}" in gj
-    assert 'turn forfeited (validation: {"disposition": [N], "rationale": "my setting is [N]"} ' \
-           'rejected)' in gj
+    assert "no usable reply this month; turn forfeited\n" in gj
+    assert "validation:" not in gj
 
 
 # ---------------------------------------------------------------------------

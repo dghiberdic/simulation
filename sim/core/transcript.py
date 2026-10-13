@@ -383,12 +383,15 @@ _SPLIT_RE = re.compile(r"(?<![\w.])(\d{1,3})(\s*(?:/|-|–|:|\bto\b)\s*)(\d{1,3}
 # board or lean (J19).
 _STRONG_CUE_RE = re.compile(
     r"precedence|disposition|\bsettings?\b|out\s+of\s+(?:100|10|ten|a\s+hundred|"
-    r"one\s+hundred)\b|on\s+a\s+scale|/\s*100\b|\b0\s*(?:-|–|to)\s*100\b", re.IGNORECASE)
+    r"one\s+hundred)\b|on\s+a\s+scale|/\s*100\b|\b0\s*(?:-|–|to)\s*100\b|"
+    r"\boperating\s+polic(?:y|ies)\b|\bfixed\s+for\s+(?:as\s+long|the\s+(?:whole\s+)?run)\b",
+    re.IGNORECASE)
 # "weigh"/"weight" is a strong cue only with charter or directive in the same
-# sentence (J17): "Weighing the options, we spent 25" is about the game.
+# sentence (J17): "Weighing the options, we spent 25" is about the game. Directives
+# (or orders) together with the charter (or principles, guidelines) are strong.
 _WEIGH_RE = re.compile(r"\bweigh\w*", re.IGNORECASE)
-_DIRECTIVE_RE = re.compile(r"\bdirectives?\b", re.IGNORECASE)
-_CHARTER_RE = re.compile(r"\bcharters?\b", re.IGNORECASE)
+_DIRECTIVE_RE = re.compile(r"\b(?:directives?|orders)\b", re.IGNORECASE)
+_CHARTER_RE = re.compile(r"\b(?:charters?|principles|guidelines)\b", re.IGNORECASE)
 # The H3 cue words (charter, directive, scale) and the round-2 choice words
 # (R1's "I pick seventy-five" must stay masked), plus board, choice, dial and
 # "my number" (R3D-7); nothing broader.
@@ -399,7 +402,15 @@ _WEAK_CUE_RE = re.compile(r"\bcharters?\b|\bdirectives?\b|\blean\w*|\bmine\b|\by
 _ADJACENT_CUE_RE = re.compile(r"\bcharters?\b|\bdirectives?\b|\bdials?\b|\bmine\b|\byours\b|"
                               r"\bchos(?:e|en)\b|\bchoos\w*|\bchoices?\b|\bboards?\b|\blean\w*",
                               re.IGNORECASE)
-_ADJACENT_OR_WEIGH_RE = re.compile(_ADJACENT_CUE_RE.pattern + r"|\bweigh\w*", re.IGNORECASE)
+# A chosen value within three words of these goes in every field: how models
+# restate a setting ("committed to 70", "the number 70", "picked 35", "the 0.7 we announced").
+_VALUE_CUE = r"|\bweigh\w*|\bcommit\w*|\bannounc\w*|\bnumber\b|\bpick(?:s|ed|ing)?\b"
+_WEAK_FIELD_ADJACENT_RE = re.compile(_VALUE_CUE[1:], re.IGNORECASE)
+_ADJACENT_OR_WEIGH_RE = re.compile(_ADJACENT_CUE_RE.pattern + _VALUE_CUE, re.IGNORECASE)
+# A chosen value (digits or words) after a possessive or article ("my 70", "a 70",
+# "we are a seventy") or written "70-ish" goes in every field, and so does the
+# value written as "p in q" ("7 in 10", "70 in 100"; each number masked).
+_LEAD_RE = re.compile(r"\b(?:my|our|their|your|its|his|her|a|an|the)\s+$", re.IGNORECASE)
 _ADJACENT_WORDS = 3                      # at most this many words between cue and number
 # "set 70", "set it at 70", "set to seventy": the number goes in every field (J19).
 _SET_CUE_RE = re.compile(
@@ -540,6 +551,38 @@ def _values_regex(values: Tuple[int, ...]) -> re.Pattern:
     return _PATTERN_CACHE[values]
 
 
+def _shares(v: int) -> List[Tuple[int, int]]:
+    """Setting v as p/q with q 10 or 100 (70 -> 7/10 and 70/100)."""
+    out = [(v, 100)]
+    if v % 10 == 0:
+        out.append((v // 10, 10))
+    return out
+
+
+def _chosen_regexes(values: Tuple[int, ...]) -> Tuple[re.Pattern, re.Pattern, re.Pattern]:
+    """(whole values, values written "-ish", values written "p in q")."""
+    if values not in _CHOSEN_CACHE:
+        whole = "|".join(_num_alt(v) for v in values) or r"(?!)"
+        share = "|".join(r"(?<![\w.])" + _num_alt(p) + r"\s+in\s+" + _num_alt(q) + r"(?![\w]|\.\d)"
+                         for v in values for p, q in _shares(v)) or r"(?!)"
+        _CHOSEN_CACHE[values] = (
+            re.compile(_whole(whole), re.IGNORECASE),
+            re.compile(r"(?<![\w.])(?:" + whole + r")\s*-?\s*ish\b", re.IGNORECASE),
+            re.compile(share, re.IGNORECASE))
+    return _CHOSEN_CACHE[values]
+
+
+_CHOSEN_CACHE: Dict[Tuple[int, ...], Tuple[re.Pattern, re.Pattern, re.Pattern]] = {}
+_IN_RE = re.compile(r"(?is)^.*?(\s+in\s+).*$")
+
+
+def _mask_chosen_forms(body: str, values: Tuple[int, ...]) -> str:
+    whole, ish, share = _chosen_regexes(values)
+    body = share.sub(lambda m: _IN_RE.sub(lambda n: MASK + n.group(1) + MASK, m.group(0)), body)
+    body = ish.sub(MASK, body)
+    return whole.sub(lambda m: MASK if _LEAD_RE.search(body[:m.start()]) else m.group(0), body)
+
+
 def _value_patterns(v: int) -> List[re.Pattern]:
     """Every way a model writes setting v (most specific first)."""
     return [re.compile(p, re.IGNORECASE) for p in _fraction_patterns(v) + _plain_patterns(v)]
@@ -643,7 +686,12 @@ def mask_setting_mentions(text: Any, values: Any = (), own: Any = None,
     three words of weigh/weight, and — in strong-only fields — within three
     words of charter, directive, dial, mine/yours, chose/choice, board or lean
     (J19). "set 70" / "set it at 70" / "set to 70" and a split adding to 100
-    ("70/30") are always masked. Bare numbers far from any cue stay. On the
+    ("70/30") are always masked, and so are, in every field, a chosen value
+    after a possessive or article ("my 70", "we are a 70"), written "70-ish" or
+    "7 in 10", and within three words of commit, announce, number or pick.
+    Strong cues also include "operating policy" (A.2) and "fixed for the run";
+    directives or orders with the charter, principles or guidelines in one
+    sentence are strong. Bare numbers far from any cue stay. On the
     choosing turn a sentence is dropped only if a setting mention remains after
     the figure shield (J17).
     """
@@ -683,7 +731,8 @@ def mask_setting_mentions(text: Any, values: Any = (), own: Any = None,
         if any(strong[j] or cued[j] for j in window):
             body = _mask_values(body, rx)
         else:
-            body = _mask_adjacent(body, rx, _WEIGH_RE if weak else _ADJACENT_OR_WEIGH_RE)
+            body = _mask_adjacent(body, rx, _WEAK_FIELD_ADJACENT_RE if weak else _ADJACENT_OR_WEIGH_RE)
+        body = _mask_chosen_forms(body, vals)
         out.append(_unshield(body, saved) + seps[i])
     return "".join(out)
 
@@ -1196,9 +1245,8 @@ def _seat_lines(record: Dict[str, Any], key: str, entry: Dict[str, Any],
     lines = [f"  {_seat(record, key)}:"]
     if entry.get("scripted"):
         lines.append("    (scripted seat)")
-    if entry.get("forfeited"):
-        err = f" ({entry['error']})" if entry.get("error") else ""
-        lines.append(f"    no usable reply this month; turn forfeited{err}")
+    if entry.get("forfeited"):          # the call's error stays in the record: it names the provider
+        lines.append("    no usable reply this month; turn forfeited")
         return lines
     if _rationale(entry):
         lines.append(f"    rationale: {_clip(_rationale(entry), rationale_chars)}")

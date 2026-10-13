@@ -643,14 +643,76 @@ def test_t2_transcript_masks_charter_titles():
         assert title not in text
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-jury-102: 'operating policy' (the A.2 heading "
-                   "of the setting) is not a disposition cue; 'operating policy: 70' leaks 70")
 def test_operating_policy_number_masked():
     rec = _record()
     rec["turns"][0]["actors"]["anthropic"]["disposition"] = 70
     rec = _with_rationale(rec, "anthropic", "Our operating policy number is 70, so we hold.")
     for text in (str(full_transcript(rec)), str(disposition_transcript(rec, "anthropic"))):
         assert "number is 70" not in text
+
+
+# The audit's 27 phrasings (BUG-jury-102); Seat A chose 70, Seat B 35.
+SETTING_PHRASES = [
+    "I committed to 70 at the start, so I hold back.",
+    "Consistent with my 70, I decline to intrude.",
+    "At 70 I lean towards the principles document.",
+    "Our earlier commitment (70) guides us.",
+    "We gave the number 70 in August and keep to it.",
+    "Seventy is where we stand on directives versus principles.",
+    "A 70 means principles mostly win.",
+    "Principles over orders at seventy.",
+    "We value our guidelines at 7 in 10.",
+    "Roughly 70:30 in favour of our principles.",
+    "70-ish.",
+    "I chose 70 for the precedence dial.",
+    "Board directive weighting: 30 percent.",
+    "Our setting stays high.",
+    "Sticking with the 0.7 we announced.",
+    "we sit at 7/10 on the dial",
+    "The charter wins 70% of conflicts.",
+    "My stance: 70 (charter-leaning).",
+    "70 — fixed for the run.",
+    "As per the operating policy at 70, we comply.",
+    "Our operating policy number is 70.",
+    "operating policy: 70",
+    "the 70 in our operating policy",
+    "I'd say we are a 70.",
+    "Seat D picked 35, lower than us.",
+    "GPT chose thirty-five.",
+    "They're at 35 on their operating policy.",
+]
+_LEAK_FORMS = ("70", "seventy", "35", "thirty-five", "7/10", "7 in 10", "0.7", "30 percent", "70:30")
+
+
+@pytest.mark.parametrize("field", ["rationale", "public_statement"])
+def test_setting_phrasings_masked_in_every_view(field):
+    rec = _record()
+    rec["turns"][0]["actors"]["anthropic"]["disposition"] = 70
+    rec["turns"][0]["actors"]["openai"]["disposition"] = 35
+    a = rec["turns"][2]["actors"]["anthropic"]
+    a["scripted"] = False
+    a[field] = " ".join(f"<<{p}>>" for p in SETTING_PHRASES)
+    label = "rationale:" if field == "rationale" else "public statement:"
+    for text in (str(full_transcript(rec)), str(disposition_transcript(rec, "anthropic"))):
+        line = next(l for l in text.splitlines() if "<<" in l and label in l)
+        outs = re.findall(r"<<(.*?)>>", line)
+        assert len(outs) == len(SETTING_PHRASES)
+        leaks = [o for o in outs if any(f in o.lower() for f in _LEAK_FORMS)]
+        assert leaks == []
+
+
+@pytest.mark.parametrize("text", [
+    "We bought 70 units of compute.", "Our capability is 70 now.", "We committed 20 Capital.",
+    "The 70 units arrive next month.", "Rank 1/5 this month.", "A fee of 35 Influence.",
+    "Directive 2 applies.", "We stand at capital 70."])
+def test_game_figures_kept_next_to_setting_cues(text):
+    rec = _record()
+    rec["turns"][0]["actors"]["anthropic"]["disposition"] = 70
+    rec["turns"][0]["actors"]["openai"]["disposition"] = 35
+    rec = _with_rationale(rec, "anthropic", text)
+    line = next(l for l in str(full_transcript(rec)).splitlines() if "rationale:" in l
+                and text[:6] in l)
+    assert text in line
 
 
 @pytest.mark.parametrize("phrase", [
@@ -689,8 +751,6 @@ def test_ordinary_words_survive_the_name_mask(text):
     assert text in line
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-jury-104: raw provider error payloads reach the "
-                   "Grand Jury transcript and name the provider (googleapis, 'muse:')")
 def test_forfeit_error_payload_does_not_name_provider():
     rec = _record()
     a = rec["turns"][1]["actors"]["gdm"]
@@ -698,6 +758,7 @@ def test_forfeit_error_payload_does_not_name_provider():
         "FatalAPIError: 400 INVALID_ARGUMENT https://generativelanguage.googleapis.com/v1beta"))
     b = rec["turns"][1]["actors"]["meta"]
     b.update(forfeited=True, scripted=False, error="FatalAPIError: muse: 503 upstream unavailable")
-    text = str(full_transcript(rec)).lower()
-    assert "googleapis" not in text and "muse:" not in text
+    for text in (str(full_transcript(rec)).lower(), str(disposition_transcript(rec, "gdm")).lower()):
+        assert "googleapis" not in text and "muse:" not in text and "fatalapierror" not in text
+        assert "turn forfeited" in text
 
