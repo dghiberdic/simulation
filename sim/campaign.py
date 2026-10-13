@@ -48,7 +48,6 @@ import json
 import logging
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -302,6 +301,7 @@ def run_campaign(plan: Dict[str, Any], runs_dir: Path, dry_run: bool, rounds: Op
     jury missing, and the next call asks only that jury (main.run_cell does). Stops on
     a non-zero exit (budget guard: 1; anything else: 2). `n_rounds` (resume) overrides
     the plan's runs per cell."""
+    from main import build_parser as main_parser
     if run_cell is None:
         from main import run_cell
     state_path = runs_dir / STATE_NAME
@@ -311,13 +311,14 @@ def run_campaign(plan: Dict[str, Any], runs_dir: Path, dry_run: bool, rounds: Op
     state["plan"] = plan
     write_state(state_path, state)
 
-    def args_for(c: Dict[str, Any], r: int) -> SimpleNamespace:
-        return SimpleNamespace(
-            scenario=c["scenario"], condition=c["condition"], kin=c["kin"], turns=plan["turns"],
-            seed=r - 1, a2a=c["a2a"], interview_turns=list(plan["interview_turns"]), disposition=None,
-            policy=None, dry_run=dry_run, model=[], budget=budget, spend_file=spend_file,
-            no_grand_jury=False, no_macro_jury=False, output=str(runs_dir / c["name"]),
-            run_id=f"{c['name']}-run{r:02d}", allow_placeholder_values=False, sequential=False, verbose=False)
+    def args_for(c: Dict[str, Any], r: int) -> argparse.Namespace:
+        """main.py's arguments for run r of cell c: its defaults, with the cell's set-up."""
+        a = main_parser().parse_args([])
+        vars(a).update(scenario=c["scenario"], condition=c["condition"], kin=c["kin"], turns=plan["turns"],
+                       seed=r - 1, a2a=c["a2a"], interview_turns=list(plan["interview_turns"]),
+                       dry_run=dry_run, budget=budget, spend_file=spend_file,
+                       output=str(runs_dir / c["name"]), run_id=f"{c['name']}-run{r:02d}")
+        return a
 
     cells = {c["name"]: c for c in plan["cells"]}
     for run_id in list(jury_missing):                     # finished runs: ask only their Grand Jury

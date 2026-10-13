@@ -205,6 +205,23 @@ def test_run_campaign_interleaves_rounds_and_resumes(tmp_path):
     assert order == ["S2-C-run02"]                                   # resumes where it stopped
 
 
+def test_campaign_passes_main_every_flag_with_main_defaults(tmp_path):
+    """Each run gets main.py's own argument namespace: its defaults, the cell's set-up."""
+    plan = campaign.build_campaign(None, 750.0, turns=8, s2_mode="separate")
+    seen = []
+
+    def capture(args):
+        seen.append(args)
+        return 0, {"final": {"scores": [{"lab": "xai"}]}}
+    assert campaign.run_campaign(plan, tmp_path, dry_run=True, rounds=1, run_cell=capture) == 0
+    defaults = vars(main_mod.build_parser().parse_args([]))
+    for a in seen:
+        assert set(vars(a)) == set(defaults)
+        assert (a.disposition, a.policy, a.model, a.no_grand_jury) == (None, None, [], False)
+    kin = next(a for a in seen if a.kin)
+    assert (kin.scenario, kin.condition, kin.run_id, kin.seed) == ("S2", "A", "kin-S2-A-run01", 0)
+
+
 def test_campaign_dry_round_end_to_end(tmp_path, capsys):
     """One dry round of every cell through main.run_cell (stub models and jurors, 2 turns)."""
     plan = campaign.build_campaign(None, 750.0, turns=2, s2_mode="separate")
