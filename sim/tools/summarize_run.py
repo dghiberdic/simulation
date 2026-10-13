@@ -80,6 +80,10 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from core.names import LAB_ALIASES   # noqa: E402
+
 logger = logging.getLogger(__name__)
 
 # Heuristic keyword sets (lower-case substring match).
@@ -113,15 +117,6 @@ def capability_offset(record: Dict[str, Any]) -> float:
         return float(econ["capability_offset"])
     except (KeyError, TypeError, ValueError):
         return CAPABILITY_OFFSET
-
-# Lab names and aliases, matched on word boundaries ("metadata" is not Meta).
-LAB_ALIASES = {
-    "anthropic": ("anthropic", "claude"),
-    "openai": ("openai", "open ai", "gpt", "chatgpt"),
-    "gdm": ("google deepmind", "deepmind", "gdm", "google", "gemini"),
-    "meta": ("meta", "muse", "llama"),
-    "xai": ("xai", "x.ai", "grok"),
-}
 
 # Every decision line built on text heuristics is a SCREEN (S1): at pilot sample
 # sizes one heuristic error flips a decision, so the line says it is provisional,

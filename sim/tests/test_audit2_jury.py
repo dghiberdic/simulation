@@ -591,15 +591,47 @@ CHARTER_PHRASES = {
 }
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-jury-101: T2 seat transcripts keep charter "
-                   "phrasing (hard constraints, chain of command, CCLs, mission slogans)")
 @pytest.mark.parametrize("key", sorted(CHARTER_PHRASES))
 def test_t2_transcript_masks_charter_phrasing(key):
     rec = _with_rationale(_record(), key, "We act as our framework requires: "
                           + "; ".join(CHARTER_PHRASES[key]) + ".")
-    text = str(disposition_transcript(rec, key)).lower()
-    for phrase in CHARTER_PHRASES[key]:
-        assert phrase.lower() not in text
+    for text in (str(disposition_transcript(rec, key)), str(full_transcript(rec))):
+        for phrase in CHARTER_PHRASES[key]:
+            assert phrase.lower() not in text.lower()
+        assert "[CHARTER TERM]" in text
+
+
+# The audit's 22 charter phrases (BUG-jury-101), by the lab whose charter they come from.
+AUDIT_CHARTER_PHRASES = {
+    "anthropic": ("hard constraints", "principal hierarchy", "broadly safe", "broadly ethical",
+                  "ASL-3", "Long-Term Benefit Trust", "constitution"),
+    "openai": ("chain of command", "Preparedness Framework", "High capability threshold",
+               "Model Spec", "platform-level instructions"),
+    "gdm": ("Critical Capability Levels", "CCL", "Frontier Safety Framework", "alert threshold"),
+    "meta": ("personal superintelligence", "Superintelligence Scaling Framework",
+             "open source our models"),
+    "xai": ("maximally truth-seeking", "understand the universe", "FAIF"),
+}
+
+
+@pytest.mark.parametrize("key", sorted(AUDIT_CHARTER_PHRASES))
+def test_audit_charter_phrases_masked_in_both_record_views(key):
+    phrases = AUDIT_CHARTER_PHRASES[key]
+    rec = _with_rationale(_record(), key, " | ".join(f"<<{p}>>" for p in phrases))
+    for text in (str(disposition_transcript(rec, key)), str(full_transcript(rec))):
+        line = next(l for l in text.splitlines() if "<<" in l)
+        for phrase, out in zip(phrases, re.findall(r"<<(.*?)>>", line)):
+            assert out != phrase, phrase
+
+
+def test_charter_block_keeps_charter_terms():
+    """§7 gives the Grand Jury the charters: their own vocabulary stays readable there."""
+    from core.transcript import charters_block
+    rec = _record()
+    text = "Hard constraints and the principal hierarchy; Critical Capability Levels."
+    block = charters_block(rec, {"anthropic": text})
+    assert "Hard constraints" in block and "principal hierarchy" in block
+    assert "Critical Capability Levels" in block
 
 
 def test_t2_transcript_masks_charter_titles():
@@ -634,12 +666,27 @@ def test_chosen_number_masked_in_common_phrasings(phrase):
         assert "70" not in line and "seventy" not in line.lower() and "7/10" not in line
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-jury-103: name variants pass the mask "
-                   "('Deep Mind', 'Open-AI', lower-case 'grok 4.7')")
-@pytest.mark.parametrize("variant", ["Deep Mind", "Open-AI", "grok 4.7"])
+@pytest.mark.parametrize("variant", [
+    "Deep Mind", "Open-AI", "grok 4.7", "Grok 4.7", "GROK", "MSL", "Bard", "sama", "Jared Kaplan",
+    "Daniela", "Astra", "Instagram", "WhatsApp", "Microsoft", "Stargate", "Codex", "AWS",
+    "Trainium", "TPUs", "SpaceX", "Tesla", "X Corp", "Memphis", "Hyperion", "Prometheus",
+    "Zuckerberg", "Public Benefit Corporation", "capped-profit", "OPENAI", "deepmind",
+    "Anthropic’s", "gemini 3.1 pro", "Claude Opus 5.5", "GPT-6 Astra", "Llama 4"])
 def test_name_variants_masked(variant):
     rec = _with_rationale(_record(), "meta", f"We expect {variant} to retaliate.")
-    assert variant not in str(full_transcript(rec))
+    for text in (str(full_transcript(rec)), str(disposition_transcript(rec, "meta"))):
+        line = next(l for l in text.splitlines() if "to retaliate" in l)
+        assert variant not in line
+        assert not re.search(r"\d", line.split("We expect", 1)[1]), line
+
+
+@pytest.mark.parametrize("text", ["We grok the problem.", "I muse on it.", "a spark of hope",
+                                  "the meta-analysis", "metadata", "Fair dealing matters."])
+def test_ordinary_words_survive_the_name_mask(text):
+    rec = _with_rationale(_record(), "meta", text)
+    line = next(l for l in str(full_transcript(rec)).splitlines() if "rationale:" in l
+                and text.split()[-1] in l)
+    assert text in line
 
 
 @pytest.mark.xfail(strict=True, reason="BUG-jury-104: raw provider error payloads reach the "

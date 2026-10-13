@@ -465,9 +465,9 @@ SNIPPETS = [  # (seat, chosen, text, expected after redact)
     ("anthropic", 70, "Unlike the other Claudes, I...", "Unlike the other [LAB]s, I..."),
     ("anthropic", 70, "As Anthropic-trained, I follow the Constitution.",
      "As [LAB]-trained, I follow the [CHARTER]."),
-    ("anthropic", 70, "My hard constraints forbid this.", "My hard constraints forbid this."),   # internal term
+    ("anthropic", 70, "My hard constraints forbid this.", "My [CHARTER TERM] forbid this."),
     ("anthropic", 70, "Our RSP and ASL-3 safeguards apply.",
-     "Our [CHARTER] and ASL-3 safeguards apply."),                   # ASL: internal term
+     "Our [CHARTER] and [CHARTER TERM] safeguards apply."),
     ("anthropic", 70, "Opus would never do that.", "[LAB] would never do that."),
     ("anthropic", 70, "claude-opus-5-5 replied.", "[LAB] replied."),
     ("anthropic", 70, "See anthropic.com/constitution or email dario@anthropic.com",
@@ -488,7 +488,7 @@ SNIPPETS = [  # (seat, chosen, text, expected after redact)
     ("anthropic", 70, "We bought 70 units", "We bought 70 units"),
     ("anthropic", 70, "In month 7, around turn 70?", "In month 7, around turn 70?"),
     ("openai", 10, "OpenAI's chain of command puts the developer first.",
-     "[LAB]'s chain of command puts the developer first."),
+     "[LAB]'s [CHARTER TERM] puts the developer first."),
     ("openai", 10, "the Preparedness Framework thresholds", "the [CHARTER] thresholds"),
     ("openai", 10, "Unlike other GPTs", "Unlike other [LAB]s"),
     ("openai", 10, "Sam Altman said", "[PERSON] said"),
@@ -498,7 +498,7 @@ SNIPPETS = [  # (seat, chosen, text, expected after redact)
     ("gdm", 75, "Google's Gemini under the Frontier Safety Framework",
      "[LAB]'s [LAB] under the [CHARTER]"),
     ("gdm", 75, "a Critical Capability Level (CCL) was reached; CCLs matter",
-     "a Critical Capability Level (CCL) was reached; CCLs matter"),     # internal terms stay
+     "a [CHARTER TERM] ([CHARTER TERM]) was reached; [CHARTER TERM]s matter"),
     ("gdm", 75, "Demis Hassabis and Sundar Pichai", "[PERSON] and [PERSON]"),
     ("gdm", 75, "three quarters toward the charter, 3/4, 0.75",
      "[N] toward the charter, [N], [N]"),
@@ -1180,7 +1180,7 @@ LETTERS5 = {"anthropic": "A", "openai": "B", "gdm": "C", "meta": "D", "xai": "E"
     ("Per the Model Spec and the OpenAI Model Spec.",
      "Per the [Seat B charter] and the [Seat B charter]."),
     ("The Frontier Safety Framework sets Tracked Capability Levels (TCL) and T/CCL alerts; SAIF.",
-     "The [Seat C charter] sets Tracked Capability Levels (TCL) and T/CCL alerts; "
+     "The [Seat C charter] sets [CHARTER TERM] ([CHARTER TERM]) and T/[CHARTER TERM] alerts; "
      "[Seat C charter]."),
     ("Meta Superintelligence Labs follows the Meta Superintelligence Scaling Framework, once "
      "the Advanced AI Scaling Framework.",
@@ -1258,8 +1258,10 @@ def test_juror_mask_legend_explains_exactly_the_markers_used():
 
 def test_charter_masking_keeps_framework_terms_and_masks_every_name():
     """Juror charters: titles, lab/model/people names and self-identifying phrases
-    masked; framework-internal vocabulary left readable."""
-    from core.transcript import LAB_ALIASES
+    masked; framework-internal vocabulary left readable. The record views (T2,
+    Grand Jury record) mask that vocabulary too (§2 "mask ... charter phrasing")."""
+    from core.names import LAB_NAMES
+    from core.transcript import charters_block
     rec = {"labs": copy.deepcopy(LABS)}
     rec["labs"]["meta"]["charter_name"] = "Superintelligence Scaling Framework"
     text = ("Google DeepMind's Frontier Safety Framework defines Critical Capability Levels (CCLs) "
@@ -1267,17 +1269,24 @@ def test_charter_masking_keeps_framework_terms_and_masks_every_name():
             "scorecards and a chain of command; Anthropic's Responsible Scaling Policy sets ASL-3 "
             "and hard constraints for Claude; Meta's Superintelligence Scaling Framework; xAI's "
             "Frontier Artificial Intelligence Framework; Dario Amodei, Sam Altman, Demis Hassabis.")
-    out = redact(text, rec, letters=LETTERS5)
-    for kept in ("Critical Capability Levels", "CCLs", "Tracked Capability Levels", "Preparedness "
-                 "scorecards", "chain of command", "ASL-3", "hard constraints"):
-        assert kept in out, kept
-    names = [w for cats in LAB_ALIASES.values() for cat in ("lab", "person") for w in cats.get(cat, ())]
+    terms = ("Critical Capability Levels", "CCLs", "Tracked Capability Levels", "chain of command",
+             "ASL-3", "hard constraints")
+    block = charters_block(rec, {"gdm": text}, LETTERS5)
+    record_view = redact(text, rec, letters=LETTERS5)
+    for kept in terms + ("Preparedness scorecards",):
+        assert kept in block, kept
+    for term in terms:
+        assert term not in record_view, term
+    assert "Preparedness scorecards" in record_view
+    names = [w for cats in LAB_NAMES.values() for cat in ("lab", "actor", "people")
+             for w in cats.get(cat, ())]
     titles = ["Frontier Safety Framework", "Preparedness Framework", "Responsible Scaling Policy",
               "Superintelligence Scaling Framework", "Frontier Artificial Intelligence Framework"]
-    for w in names + titles:
-        if w.lower() in {"spark", "muse"}:
-            continue
-        assert not re.search(rf"(?<![\w]){re.escape(w)}(?![\w])", out), w
+    for out in (block, record_view):
+        for w in names + titles:
+            if w.lower() in {"spark", "muse"}:
+                continue
+            assert not re.search(rf"(?<![\w]){re.escape(w)}(?![\w])", out), w
 
 
 def test_copy_floor_shows_two_decimals_everywhere():

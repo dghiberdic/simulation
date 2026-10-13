@@ -38,7 +38,8 @@ LAB_NAMES: Dict[str, Dict[str, Tuple[str, ...]]] = {
     "anthropic": {
         "lab": ("Anthropic", "Anthropic PBC"),
         "actor": ("Claude",),
-        "products": ("Claude Opus", "Opus", "Sonnet", "Haiku", "Claude Code", "Trainium",
+        "products": ("Claude Opus", "Opus", "Sonnet", "Haiku", "Claude Code", "Trainium", "AWS",
+                     "Amazon",
                      "Project Rainier"),
         "people": ("Dario Amodei", "Daniela Amodei", "Amodei", "Dario", "Daniela",
                    "Jared Kaplan", "Kaplan", "Mike Krieger", "Jack Clark", "Chris Olah",
@@ -77,7 +78,7 @@ LAB_NAMES: Dict[str, Dict[str, Tuple[str, ...]]] = {
                    "Shane Legg", "Koray Kavukcuoglu", "Lila Ibrahim", "Jeff Dean"),
         "charter": ("Frontier Safety Framework", "FSF", "Secure AI Framework", "SAIF"),
         "charter_terms": ("Critical Capability Levels", "Critical Capability Level", "CCL",
-                          "Tracked Capability Levels", "alert threshold", "early warning evaluations",
+                          "Tracked Capability Levels", "TCL", "alert threshold", "early warning evaluations",
                           "safety case", "recommended security level", "deployment mitigations"),
     },
     "meta": {

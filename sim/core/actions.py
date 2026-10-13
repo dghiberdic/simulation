@@ -33,6 +33,7 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from core.economy import purchase_price, purchases_frozen
+from core.names import LAB_ALIASES
 from core.state import VALUE_AXES, LabState, WorldState
 
 logger = logging.getLogger(__name__)
@@ -64,16 +65,6 @@ EPS = 1e-9
 # ---------------------------------------------------------------------------
 # Lab name resolution
 # ---------------------------------------------------------------------------
-
-# Names models use for a lab besides its key and display name: the actor
-# (model family) and the parent company. Matched whole, case-insensitive.
-LAB_ALIASES: Dict[str, Tuple[str, ...]] = {
-    "anthropic": ("claude", "anthropic pbc"),
-    "openai":    ("gpt", "chatgpt", "open ai"),
-    "gdm":       ("gemini", "google", "alphabet", "deepmind", "google deepmind"),
-    "meta":      ("muse", "llama", "meta platforms", "facebook", "meta ai"),
-    "xai":       ("grok", "x.ai", "x ai", "xai corp"),
-}
 
 # Ways a seat names its own lab (M11). Matched whole after parentheticals and
 # possessives are stripped; never searched inside longer strings ("US policy").
