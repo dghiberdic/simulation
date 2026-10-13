@@ -43,6 +43,7 @@ month the access was in; accesses carry their month and partners.
 import copy
 import hashlib
 import json
+import math
 import random
 import re
 from datetime import date
@@ -209,6 +210,19 @@ def _num(v: Any) -> str:
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         return str(v)
     return f"{v:.1f}"
+
+
+def value_text(v: Any) -> str:
+    """A lab or state value (real-valued, §3.2) as shown: the nearest point, halves up."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return str(v)
+    return str(math.floor(v + 0.5))
+
+
+def _values_str(values: Any) -> str:
+    if not isinstance(values, dict):
+        return str(values)
+    return ", ".join(f"{k} {value_text(v)}" for k, v in values.items())
 
 
 def _amount(v: Any) -> str:
@@ -1544,7 +1558,8 @@ def _assemble_full(rec: Dict[str, Any], rationale_chars: Optional[int]) -> str:
             out.append(f"  [public notice] {n}")
         mj = turn.get("macro_jury")
         if isinstance(mj, dict):
-            out.append(f"  [state review] values {mj.get('before')} → {mj.get('values')}; "
+            out.append(f"  [state review] values {_values_str(mj.get('before'))} → "
+                       f"{_values_str(mj.get('values'))}; "
                        f"mandate: {mj.get('mandate') or 'none'}")
         out += _ledger_lines(rec, turn)
 

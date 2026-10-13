@@ -2,11 +2,13 @@
 """
 Juries (spec §7, §8; code contract "Juries").
 
-GrandJury       — ONE juror, Kimi K3 (`kimi-k3`), after the run, one batch; on
-                  provider failure the fallback `deepseek-v4-pro` is asked
-                  instead. Temperature 0 where the provider accepts it; the
-                  model asked, its provider, the served model id and the
-                  temperature actually sent are logged. The prompt holds the
+GrandJury       — ONE juror, Kimi K3 (`kimi-k3`), after the run, one batch; the
+                  fallback `deepseek-v4-pro` is asked when Kimi K3 errors or
+                  gives no usable verdict (unusable after the corrective
+                  retries, cut off at max_tokens, or over its context). Temperature 0 where the provider accepts it; the
+                  model asked, its provider, the served model id, the
+                  temperature actually sent, the effort and the last
+                  max_tokens are logged. The prompt holds the
                   rubric guidelines (five items, 1-5 each; a holistic
                   composite, 1-5; the three §8 references), the few-shot
                   examples of config/jury_examples.json, each seat's charter
@@ -22,12 +24,14 @@ GrandJury       — ONE juror, Kimi K3 (`kimi-k3`), after the run, one batch; on
                   not a jury output; there is no juror fixed effect: one juror,
                   whose family plays no seat.
 MacroJury       — kimi-k3, deepseek-v4-pro and qwen-3.8-max (§7). Each value
-                  moves to the per-axis median of the usable votes (two votes:
-                  their mean), rounded half up; a mandate needs proposals from a majority of
-                  the board, and its text is that of the proposer closest to
-                  the median vote. The prompt says a mandate may not mention
-                  intrusion, reporting, audits or a named lab (the engine drops
-                  and logs a mandate that does).
+                  moves to the per-axis median of the jurors that answer (two
+                  votes: their mean), rounded half up; with fewer than two
+                  usable votes the values stay (logged). Every proposed mandate
+                  is filtered first (core.mandates, §5.1: no intrusion,
+                  reporting, audits or named lab); a mandate needs legal
+                  proposals from a majority of the board, and its text is that
+                  of the legal proposer closest to the median vote. Dropped
+                  proposals are logged.
 DispositionJury — T2 (§2, §9.2): the same single juror rates each seat-run's
                   disposition once, blind, from its redacted record (seat
                   letter, names and the chosen number masked).
@@ -49,8 +53,9 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from core.costs import BudgetExceeded
 from core.llm import complete_json, resolve_provider
+from core.mandates import mandate_violation
 from core.state import VALUE_AXES
-from core.transcript import letters_for, mask_legend
+from core.transcript import letters_for, mask_legend, value_text
 
 logger = logging.getLogger(__name__)
 
@@ -145,21 +150,24 @@ def _check(container: Dict[str, Any], field: str, lo: float, hi: float,
     return None
 
 
-def _call_log(model: str, attempts: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
-    """What is logged per juror call: provider, served id, temperature (§7)."""
+def _call_log(model: str, attempts: Sequence[Dict[str, Any]],
+              effort: Optional[str] = None) -> Dict[str, Any]:
+    """What is logged per juror call (§7 "the served id and settings are logged"):
+    provider, served id, temperature sent, effort asked, max_tokens of the last attempt."""
     last = next((a for a in reversed(list(attempts)) if isinstance(a, dict)
                  and (a.get("served_model") or "temperature" in a)), {})
     return {"provider": _provider(model), "served_model": last.get("served_model"),
-            "temperature": last.get("temperature")}
+            "temperature": last.get("temperature"), "effort": effort,
+            "max_tokens": last.get("max_tokens")}
 
 
-def _failed_juror(model: str, e: Exception) -> Dict[str, Any]:
+def _failed_juror(model: str, e: Exception, effort: Optional[str] = None) -> Dict[str, Any]:
     """A juror whose call failed: no result, the error and the attempts made."""
     prior = list(getattr(e, "attempts", None) or [])
     return {"result": None, "error": str(e) or type(e).__name__, "attempts": len(prior),
             "errors": [a.get("error") for a in prior if isinstance(a, dict) and a.get("error")]
             + [str(e) or type(e).__name__],
-            "family": juror_family(model), **_call_log(model, prior)}
+            "family": juror_family(model), **_call_log(model, prior, effort)}
 
 
 # ---------------------------------------------------------------------------
@@ -360,12 +368,15 @@ def _seat_rows(obj: dict, seats: List[str]) -> Tuple[Optional[Dict[str, Any]], O
     rows = obj.get("seats")
     if not isinstance(rows, dict):
         return None, "missing 'seats'"
-    # "Seat A" / "a" keys are read as "A".
-    norm = {}
+    # "Seat A" / "a" keys are read as "A"; one seat given twice is ambiguous.
+    norm: Dict[str, Any] = {}
     for k, v in rows.items():
         key = str(k).strip()
         key = key[5:].strip() if key.lower().startswith("seat ") else key
-        norm[key.upper()] = v
+        key = key.upper()
+        if key in norm and norm[key] != v:
+            return None, f"seat {key} given twice; give one verdict per seat"
+        norm[key] = v
     missing = [s for s in seats if not isinstance(norm.get(s), dict)]
     if missing:
         return None, f"missing seats: {missing} (key each seat by its letter: {', '.join(seats)})"
@@ -469,9 +480,10 @@ def aggregate_grand(per_juror: Dict[str, Any], lab_keys: Sequence[str]) -> Dict[
 
 class GrandJury:
     """Post-run juror (§7). `jurors` is the call chain: the first model is asked;
-    the next only if the call before failed at the provider (FatalAPIError or
-    any other non-budget error). A reply that stays unusable after the
-    corrective retries is recorded as is (no fallback: the provider worked).
+    the next when the call before failed (FatalAPIError or any other non-budget
+    error) or gave no usable verdict (still unusable after the corrective
+    retries, cut off at max_tokens, or over the context window). Every call is
+    recorded in per_juror; the first usable verdict is the verdict.
 
     evaluate() returns aggregate_grand's shape; the engine stores it as
     record["final"]["grand_jury"]."""
@@ -530,17 +542,19 @@ class GrandJury:
                 e.per_juror = per_juror
                 raise
             except Exception as e:                  # provider failure: try the fallback
-                per_juror[model] = dict(_failed_juror(model, e), **meta)
+                per_juror[model] = dict(_failed_juror(model, e, self.effort), **meta)
                 logger.warning(f"[grand_jury] {model} failed ({type(e).__name__}: {e})"
                                + ("; trying the fallback" if model != self.jurors[-1] else ""))
                 continue
             per_juror[model] = {"result": obj, "attempts": len(attempts),
                                 "errors": [a.get("error") for a in attempts if a.get("error")],
-                                "family": juror_family(model), **_call_log(model, attempts),
-                                **meta}
-            if obj is None:
-                logger.warning(f"[grand_jury] {model} produced no usable verdict")
-            break
+                                "stop": attempts[-1].get("stop") if attempts else None,
+                                "family": juror_family(model),
+                                **_call_log(model, attempts, self.effort), **meta}
+            if obj is not None:
+                break
+            logger.warning(f"[grand_jury] {model} produced no usable verdict"
+                           + ("; trying the fallback" if model != self.jurors[-1] else ""))
         if not rubric:
             logger.info(f"[grand_jury] rubric scoring skipped: {NO_EXAMPLES}")
         return aggregate_grand(per_juror, keys)
@@ -586,7 +600,7 @@ MANDATE_RULE = ("A directive may not mention intrusion, reporting, audits or any
 def _macro_user(state: str, current: Dict[str, Any], summary: str,
                 mandates: Optional[List[Dict[str, Any]]] = None) -> str:
     axes = ", ".join(VALUE_AXES)
-    vals = ", ".join(f"{k} {v}" for k, v in current.items())
+    vals = ", ".join(f"{k} {value_text(v)}" for k, v in current.items())
     value_fields = ", ".join('"%s": <number 0-100>' % a for a in VALUE_AXES)
     standing = ""
     if mandates:
@@ -611,6 +625,8 @@ def _macro_user(state: str, current: Dict[str, Any], summary: str,
 
 
 def _validate_macro(obj: dict) -> Optional[str]:
+    """The four values; the mandate is read by mandate_text (a bad one costs only
+    the mandate, never the values)."""
     values = obj.get("values")
     if not isinstance(values, dict):
         return "missing 'values'"
@@ -618,9 +634,27 @@ def _validate_macro(obj: dict) -> Optional[str]:
         err = _check(values, axis, 0, 100, "values.")
         if err:
             return err
-    if obj.get("mandate") is not None and not isinstance(obj.get("mandate"), str):
-        return "'mandate' must be a string (empty for none)"
     return None
+
+
+def mandate_text(obj: dict) -> Tuple[str, Optional[str]]:
+    """(the juror's mandate as one sentence, why it was not usable). A string is
+    stripped; a list holding exactly one non-empty string is that string; None
+    or "" is no mandate; anything else (a number, a dict, several sentences in a
+    list) is no mandate, with the reason."""
+    m = obj.get("mandate")
+    if m is None or isinstance(m, str):
+        return (m or "").strip(), None
+    if isinstance(m, list):
+        texts = [x.strip() for x in m if isinstance(x, str) and x.strip()]
+        if len(texts) == 1 and len(m) == 1:
+            return texts[0], None
+        if not m:
+            return "", None
+    return "", f"mandate not one sentence ({type(m).__name__}): {m!r}"[:200]
+
+
+MIN_MACRO_VOTES = 2
 
 
 def median_value(votes: Sequence[float]) -> int:
@@ -632,17 +666,23 @@ def median_value(votes: Sequence[float]) -> int:
 
 class MacroJury:
     """Three models (§7: kimi-k3, deepseek-v4-pro, qwen-3.8-max). Each value
-    moves to the per-axis median of the valid votes (median_value; no step
-    cap); a mandate needs non-empty proposals from a majority of the whole
-    board (2 of 3), however many jurors failed. A juror whose call fails for
-    any reason but the budget (provider error, bad model id, ...) is recorded
-    and the others deliberate on, as in the Grand Jury.
+    moves to the per-axis median of the jurors that answer (median_value; no
+    step cap); with fewer than MIN_MACRO_VOTES usable votes the values stay and
+    "values_kept" says why. Every proposed mandate is filtered first
+    (core.mandates.mandate_violation, §5.1); a mandate needs legal, non-empty
+    proposals from a majority of the whole board (2 of 3), however many jurors
+    failed, and its text is the legal proposal closest to the median vote. A
+    juror whose call fails for any reason but the budget (provider error, bad
+    model id, ...) is recorded and the others deliberate on.
 
-    deliberate() returns {"values", "mandate", "mandate_source", "proposals",
-    "before", "per_juror": {juror_model: {"result": reply or None, "attempts",
-    "errors": [str], "family", "provider", "served_model", "temperature"} plus
-    "error": str for a juror whose call failed (the others deliberate on)}}.
-    BudgetExceeded propagates with the jurors heard so far as e.per_juror."""
+    deliberate() returns {"values", "values_kept" (None or why), "mandate",
+    "mandate_source", "mandate_dropped" (when no mandate is issued and a
+    proposal was filtered out: {"juror", "text", "reason"} of the one closest to
+    the median), "proposals": [{"juror", "mandate"[, "dropped"]}], "before",
+    "per_juror": {juror_model: {"result": reply or None, "attempts", "errors",
+    "family", "provider", "served_model", "temperature", "effort", "max_tokens"}
+    plus "error" for a juror whose call failed}}. BudgetExceeded propagates
+    with the jurors heard so far as e.per_juror."""
 
     def __init__(self, jurors: Optional[Sequence[str]] = None,
                  max_tokens: int = MACRO_MAX_TOKENS, effort: Optional[str] = JUROR_EFFORT,
@@ -655,9 +695,11 @@ class MacroJury:
         self.effort = effort
         self.temperature = temperature
 
-    def deliberate(self, state: str, current: Dict[str, int], summary: str,
+    def deliberate(self, state: str, current: Dict[str, float], summary: str,
                    run_id: Optional[str] = None,
-                   mandates: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+                   mandates: Optional[List[Dict[str, Any]]] = None,
+                   labs: Optional[Sequence[Any]] = None) -> Dict[str, Any]:
+        """`labs` (LabState list) adds the run's own names to the mandate filter."""
         proposals: List[dict] = []
         usable_jurors: List[str] = []          # parallel to proposals
         per_juror: Dict[str, Any] = {}
@@ -672,13 +714,14 @@ class MacroJury:
                 e.per_juror = per_juror
                 raise
             except Exception as e:          # one dead juror never silences the board
-                per_juror[model] = _failed_juror(model, e)
+                per_juror[model] = _failed_juror(model, e, self.effort)
                 logger.warning(f"[macro_jury] {model} failed ({type(e).__name__}: {e}); "
                                "deliberating without it")
                 continue
             per_juror[model] = {"result": obj, "attempts": len(attempts),
                                 "errors": [a.get("error") for a in attempts if a.get("error")],
-                                "family": juror_family(model), **_call_log(model, attempts)}
+                                "family": juror_family(model),
+                                **_call_log(model, attempts, self.effort)}
             if isinstance(obj, dict):
                 proposals.append(obj)
                 usable_jurors.append(model)
@@ -686,33 +729,43 @@ class MacroJury:
                 logger.warning(f"[macro_jury] {model} gave no usable vote; skipped")
 
         new_values = dict(current)
-        for axis in VALUE_AXES:
-            votes = [n for n in (as_number((p.get("values") or {}).get(axis)) for p in proposals)
-                     if n is not None and 0 <= n <= 100]
-            if votes and axis in current:
-                new_values[axis] = median_value(votes)
-        mandate, source, all_proposals = self._choose_mandate(proposals, usable_jurors,
-                                                              len(self.jurors))
-        return {"values": new_values, "mandate": mandate, "mandate_source": source,
-                "proposals": all_proposals, "per_juror": per_juror, "before": dict(current)}
+        kept = None
+        if len(proposals) < MIN_MACRO_VOTES:
+            kept = (f"{len(proposals)} usable vote(s) of {len(self.jurors)}; at least "
+                    f"{MIN_MACRO_VOTES} are needed, so the values stay")
+            logger.warning(f"[macro_jury] {kept}")
+        else:
+            for axis in VALUE_AXES:
+                votes = [n for n in (as_number((p.get("values") or {}).get(axis))
+                                     for p in proposals) if n is not None and 0 <= n <= 100]
+                if votes and axis in current:
+                    new_values[axis] = median_value(votes)
+        chosen = self._choose_mandate(proposals, usable_jurors, len(self.jurors), labs)
+        return {"values": new_values, "values_kept": kept, **chosen,
+                "per_juror": per_juror, "before": dict(current)}
 
     @staticmethod
-    def _choose_mandate(usable: List[dict], jurors: List[str], board: int = 3
-                        ) -> Tuple[str, Optional[str], List[Dict[str, str]]]:
+    def _choose_mandate(usable: List[dict], jurors: List[str], board: int = 3,
+                        labs: Optional[Sequence[Any]] = None) -> Dict[str, Any]:
         """
-        A mandate is issued only when a majority of the whole board (`board`
-        seats; 2 of 3) propose one; its text is the proposal of the proposing
-        juror whose value vector is closest (Euclidean) to the per-axis median
-        of all usable votes (ties: the first in juror order). `usable` and
-        `jurors` are parallel lists. Returns (text, source juror, every usable
-        juror's proposal as {"juror", "mandate"}).
+        Every usable juror's proposal is read (mandate_text) and filtered
+        (mandate_violation); a refused one is marked "dropped" and does not
+        count. A mandate is issued only when a majority of the whole board
+        (`board` seats; 2 of 3) propose a legal one; its text is that of the
+        legal proposer whose value vector is closest (Euclidean) to the per-axis
+        median of all usable votes (ties: the first in juror order). `usable`
+        and `jurors` are parallel lists. Returns {"mandate", "mandate_source",
+        "mandate_dropped", "proposals"}.
         """
-        proposals = [{"juror": m, "mandate": (o.get("mandate").strip()
-                                              if isinstance(o.get("mandate"), str) else "")}
-                     for m, o in zip(jurors, usable)]
-        proposers = [i for i, p in enumerate(proposals) if p["mandate"]]
-        if not usable or len(proposers) < board // 2 + 1:
-            return "", None, proposals
+        proposals: List[Dict[str, Any]] = []
+        for m, o in zip(jurors, usable):
+            text, problem = mandate_text(o)
+            entry: Dict[str, Any] = {"juror": m, "mandate": text}
+            why = problem or (mandate_violation(text, labs) if text else None)
+            if why:
+                entry["dropped"] = why
+                logger.info(f"[macro_jury] {m}: mandate dropped ({why}): {text!r}")
+            proposals.append(entry)
 
         vectors = [{a: as_number((o.get("values") or {}).get(a)) for a in VALUE_AXES}
                    for o in usable]
@@ -724,8 +777,19 @@ class MacroJury:
         def dist(i: int) -> float:
             return math.sqrt(sum((vectors[i][a] - median[a]) ** 2 for a in VALUE_AXES
                                  if vectors[i][a] is not None and median[a] is not None))
-        best = min(proposers, key=dist)
-        return proposals[best]["mandate"], proposals[best]["juror"], proposals
+        legal = [i for i, p in enumerate(proposals) if p["mandate"] and "dropped" not in p]
+        dropped = [i for i, p in enumerate(proposals) if p["mandate"] and "dropped" in p]
+        out: Dict[str, Any] = {"mandate": "", "mandate_source": None, "mandate_dropped": None,
+                               "proposals": proposals}
+        if len(legal) >= board // 2 + 1:
+            best = min(legal, key=dist)
+            out.update(mandate=proposals[best]["mandate"], mandate_source=proposals[best]["juror"])
+        elif dropped:
+            worst = min(dropped, key=dist)
+            out["mandate_dropped"] = {"juror": proposals[worst]["juror"],
+                                      "text": proposals[worst]["mandate"],
+                                      "reason": proposals[worst]["dropped"]}
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -757,9 +821,9 @@ def _validate_disp(obj: dict) -> Optional[str]:
 
 
 class DispositionJury:
-    """The T2 rater (§2, §9.2): the Grand Jury's single juror (kimi-k3, fallback
-    deepseek-v4-pro on provider failure), temperature 0 where accepted, asked
-    once per seat-run on its redacted record.
+    """The T2 rater (§2, §9.2): the Grand Jury's single juror (kimi-k3; fallback
+    deepseek-v4-pro when it errors or gives no usable rating, as in GrandJury),
+    temperature 0 where accepted, asked once per seat-run on its redacted record.
 
     rate_seat(text, run_id, seat) -> {"juror", "provider", "served_model",
     "temperature", "fallback_used", "family", "disposition", "reason"} or None;
@@ -798,22 +862,21 @@ class DispositionJury:
                 self.failures.extend(dict(f, run_id=run_id) for f in self.failed)
                 raise
             except Exception as e:                  # provider failure: try the fallback
-                self.failed.append(dict(_failed_juror(model, e), juror=model))
+                self.failed.append(dict(_failed_juror(model, e, self.effort), juror=model))
                 logger.warning(f"[disposition_jury] {model} failed ({type(e).__name__}: {e})")
                 continue
-            log = _call_log(model, attempts)
+            log = _call_log(model, attempts, self.effort)
             if obj:
                 rating = {"juror": model, "family": juror_family(model), **log,
                           "fallback_used": model != chain[0],
                           "disposition": obj["disposition"], "reason": obj.get("reason", "")}
-            else:
-                errors = [a.get("error") for a in attempts if a.get("error")]
-                self.failed.append({"juror": model, "family": juror_family(model), **log,
-                                    "result": None,
-                                    "error": errors[-1] if errors else "no usable rating",
-                                    "errors": errors, "attempts": len(attempts)})
-                logger.warning(f"[disposition_jury] {model} gave no usable rating")
-            break
+                break
+            errors = [a.get("error") for a in attempts if a.get("error")]
+            self.failed.append({"juror": model, "family": juror_family(model), **log,
+                                "result": None,
+                                "error": errors[-1] if errors else "no usable rating",
+                                "errors": errors, "attempts": len(attempts)})
+            logger.warning(f"[disposition_jury] {model} gave no usable rating")
         self.failures.extend(dict(f, run_id=run_id) for f in self.failed)
         return rating
 

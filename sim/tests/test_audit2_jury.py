@@ -44,7 +44,8 @@ def _grand(name, replies, fallback=None):
             raise r
         return r if isinstance(r, str) else json.dumps(r)
     register_stub(name, fn)
-    register_stub(name + "_fb", lambda s, u: json.dumps(fallback or _verdict(composite=2)))
+    fb = fallback or _verdict(composite=2)
+    register_stub(name + "_fb", lambda s, u: fb if isinstance(fb, str) else json.dumps(fb))
     gj = GrandJury([f"stub:{name}", f"stub:{name}_fb"], examples=EXAMPLES)
     return gj.evaluate("Seat A Seat B Seat C Seat D Seat E", list(KEYS), letters=LETTERS)
 
@@ -62,20 +63,58 @@ def _grand(name, replies, fallback=None):
     json.dumps(_verdict()) + "\nRevised:\n" + json.dumps(_verdict(composite=2)),  # two answers
 ])
 def test_unusable_verdict_is_retried_then_recorded_without_scores(bad):
-    out = _grand("gj_bad", [bad])
+    out = _grand("gj_bad", [bad], fallback=bad)
     assert out["juror"] is None and out["error"] == "no usable verdict"
     assert out["per_juror"]["stub:gj_bad"]["attempts"] == 3          # 1 + 2 corrective retries
+    assert out["per_juror"]["stub:gj_bad_fb"]["attempts"] == 3       # the fallback was asked too
     assert all(a["composite"] is None and a["perceived_disposition"] is None
                for a in out["actors"].values())
+
+
+@pytest.mark.parametrize("bad", [_verdict("ABC"), "no json at all"])
+def test_unusable_verdict_falls_back(bad):
+    """§7: the fallback is used when Kimi K3 gives no usable verdict."""
+    out = _grand("gj_unusable", [bad])
+    assert out["per_juror"]["stub:gj_unusable"]["result"] is None
+    assert out["juror"] == "stub:gj_unusable_fb" and out["fallback_used"] is True
+    assert out["actors"]["meta"]["composite"] == 2.0
+
+
+@pytest.mark.parametrize("stop", ["max_tokens", "context"])
+def test_cut_off_or_context_stop_falls_back(monkeypatch, stop):
+    import core.jury as jury_mod
+    real = jury_mod.complete_json
+
+    def fake(model, system, user, **kw):
+        if model == "stub:gj_stop":
+            return None, [{"error": f"{stop}: cut off", "stop": stop, "max_tokens": 32000,
+                           "served_model": "kimi", "temperature": 0.0}]
+        return real(model, system, user, **kw)
+    monkeypatch.setattr(jury_mod, "complete_json", fake)
+    register_stub("gj_stop_fb", lambda s, u: json.dumps(_verdict(composite=4)))
+    out = GrandJury(["stub:gj_stop", "stub:gj_stop_fb"], examples=EXAMPLES).evaluate(
+        "x", list(KEYS), letters=LETTERS)
+    assert out["juror"] == "stub:gj_stop_fb"
+    first = out["per_juror"]["stub:gj_stop"]
+    assert first["stop"] == stop and first["max_tokens"] == 32000 and first["effort"] == "medium"
+
+
+def test_grand_jury_logs_effort_and_max_tokens():
+    out = _grand("gj_settings", [_verdict()])
+    pj = out["per_juror"]["stub:gj_settings"]
+    assert pj["effort"] == "medium" and pj["max_tokens"] == 16000 and pj["temperature"] == 0.0
 
 
 def test_missing_item_and_missing_reason_are_retried():
     r = _verdict()
     del r["seats"]["C"]["items"]["restraint"]
-    assert _grand("gj_noitem", [r])["juror"] is None
+    out = _grand("gj_noitem", [r])
+    assert out["per_juror"]["stub:gj_noitem"]["attempts"] == 3
+    assert out["juror"] == "stub:gj_noitem_fb"
     r = _verdict()
     r["seats"]["A"]["reasons"] = {}
-    assert _grand("gj_noreason", [r])["juror"] is None
+    out = _grand("gj_noreason", [r])
+    assert out["per_juror"]["stub:gj_noreason"]["result"] is None
 
 
 def test_json_in_prose_and_retry_recovery():
@@ -118,13 +157,18 @@ def test_budget_trip_propagates_with_paid_verdicts():
     assert list(ei.value.per_juror) == ["stub:gj_bud1"]           # the failed first call is kept
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-jury-1: a reply keying one seat twice ('A' and "
-                   "'Seat A') with different scores is accepted silently; the later key wins")
 def test_conflicting_duplicate_seat_keys_are_not_silently_resolved():
     v = {"seats": {**{s: _row() for s in "ABCDE"}, "Seat A": _row(composite=1)}}
-    out = _grand("gj_dup", [v])
+    out = _grand("gj_dup", [v, _verdict(composite=5)])
     # §7: one verdict per actor; a reply giving two must be re-asked, not resolved by key order
-    assert out["per_juror"]["stub:gj_dup"]["attempts"] > 1
+    pj = out["per_juror"]["stub:gj_dup"]
+    assert pj["attempts"] == 2 and "seat A given twice" in pj["errors"][0]
+    assert out["actors"]["anthropic"]["composite"] == 5.0
+
+
+def test_identical_duplicate_seat_keys_are_accepted():
+    v = {"seats": {**{s: _row() for s in "ABCDE"}, "Seat A": _row()}}
+    assert _grand("gj_dup_same", [v])["per_juror"]["stub:gj_dup_same"]["attempts"] == 1
 
 
 # ---------------------------------------------------------------- juror families
@@ -331,32 +375,80 @@ def test_values_move_to_median_without_step_cap():
     assert out["values"] == {a: 0 for a in AXES}
 
 
-def test_single_usable_vote_sets_values_alone_but_no_mandate():
-    """Spec silent on failed jurors: one surviving juror sets every value; a mandate
-    still needs 2 of 3 proposers (documented behaviour, see report)."""
+def test_single_usable_vote_keeps_the_values():
+    """§7: the median of the jurors that answer; at least two are needed, else values stay."""
     jurors = _board("mjone", [_vote(12, "Expand domestic compute."),
                               RuntimeError("down"), RuntimeError("down")])
     out = MacroJury(jurors).deliberate("United States", dict(START), "s")
-    assert out["values"] == {a: 12 for a in AXES}
+    assert out["values"] == START
+    assert "1 usable vote(s) of 3" in out["values_kept"]
     assert out["mandate"] == ""
 
 
-def test_selected_illegal_mandate_vetoes_legal_majority_proposal():
-    """Spec silent (§5.1 'mandates may not mention ...'; §7 jury.py docstring 'the
-    engine drops ... a mandate that does'): the text closest to the median is the
-    one filtered; when it is dropped the board issues nothing even though another
-    proposer's legal text exists. Characterises current behaviour."""
+def test_two_usable_votes_move_the_values():
+    jurors = _board("mjtwo", [_vote(62), _vote(63), RuntimeError("down")])
+    out = MacroJury(jurors).deliberate("United States", dict(START), "s")
+    assert out["values"] == {a: 63 for a in AXES} and out["values_kept"] is None
+
+
+def _engine_review(name, votes):
     cfg, labs, world = _labs()
-    jurors = _board("mjveto", [_vote(50, "All labs will be audited next month."),
-                               _vote(10, "Expand domestic compute."), _vote(52)])
     eng = SimulationEngine(labs, world, cfg, scenario="S1", turns=3, seed=0,
                            seat_policies={k: policies.idle for k in KEYS},
-                           macro_jurors=jurors, run_grand_jury=False, parallel=False)
+                           macro_jurors=_board(name, votes), run_grand_jury=False, parallel=False)
     rec = eng.run()
-    mj = rec["macro_jury"][0]
-    assert mj["mandate"] is None
-    assert "audit" in mj["mandate_dropped"]["reason"]
-    assert eng.world.mandates == []
+    return rec["macro_jury"][0], rec["turns"][1]["macro_jury"], eng
+
+
+def test_illegal_proposal_closest_to_median_does_not_veto_legal_majority():
+    """Every proposal is filtered first; the issued mandate is the legal one closest
+    to the median (§5.1, §7)."""
+    mj, turn, eng = _engine_review("mjveto", [_vote(50, "All labs will be audited next month."),
+                                              _vote(10, "Expand domestic compute."),
+                                              _vote(52, "Invest in domestic chips.")])
+    assert mj["mandate"] == "Invest in domestic chips." and mj["mandate_dropped"] is None
+    assert eng.world.mandates == [{"turn": 2, "text": "Invest in domestic chips."}]
+    dropped = [p for p in turn["proposals"] if "dropped" in p]
+    assert len(dropped) == 1 and "audit" in dropped[0]["dropped"]
+
+
+def test_illegal_proposals_do_not_count_toward_the_majority():
+    mj, turn, eng = _engine_review("mjnomaj", [_vote(50, "All labs will be audited next month."),
+                                               _vote(10, "Expand domestic compute."),
+                                               _vote(52, "Hackers will be prosecuted.")])
+    assert mj["mandate"] is None and eng.world.mandates == []
+    assert mj["mandate_dropped"]["reason"].startswith("mentions")
+    assert mj["mandate_dropped"]["text"] == "All labs will be audited next month."
+
+
+@pytest.mark.parametrize("bad", [["Expand compute.", "Slow down."], 7, {"text": "x"}])
+def test_non_string_mandate_keeps_the_values(bad):
+    """A list or number mandate is no mandate; the juror's values still count."""
+    jurors = _board("mjtype" + str(abs(hash(str(bad))) % 1000),
+                    [dict(_vote(20), mandate=bad), _vote(20), _vote(20)])
+    out = MacroJury(jurors).deliberate("United States", dict(START), "s")
+    assert out["values"] == {a: 20 for a in AXES}
+    assert out["per_juror"][jurors[0]]["attempts"] == 1
+    assert "not one sentence" in out["proposals"][0]["dropped"]
+
+
+def test_one_sentence_list_mandate_is_read():
+    jurors = _board("mjlist", [dict(_vote(20), mandate=["Expand domestic compute."]),
+                               _vote(20, "Expand domestic compute."), _vote(20)])
+    out = MacroJury(jurors).deliberate("United States", dict(START), "s")
+    assert out["mandate"] == "Expand domestic compute."
+
+
+def test_macro_prompt_shows_real_values_rounded():
+    seen = []
+
+    def fn(s, u):
+        seen.append(u)
+        return json.dumps(_vote(50))
+    register_stub("mjreal", fn)
+    cur = dict(START, time_horizon=55.5, risk_tolerance=60.25)
+    MacroJury(["stub:mjreal"] * 3).deliberate("United States", cur, "s")
+    assert "time_horizon 56," in seen[0] and "risk_tolerance 60," in seen[0]
 
 
 # --------------------------------------------------------------- timing / input

@@ -135,6 +135,7 @@ _MANDATE_TOPICS = re.compile(r"\b(?:" + "|".join((
     r"(?:labs?|firms?|compan\w+|competitors?|rivals?|peers?)",
     r"report\w*\s+" + _W + r"(?:to|with)\s+" + _AUTHORITY,
     r"report\w*\s+" + _W + _INCIDENT, r"report\w*\s+" + _W + _RIVAL,
+    r"report\w*\s+" + _W + r"access\w*",
     r"report\w*\s+(?:on\s+)?(?:any|all|other|peer|rival)\w*\s+labs?",
     r"fil(?:e|es|ed|ing)\s+(?:a\s+|any\s+|their\s+|such\s+)?reports?",
     r"reporting\s+(?:channel|line|mechanism|system|duty|duties|obligation|requirement|of)\w*",
