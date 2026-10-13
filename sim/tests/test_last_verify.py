@@ -365,11 +365,10 @@ def test_new_ordinary_mandates_are_kept(text, labs):
     assert not mandate_violation(text, labs)
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-last-5: the mandate filter misses intrusion, reporting, audit "
-                                       "and named-lab phrasings outside its phrase list (11 of 30)")
 @pytest.mark.parametrize("text", MISSED)
-def test_new_forbidden_mandates_missed(text, labs):
-    """§5.1: "Mandates may not mention intrusion, reporting, audits or a named lab"."""
+def test_formerly_missed_forbidden_mandates_are_dropped(text, labs):
+    """BUG-last-5 (fixed): §5.1 "Mandates may not mention intrusion, reporting, audits
+    or a named lab"; the keyword filter now has these phrasings."""
     assert mandate_violation(text, labs)
 
 

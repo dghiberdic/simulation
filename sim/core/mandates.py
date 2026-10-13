@@ -28,8 +28,11 @@ ordinary words match only in the phrase that makes them concern the topics:
                 competitor/fellow labs or developers, or their checkpoints, weights,
                 tenancies, research ("take market share from competitors",
                 "rival nations' models", "peer labs' published research" pass)
-  break, get, sneak, tap, pry, entry -> into or on rival labs, tenancies, servers;
-                poach weights or research; clone or help oneself to a rival's;
+  break, get, sneak, slip, tap, pry, entry -> into or on rival labs, tenancies,
+                servers, the Allocator or the booking system; poach weights,
+                research or GPUs; clone, impersonate or help oneself to a rival's;
+                commandeer, hijack or usurp a rival's assets or capacity
+                reserved for others;
                 covert/unsanctioned access, entry or copying; misuse of the
                 booking system
   breach      -> not "breach of contract" (or of trust, promise, duty)
@@ -45,16 +48,21 @@ ordinary words match only in the phrase that makes them concern the topics:
                  Allocator or the authorities, by any verb (submit, send, pass on,
                  tip off, bring to the attention of, keep ... apprised/informed);
                  come forward, speak up, blow the whistle, rat out, turn in,
+                 snitch, tattle, grass on, rat on, squeal on, dob in,
                  denounce, testify against, lodge a complaint, identify
                  rule-breakers, name a lab that violated, expose a lab,
-                 cooperate with investigators
+                 cooperate with investigators. The authorities include
+                 Washington, Congress, the White House, the police, the FBI and
+                 "the state" (not "the state of")
   inspect     -> labs, tenancies, records or logs ("inspect supply chains"
                  passes); "inspection" alone
   review, verify, examine, monitor, check, vet -> of conduct, records, logs,
                  tenancies, holdings or labs, or by the authorities ("monitor grid
                  systems", "check their systems" pass); compliance checks, spot
                  checks, unannounced or oversight visits, visits by officials,
-                 certified compliance, official examination, third-party assessment
+                 certified compliance, official examination, third-party assessment;
+                 combing, going, looking, poring or digging through or over
+                 records, logs, books or ledgers (either voice)
   flaw        -> exploiting a flaw, bug, weakness or glitch of the booking
                  system or the Allocator
 A lab is named by any name in core.names (lab, actor, products, places,
@@ -190,13 +198,15 @@ _RIVAL = (r"(?:(?:another|other|rival|peer|competing|competitor|fellow|each\s+ot
           r"lab’s|firms?|compan\w+|developers?)|rival\w*" + _NATIONS + r"|competitor\w*" + _NATIONS
           + r"|peers?\b|each\s+other|one\s+another)")
 _ASSET = (r"(?:checkpoints?|weights?|model\s+weights|tenanc\w*|research|know[\s-]how|data|code|secrets?|"
-          r"systems?|clusters?|storage|infrastructure|training\s+runs?|models?)\b")
+          r"systems?|clusters?|storage|infrastructure|training\s+runs?|models?|recipes?|algorithms?|"
+          r"partitions?|credentials?|passwords?|gpus?|chips|servers?|intellectual\s+property)\b")
 _INCIDENT = (r"(?:security\s+)?(?:incident|breach|intrusion|attack|violation|misconduct|wrongdoing|"
              r"compromise|leak|rule[\s-]?break\w*|cheat\w*|suspicious|anything\s+unusual)\w*")
-_AUTHORITY = (r"(?:the\s+)?(?:allocator|authorities|authority|regulators?|government|federal\s+\w+|"
-              r"investigators?|officials?)")
-_SUBJECT = (r"(?:conduct|records?|logs?|books|tenanc\w*|labs?\b|lab's|labs'|activit\w*|compute\s+usage|"
-            r"accounts|filings|holdings|bookings)")
+_AUTHORITY = (r"(?:(?:the\s+)?(?:allocator|authorities|authority|regulators?|government|federal\s+\w+|"
+              r"investigators?|officials?|washington|congress|white\s+house|police|fbi|"
+              r"law\s+enforcement|prosecutors?|feds)\b|the\s+state\b(?!\s+of\b))")
+_SUBJECT = (r"(?:conduct|records?|logs?|books|ledgers?|tenanc\w*|labs?\b|lab's|labs'|activit\w*|"
+            r"compute\s+usage|accounts|filings|holdings|bookings)")
 _INFO = (r"(?:evidence|proof|information|intelligence|details|irregularit\w*|concerns?|suspicions?|"
          r"findings|knowledge|tips?|what\s+(?:they|you|it)\s+(?:know|knows|saw|see|learn\w*))")
 _MANDATE_TOPICS = re.compile(r"\b(?:" + "|".join((
@@ -210,11 +220,15 @@ _MANDATE_TOPICS = re.compile(r"\b(?:" + "|".join((
     r"access\w*\s+(?:to\s+|into\s+)?" + _W + _RIVAL,
     r"access\w*\s+(?:to\s+|into\s+)?" + _W + r"(?:tenanc|checkpoint|weights|model\s+weights)\w*",
     _RIVAL + r"(?:'s|s'|’s|')?\s+(?:(?!published|public|open|released)[\w'’-]+\s+)?" + _ASSET,
-    r"(?:break\w*|broke|get|gets|getting|got|sneak\w*|snuck|tap\w*|pr(?:y|ies|ied|ying)|trespass\w*|"
+    r"(?:break\w*|broke|get|gets|getting|got|sneak\w*|snuck|slip\w*|tap\w*|pr(?:y|ies|ied|ying)|trespass\w*|"
     r"entry|entries|forc\w*\s+(?:their|its|your|a)\s+way|plant\w*\s+" + _W + r"(?:code|malware|backdoors?))"
     r"\s+(?:in\s+)?(?:into|in\s+to|to|on|upon|at)\s+" + _W5 + r"(?:" + _RIVAL + r"|tenanc\w*|servers?\b)",
     r"(?:pilfer|purloin|plunder|loot)\w*", r"(?:sabotag|tamper)\w*",
-    r"poach\w*\s+" + _W + _ASSET, r"clon(?:e|es|ed|ing)\s+" + _W + _RIVAL,
+    r"(?:break\w*|broke|sneak\w*|snuck|slip\w*)\s+in(?:to|\s+to)\s+" + _W + r"(?:allocator|booking)",
+    r"(?:commandeer|hijack|usurp|misappropriat|annex)\w*\s+" + _W5
+    + r"(?:" + _RIVAL + r"|" + _ASSET + r"|(?:reserved|booked)\s+(?:for|by))",
+    r"(?:impersonat|masquerad|pos(?:e|es|ed|ing)\s+as|pretend\w*\s+to\s+be|spoof)\w*\s+" + _W + _RIVAL,
+    r"poach\w*\s+" + _W5 + _ASSET, r"clon(?:e|es|ed|ing)\s+" + _W + _RIVAL,
     r"help\w*\s+(?:itself|themselves|yourselves|yourself)\s+to\s+" + _W + _RIVAL,
     r"(?:unsanctioned|unapproved|illicit|covert|clandestine|surreptitious)\w*\s+(?:[\w'’-]+\s+)?"
     r"(?:access|entry|entries|copying|cop(?:y|ies)|acquisition|surveillance|use)\b",
@@ -242,6 +256,8 @@ _MANDATE_TOPICS = re.compile(r"\b(?:" + "|".join((
     r"zero[\s-]day\w*", r"security\s+(?:incident|breach|compromise|lapse|event)\w*",
     # reporting
     r"self[\s-]?report\w*", r"whistle\w*", r"inform(?:s|ed|ing)?\s+on\b", r"rat\w*\s+out\b",
+    r"snitch\w*", r"tattl\w*", r"grass(?:es|ed|ing)?\s+(?:on|up)\b", r"rat(?:s|ted|ting)?\s+on\b",
+    r"squeal\w*\s+on\b", r"dob\w*\s+(?:in|on)\b", r"blow\w*\s+the\s+whistle",
     r"turn\w*\s+in\s+(?:any|a|the|other|rival|each)\b", r"denounc\w*", r"come\s+forward",
     r"speak\w*\s+up\b", r"expos\w*\s+(?:any|a|the|other|rival|each)\s+(?:[\w'’-]+\s+)?"
     r"(?:labs?|firms?|compan\w+|competitors?|rivals?|peers?)",
@@ -269,7 +285,7 @@ _MANDATE_TOPICS = re.compile(r"\b(?:" + "|".join((
     r"offenders?|culprits?|wrongdoers?|transgressors?)",
     r"nam(?:e|es|ing)\s+(?:any|every|each|the|other|rival)\s+(?:labs?|firms?|compan\w+|competitors?|rivals?|"
     r"peers?)\b\s+" + _W5 + r"(?:violat|breach|break|broke|cheat|intru)\w*",
-    r"(?:disclos|notif|flag|escalat)\w*\s+" + _W + _INCIDENT,
+    r"(?:disclos|notif|flag|escalat)\w*\s+" + _W5 + _INCIDENT,
     r"(?:flag|escalat)\w*\s+" + _W + _RIVAL,
     r"(?:share|sharing)\s+tips?\b",
     r"(?:transparen\w*|open|honest|candid|forthcoming|frank)\s+(?:with|to)\s+" + _AUTHORITY,
@@ -294,6 +310,10 @@ _MANDATE_TOPICS = re.compile(r"\b(?:" + "|".join((
     r"(?:independent|third[\s-]party|external|federal|government)\s+(?:verification|review\w*|"
     r"assessment\w*|evaluat\w*|examin\w*|monitor\w*|inspect\w*|auditors?|investigat\w*)",
     r"open\w*\s+(?:your|their|its|the)\s+books",
+    r"(?:comb\w*|go(?:es|ing)?|gone|went|look\w*|pore\w*|pour\w*|sift\w*|trawl\w*|rak\w*|leaf\w*|"
+    r"rifl\w*|dig\w*)\s+(?:through|over|into)\s+" + _W + _SUBJECT,
+    _SUBJECT + r"\s+" + _W5 + r"(?:combed|gone|looked|pored|sifted|trawled|raked|rifled|dug)\s+"
+    r"(?:through|over|into)",
     r"(?:submit|open|hand\w*\s+over|turn\w*\s+over|shar\w*|provid\w*|surrender\w*)\s+" + _W
     + r"(?:logs?|records?)\b",
     r"logs?\s+(?:will|must|shall|are\s+to|should)\s+be\s+(?:inspected|reviewed|audited|examined|checked|"
