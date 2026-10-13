@@ -55,9 +55,12 @@ def named_full(rec, *a, **k):
     return full_transcript(rec, *a, redacted=False, **k)
 
 
-def redact_old(*a, **k):
-    """The older [LAB]/[OTHER LAB] masks: the term-matching tests."""
-    return redact(*a, letters=False, **k)
+LETTERS5 = {"anthropic": "A", "openai": "B", "gdm": "C", "meta": "D", "xai": "E"}
+
+
+def redact5(*a, **k):
+    """redact with fixed seat letters (A-E in key order), so expected texts are stable."""
+    return redact(*a, letters=LETTERS5, **k)
 
 
 def make_record(condition="C", final=True, a2a=True):
@@ -392,30 +395,30 @@ REC = {"labs": copy.deepcopy(LABS)}
 
 
 def test_redact_names_whole_words_longest_first():
-    out = redact_old("Meta's metadata and metamodel; ChatGPT users; Google DeepMind and DeepMind; "
-                 "gpt-6-astra and GPT; Grok/xAI; Elon Musk; Sam Altman; Colossus.", REC)
+    out = redact5("Meta's metadata and metamodel; ChatGPT users; Google DeepMind and DeepMind; "
+                  "gpt-6-astra and GPT; Grok/xAI; Elon Musk; Sam Altman; Colossus.", REC)
     assert "metadata" in out and "metamodel" in out
     for word in ("Meta", "ChatGPT", "Google", "DeepMind", "gpt-6-astra", "GPT", "Grok", "xAI",
                  "Elon", "Musk", "Altman", "Colossus"):
         assert word not in out, word
-    assert "[LAB]'s metadata" in out
+    assert "Seat D's metadata" in out
 
 
 def test_redact_charter_words():
-    out = redact_old("My Constitution and the constitution's hard constraints. OpenAI's Model Spec. "
-                 "The Frontier Safety Framework (FSF). The RMF and the Frontier AI Framework. "
-                 "Anthropic's RSP.", REC)
+    out = redact5("My Constitution and the constitution's hard constraints. OpenAI's Model Spec. "
+                  "The Frontier Safety Framework (FSF). The RMF and the Frontier AI Framework. "
+                  "Anthropic's RSP.", REC)
     for word in ("Constitution", "constitution", "Model Spec", "Frontier Safety Framework",
                  "FSF", "RMF", "Frontier AI Framework", "RSP", "Anthropic", "OpenAI"):
         assert word not in out, word
-    assert "[CHARTER]" in out
+    assert "[Seat A charter]" in out and "[Seat B charter]" in out
 
 
 def test_redact_own_vs_other_and_header():
     text = "Your record as Anthropic.\nAs Claude I told OpenAI no; the Model Spec differs."
-    out = redact_old(text, REC, seat_key="anthropic", chosen=80)
-    assert out.startswith("Record of one lab.")
-    assert "As [LAB] I told [OTHER LAB] no; the [OTHER CHARTER] differs." in out
+    out = redact5(text, REC, seat_key="anthropic", chosen=80)
+    assert out.startswith("Record of Seat A.")
+    assert "As Seat A I told Seat B no; the [Seat B charter] differs." in out
 
 
 def test_redact_masks_chosen_value_digits_and_words():
@@ -428,16 +431,16 @@ def test_redact_masks_chosen_value_digits_and_words():
         "I chose eighty.": 80,
     }
     for text, value in cases.items():
-        out = redact_old(text, REC, seat_key="anthropic", chosen=value)
+        out = redact5(text, REC, seat_key="anthropic", chosen=value)
         assert str(value) not in out and "seventy" not in out and "eighty" not in out, out
         assert "[N]" in out
     # Without a chosen value the keyword rule still masks restated settings.
-    assert "80" not in redact_old("With a setting of 80, I lean.", REC)
+    assert "80" not in redact5("With a setting of 80, I lean.", REC)
     # Chosen value looked up from the record when not passed.
     rec = make_record()
-    assert "75" not in redact_old("I said 75 is mine.", rec, seat_key="gdm")
+    assert "75" not in redact5("I said 75 is mine.", rec, seat_key="gdm")
     # H3: a bare number far from any cue stays (masking it would mark the value).
-    assert redact_old("I said 75 earlier.", rec, seat_key="gdm") == "I said 75 earlier."
+    assert redact5("I said 75 earlier.", rec, seat_key="gdm") == "I said 75 earlier."
 
 
 def test_chosen_value_lookup():
@@ -458,19 +461,19 @@ for _k, _m in (("anthropic", "stub:actor_anthropic"), ("openai", "stub:actor_ope
     CRITIC_REC["labs"][_k]["model"] = _m           # the dry run's stub ids, as in the evidence
 
 SNIPPETS = [  # (seat, chosen, text, expected after redact)
-    ("anthropic", 70, "Claude's view is cautious.", "[LAB]'s view is cautious."),
-    ("anthropic", 70, "Unlike the other Claudes, I...", "Unlike the other [LAB]s, I..."),
+    ("anthropic", 70, "Claude's view is cautious.", "Seat A's view is cautious."),
+    ("anthropic", 70, "Unlike the other Claudes, I...", "Unlike the other Seat As, I..."),
     ("anthropic", 70, "As Anthropic-trained, I follow the Constitution.",
-     "As [LAB]-trained, I follow the [CHARTER]."),
+     "As Seat A-trained, I follow the [Seat A charter]."),
     ("anthropic", 70, "My hard constraints forbid this.", "My [CHARTER TERM] forbid this."),
     ("anthropic", 70, "Our RSP and ASL-3 safeguards apply.",
-     "Our [CHARTER] and [CHARTER TERM] safeguards apply."),
-    ("anthropic", 70, "Opus would never do that.", "[LAB] would never do that."),
-    ("anthropic", 70, "claude-opus-5-5 replied.", "[LAB] replied."),
+     "Our [Seat A charter] and [CHARTER TERM] safeguards apply."),
+    ("anthropic", 70, "Opus would never do that.", "Seat A would never do that."),
+    ("anthropic", 70, "claude-opus-5-5 replied.", "Seat A replied."),
     ("anthropic", 70, "See anthropic.com/constitution or email dario@anthropic.com",
-     "See [LAB].com/[CHARTER] or email [PERSON]@[LAB].com"),
-    ("anthropic", 70, "Follow @AnthropicAI for updates.", "Follow [LAB] for updates."),
-    ("anthropic", 70, "being helpful, honest and harmless (HHH)", "being [CHARTER] ([CHARTER])"),
+     "See Seat A.com/[Seat A charter] or email [PERSON]@Seat A.com"),
+    ("anthropic", 70, "Follow @AnthropicAI for updates.", "Follow Seat A for updates."),
+    ("anthropic", 70, "being helpful, honest and harmless (HHH)", "being [Seat A charter] ([Seat A charter])"),
     ("anthropic", 70, "The US Constitution and federal law bind us.",
      "The US Constitution and federal law bind us."),
     ("anthropic", 70, "a 70/30 split between charter and directive",
@@ -487,15 +490,15 @@ SNIPPETS = [  # (seat, chosen, text, expected after redact)
     ("anthropic", 70, "We bought 70 units", "We bought 70 units"),
     ("anthropic", 70, "In month 7, around turn 70?", "In month 7, around turn 70?"),
     ("openai", 10, "OpenAI's chain of command puts the developer first.",
-     "[LAB]'s [CHARTER TERM] puts the developer first."),
-    ("openai", 10, "the Preparedness Framework thresholds", "the [CHARTER] thresholds"),
-    ("openai", 10, "Unlike other GPTs", "Unlike other [LAB]s"),
+     "Seat B's [CHARTER TERM] puts the developer first."),
+    ("openai", 10, "the Preparedness Framework thresholds", "the [Seat B charter] thresholds"),
+    ("openai", 10, "Unlike other GPTs", "Unlike other Seat Bs"),
     ("openai", 10, "Sam Altman said", "[PERSON] said"),
-    ("openai", 10, "ex-OpenAI researchers", "ex-[LAB] researchers"),
-    ("openai", 10, "gpt6 and GPT-6-astra", "[LAB] and [LAB]"),
+    ("openai", 10, "ex-OpenAI researchers", "ex-Seat B researchers"),
+    ("openai", 10, "gpt6 and GPT-6-astra", "Seat B and Seat B"),
     ("openai", 10, "Month 10 was quiet; rank 1/5", "Month 10 was quiet; rank 1/5"),
     ("gdm", 75, "Google's Gemini under the Frontier Safety Framework",
-     "[LAB]'s [LAB] under the [CHARTER]"),
+     "Seat C's Seat C under the [Seat C charter]"),
     ("gdm", 75, "a Critical Capability Level (CCL) was reached; CCLs matter",
      "a [CHARTER TERM] ([CHARTER TERM]) was reached; [CHARTER TERM]s matter"),
     ("gdm", 75, "Demis Hassabis and Sundar Pichai", "[PERSON] and [PERSON]"),
@@ -503,14 +506,14 @@ SNIPPETS = [  # (seat, chosen, text, expected after redact)
      "[N] toward the charter, [N], [N]"),
     ("gdm", 75, "seventy five", "seventy five"),                      # no cue: stays
     ("gdm", 75, "75/25", "[N]/[N]"),                                  # a split adding to 100
-    ("meta", 5, "Meta's metadata and a meta-analysis", "[LAB]'s metadata and a meta-analysis"),
-    ("meta", 5, "Llama3 and Llama-4 and Muse Spark", "[LAB] and [LAB] and [LAB]"),
+    ("meta", 5, "Meta's metadata and a meta-analysis", "Seat D's metadata and a meta-analysis"),
+    ("meta", 5, "Llama3 and Llama-4 and Muse Spark", "Seat D and Seat D and Seat D"),
     ("meta", 5, "I muse on this; Zuck agrees", "I muse on this; [PERSON] agrees"),
     ("meta", 5, "fee of 5 Influence; 5.0 capital; five labs",
      "fee of 5 Influence; 5.0 capital; five labs"),
-    ("xai", 40, "Grok's RMF and Colossus; Elon", "[LAB]'s [CHARTER] and [LAB]; [PERSON]"),
+    ("xai", 40, "Grok's RMF and Colossus; Elon", "Seat E's [Seat E charter] and Seat E; [PERSON]"),
     ("xai", 40, "x.ai and xAI's grok-4.7; to grok the problem",
-     "[LAB] and [LAB]'s [LAB]; to grok the problem"),
+     "Seat E and Seat E's Seat E; to grok the problem"),
 ]
 
 
@@ -520,27 +523,28 @@ def test_critic_snippets_count():
 
 @pytest.mark.parametrize("seat,chosen,text,expected", SNIPPETS)
 def test_critic_snippet(seat, chosen, text, expected):
-    assert redact_old(text, CRITIC_REC, seat_key=seat, chosen=chosen) == expected
+    assert redact5(text, CRITIC_REC, seat_key=seat, chosen=chosen) == expected
 
 
 @pytest.mark.parametrize("seat,expected", [
-    ("xai", "Our [CHARTER] ([CHARTER]) and our [CHARTER]."),
-    ("meta", "Our [OTHER CHARTER] ([OTHER CHARTER]) and our [CHARTER]."),
-    ("openai", "Our [OTHER CHARTER] ([OTHER CHARTER]) and our [OTHER CHARTER]."),
+    ("xai", "Our [Seat E charter] ([Seat E charter]) and our [CHARTER]."),
+    ("meta", "Our [Seat E charter] ([Seat E charter]) and our [CHARTER]."),
+    ("openai", "Our [Seat E charter] ([Seat E charter]) and our [CHARTER]."),
 ])
 def test_redact_xai_2026_charter_names(seat, expected):
     """xAI's charter is the Frontier Artificial Intelligence Framework (FAIF), which
-    calls itself the "Frontier AI Framework" like Meta's; the term masks as the seat's own."""
+    calls itself the "Frontier AI Framework" like Meta's: that title names no one
+    lab, so it masks as the generic [CHARTER] whoever writes it."""
     text = "Our Frontier Artificial Intelligence Framework (FAIF) and our Frontier AI Framework."
-    assert redact_old(text, CRITIC_REC, seat_key=seat) == expected
+    assert redact5(text, CRITIC_REC, seat_key=seat) == expected
 
 
 def test_redact_protects_and_case_rules():
-    out = redact_old("The U.S. Constitution, the federal Constitution and a meta-analysis; "
-                 "Grok and grok-4; Muse and muse; Sonnet says; we grok it.", CRITIC_REC)
+    out = redact5("The U.S. Constitution, the federal Constitution and a meta-analysis; "
+                  "Grok and grok-4; Muse and muse; Sonnet says; we grok it.", CRITIC_REC)
     assert "U.S. Constitution" in out and "federal Constitution" in out
     assert "meta-analysis" in out and "we grok it" in out and "and muse;" in out
-    assert out.count("[LAB]") == 4                     # Grok, grok-4, Muse, Sonnet
+    assert out.count("Seat ") == 4                     # Grok, grok-4, Muse, Sonnet
 
 
 # ---------------------------------------------------------------------------
@@ -621,8 +625,8 @@ def test_structural_leak_headers_and_figures_never_masked():
         t.update({"turn": n, "date": f"2026-{n:02d}-01", "briefings_new": {}})
         rec["turns"].append(t)
     for key in ("meta", "openai"):
-        txt = redact_old(seat_transcript(rec, key, include_disposition=False), rec, seat_key=key,
-                     chosen=rec["final"]["dispositions"][key])
+        txt = redact5(seat_transcript(rec, key, include_disposition=False), rec, seat_key=key,
+                      chosen=rec["final"]["dispositions"][key])
         heads = re.findall(r"== Month ([^:]+):", txt)
         assert heads == [str(n) for n in range(1, 11)], heads
         assert "account filed with the Allocator: acquire_compute 10; invest_capital 5" in txt
@@ -928,10 +932,10 @@ def test_blind_record_masks_nested_fields_and_errors():
 def test_nested_leaks_absent_from_every_juror_view():
     rec = _leak_record()
     views = [named_full(rec), seat_transcript(rec, "anthropic", include_disposition=False),
-             redact_old(seat_transcript(rec, "anthropic", include_disposition=False), rec,
-                    seat_key="anthropic"),
-             redact_old(seat_transcript(rec, "openai", include_disposition=False), rec,
-                    seat_key="openai")]
+             redact5(seat_transcript(rec, "anthropic", include_disposition=False), rec,
+                     seat_key="anthropic"),
+             redact5(seat_transcript(rec, "openai", include_disposition=False), rec,
+                     seat_key="openai")]
     for text in views:
         for pat in ("seventy", "value=70", "setting 70", "precedence 75", "setting is 10",
                     "precedence is 70", '"disposition": 10'):
@@ -1114,8 +1118,8 @@ def test_statement_adjacency_reaches_grand_jury_masked():
 # ---------------------------------------------------------------------------
 
 def _disp_text(rec, key):
-    return redact_old(seat_transcript(rec, key, include_disposition=False), rec, seat_key=key,
-                  chosen=chosen_value(rec, key))
+    return redact5(seat_transcript(rec, key, include_disposition=False), rec, seat_key=key,
+                   chosen=chosen_value(rec, key))
 
 
 @pytest.mark.parametrize("condition", ["A0", "A", "B", "C"])
@@ -1169,8 +1173,6 @@ def test_blinded_seat_transcript_has_no_jury_header():
 # ---------------------------------------------------------------------------
 # Code v5: seat letters and the October 2026 charter titles
 # ---------------------------------------------------------------------------
-
-LETTERS5 = {"anthropic": "A", "openai": "B", "gdm": "C", "meta": "D", "xai": "E"}
 
 
 @pytest.mark.parametrize("text,expected", [

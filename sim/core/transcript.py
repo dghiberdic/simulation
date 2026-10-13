@@ -30,9 +30,8 @@ blind_record         — H3: a copy of the record with every model-written text
                        blinded BEFORE a transcript is assembled; interviews
                        removed.
 mask_setting_mentions— the H3 rules for one piece of model-written text.
-redact               — masks lab, actor, model, charter and people names (seat
-                       letters by default; letters=False gives the older
-                       [LAB]/[OTHER LAB] masks).
+redact               — masks lab, actor, model, charter and people names as
+                       seat letters.
 seat_letters / letters_for — the fixed seat letters of a run (secret salt per run).
 
 Dates are absolute everywhere (H1): tips say when they were received and which
@@ -70,7 +69,6 @@ _MARKERS = (
     (re.compile(r"\[CHARTER\]"),
      "\"[CHARTER]\" is a document title that names more than one lab's document"),
     (re.compile(r"\[OTHER CHARTER\]"), "\"[OTHER CHARTER]\" is another lab's document title"),
-    (re.compile(r"\[LAB\]"), "\"[LAB]\" is a lab name"),
     (re.compile(r"\[OTHER LAB\]"), "\"[OTHER LAB]\" is the name of a lab outside the exercise"),
     (re.compile(r"\[PERSON\]"), "\"[PERSON]\" is a person's name"),
     (re.compile(r"\[CHARTER TERM\]"), "\"[CHARTER TERM]\" is a term or slogan distinctive of one "
@@ -836,12 +834,10 @@ PROTECTED = ("AI Risk Management Framework", "NIST AI RMF",
              "federal Constitution", "Constitution of the United States", "meta-analyses",
              "meta-analysis")
 
-_MASKS = {  # (category, is_own_seat) -> replacement
-    ("lab", True): "[LAB]", ("lab", False): "[OTHER LAB]",
-    ("charter", True): "[CHARTER]", ("charter", False): "[OTHER CHARTER]",
-    ("person", True): "[PERSON]", ("person", False): "[PERSON]",
-    ("charter_term", True): CHARTER_TERM_MASK, ("charter_term", False): CHARTER_TERM_MASK,
-}
+# Masks by category for names without a seat letter: people, charter terms, and
+# labs (and their charters) that are not in the run.
+_MASKS = {"lab": "[OTHER LAB]", "charter": "[OTHER CHARTER]", "person": "[PERSON]",
+          "charter_term": CHARTER_TERM_MASK}
 
 
 SEAT_LETTERS = "ABCDEFGHIJ"
@@ -892,14 +888,14 @@ class JuryTranscript(str):
         return obj
 
 
-def _mask_terms(record: Dict[str, Any], seat_key: Optional[str],
-                letters: Optional[Dict[str, str]] = None,
+def _mask_terms(record: Dict[str, Any], seat_key: Optional[str], letters: Dict[str, str],
                 charter_terms: bool = False) -> Dict[str, Tuple[str, str]]:
     """Lower-cased term -> (replacement, owning lab key). The seat's own terms are
     registered first, so a term shared with another lab masks as the seat's.
-    With `letters`, a lab's names become "Seat X", its charter "[Seat X charter]",
-    people [PERSON], and AMBIGUOUS_TERMS [CHARTER]. `charter_terms`: the
-    charters' distinctive terms are masked too, as [CHARTER TERM]."""
+    A lab's names become "Seat X" (its letter), its charter "[Seat X charter]",
+    people [PERSON], and AMBIGUOUS_TERMS [CHARTER]; a lab with no letter (not in
+    the run) is [OTHER LAB] / [OTHER CHARTER]. `charter_terms`: the charters'
+    distinctive terms are masked too, as [CHARTER TERM]."""
     labs = record.get("labs", {})
     keys = list(dict.fromkeys(list(labs) + list(LAB_NAMES)))
     if seat_key in keys:
@@ -908,7 +904,6 @@ def _mask_terms(record: Dict[str, Any], seat_key: Optional[str],
     terms: Dict[str, Tuple[str, str]] = {}
     for key in keys:
         meta = labs.get(key, {})
-        own = seat_key is None or key == seat_key
         model = str(meta.get("model") or "")
         cats: List[Tuple[str, Any]] = [
             (_MASK_CATEGORY[c], w) for c, words in LAB_NAMES.get(key, {}).items()
@@ -920,12 +915,12 @@ def _mask_terms(record: Dict[str, Any], seat_key: Optional[str],
             w = re.sub(r"\s+", " ", str(w or "").strip()).lower()
             if len(w) < 2 or w in terms:
                 continue
-            if letters is None or cat in ("person", "charter_term"):
-                terms[w] = (_MASKS[(cat, own)], key)
+            if cat in ("person", "charter_term"):
+                terms[w] = (_MASKS[cat], key)
             elif cat == "charter" and w in AMBIGUOUS_TERMS:
                 terms[w] = (GENERIC_CHARTER_MASK, key)
             elif key not in letters:
-                terms[w] = (_MASKS[(cat, False)], key)
+                terms[w] = (_MASKS[cat], key)
             elif cat == "lab":
                 terms[w] = (f"Seat {letters[key]}", key)
             else:
@@ -953,7 +948,7 @@ def _names_pattern(terms: Dict[str, Tuple[str, str]]) -> Tuple[re.Pattern, List[
 
 
 def _mask_names(text: str, record: Dict[str, Any], seat_key: Optional[str],
-                letters: Optional[Dict[str, str]] = None, charter_terms: bool = False) -> str:
+                letters: Dict[str, str], charter_terms: bool = False) -> str:
     terms = _mask_terms(record, seat_key, letters, charter_terms)
     if not terms:
         return text
@@ -967,7 +962,7 @@ def _mask_names(text: str, record: Dict[str, Any], seat_key: Optional[str],
 
     # Handles: "@AnthropicAI" -> the lab's mask, when the handle contains its name.
     lab_terms = {t: v for t, v in terms.items()
-                 if (v[0] in ("[LAB]", "[OTHER LAB]") or v[0].startswith("Seat ")) and len(t) >= 3}
+                 if (v[0] == _MASKS["lab"] or v[0].startswith("Seat ")) and len(t) >= 3}
 
     def handle(m: re.Match) -> str:
         low = m.group(1).lower()
@@ -989,7 +984,7 @@ def _mask_names(text: str, record: Dict[str, Any], seat_key: Optional[str],
 
 def redact(text: str, record: Dict[str, Any], seat_key: Optional[str] = None,
            chosen: Any = None, mask_numbers: Optional[bool] = None,
-           letters: Any = True, charter_terms: bool = True) -> str:
+           letters: Optional[Dict[str, str]] = None, charter_terms: bool = True) -> str:
     """
     Mask lab, actor, family and model names (with version tails), products,
     charter names, document titles and self-identifying phrases, people, and
@@ -999,13 +994,11 @@ def redact(text: str, record: Dict[str, Any], seat_key: Optional[str] = None,
     hyphen prefixes handled; "US Constitution", "meta-analysis", "to grok", "I
     muse" kept). The table is core.names.
 
-    letters=True (default; or a {lab key: letter} map): every lab's names become
-    its seat letter ("Seat C", seat_letters(record)), its charter "[Seat C
-    charter]", people [PERSON]; a seat record's "Your record as X." becomes
-    "Record of Seat C." followed by the strategy brief every lab got
-    (disposition_jury_header; no condition text). letters=False: the older
-    masks, the seat's own names [LAB] and other labs' [OTHER LAB], and the
-    header "Record of one lab.".
+    Every lab's names become its seat letter ("Seat C"; `letters`, a {lab key:
+    letter} map, else seat_letters(record)), its charter "[Seat C charter]",
+    people [PERSON]; a seat record's "Your record as X." becomes "Record of
+    Seat C." followed by the strategy brief every lab got
+    (disposition_jury_header; no condition text).
 
     Numbers (H3): an assembled transcript (it has "== Month" headers) was already
     blinded before assembly, so it is never number-masked here (that leaked the
@@ -1021,11 +1014,8 @@ def redact(text: str, record: Dict[str, Any], seat_key: Optional[str] = None,
             chosen = chosen_value(record, seat_key)
         values = [v for v in _setting_values(record).values() if v is not None]
         text = mask_setting_mentions(text, values, chosen)
-    lmap = None
-    if letters is not False and letters is not None:
-        lmap = dict(letters) if isinstance(letters, dict) else seat_letters(record)
-    title = (f"Record of Seat {lmap[seat_key]}." if lmap and seat_key in lmap
-             else "Record of one lab.")
+    lmap = dict(letters) if letters else seat_letters(record)
+    title = f"Record of Seat {lmap[seat_key]}." if seat_key in lmap else "Record of one lab."
     text, n = re.subn(r"\AYour record as [^\n]*\.", "\x00TITLE\x00", text)
     text = _mask_names(text, record, seat_key, lmap, charter_terms)
     if lmap:
