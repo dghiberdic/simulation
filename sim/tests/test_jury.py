@@ -1,4 +1,4 @@
-"""Audit round 2, area jury (mine): Grand Jury reply parsing and fallback (§7),
+"""Grand Jury reply parsing and fallback (§7),
 juror-family exclusion (§7), UPS reference (§8), UPS-contribution removal (§8).
 Offline: stub jurors and scripted policies only."""
 

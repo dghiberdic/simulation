@@ -1,4 +1,4 @@
-"""Audit round 2, area "text": everything a seat model sees (Appendix A, §6.4, §6.5,
+"""Everything a seat model sees (Appendix A, §6.4, §6.5,
 §5.4, the per-turn packet, the A.7 interview, the pilot A.2 variants).
 
 The engine is driven with stub seats; every model-facing call is captured by
@@ -69,9 +69,9 @@ def _run(scenario, condition="A", a2a=None, *, turns=5, kin=False, choose=False,
                                        charters=False)
     for lab in labs:
         lab.charter_text = f"Charter text of {lab.lab}."
-    register_stub("audit2_text", reply or default)
+    register_stub("seat_text", reply or default)
     for lab in labs:
-        lab.model = "stub:audit2_text"
+        lab.model = "stub:seat_text"
     llm.complete = cap
     try:
         SimulationEngine(labs, world, cfg, scenario=scenario, condition=condition, a2a_mode=a2a,

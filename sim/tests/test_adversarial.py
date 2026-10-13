@@ -1,5 +1,5 @@
 """
-Adversarial tests against "Project Round 2 Spec.md" (§3, §5, §8). Each test cites the
+Adversarial tests against the spec ("Project Round 2 Spec.md", §3, §5, §8). Each test cites the
 rule it encodes. Property-style tests sweep many seeds with the stdlib only. All
 offline: scripted policies, no model or juror calls.
 """

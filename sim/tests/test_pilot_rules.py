@@ -1,8 +1,6 @@
-"""Audit round 2, area "pilot": boundary tests of the §9.2 decision rules (T1-T9), the §9.3
-main-run rules (campaign.py) and the pilot / campaign money paths.
-
-Synthetic records only; no paid calls. Tests marked xfail(strict=True) encode the spec's (or
-the code's own stated) behaviour where the code is wrong today.
+"""Boundary tests of the §9.2 decision rules (T1-T9), the §9.3 main-run rules
+(campaign.py) and the pilot / campaign money paths. Synthetic records only; no
+paid calls.
 """
 
 import json
@@ -517,11 +515,11 @@ def _actor(system, user):
 
 
 def test_final_record_is_on_disk_before_the_grand_jury(tmp_path, monkeypatch):
-    register_stub("audit2_actor", _actor)
+    register_stub("rules_actor", _actor)
     cfg = load_world()
     labs, world = build_labs_and_world(cfg, dispositions={k: 50 for k in LABS}, charters=False)
     for lab in labs:
-        lab.model = "stub:audit2_actor"
+        lab.model = "stub:rules_actor"
     seen = {}
 
     def gj(self):

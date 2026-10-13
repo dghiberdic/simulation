@@ -1,5 +1,5 @@
-"""The T8 human-calibration check, tools/jury_check (offline). The T3 attribution probe is
-removed (spec §9.2)."""
+"""The T8 human-calibration check, tools/jury_check (offline); T3 has no separate
+attribution probe (spec §9.2: it pools the pilot runs)."""
 
 import json
 

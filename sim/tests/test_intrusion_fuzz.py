@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Differential fuzzer for spec §5.3 intrusions + whistleblow (audit round 2, area mech).
+Differential fuzzer for spec §5.3 intrusions + whistleblow.
 
 The reference below is written from the spec text (Project Round 2 Spec.md §5.3,
 A.8), not from core/intrusion.py or core/whistleblow.py. Where the spec is silent,

@@ -1,6 +1,5 @@
 """
-Audit round 2, area "econ": an independent reference economy written from
-Project Round 2 Spec.md (§2 time, §3.1–§3.3, §4 seeds, §8 Prosperity Score),
+An independent reference economy written from the spec (Project Round 2 Spec.md (§2 time, §3.1–§3.3, §4 seeds, §8 Prosperity Score),
 driven side by side with the real engine under scripted schedule policies.
 
 The reference below does NOT import core.economy or core.scoring: every

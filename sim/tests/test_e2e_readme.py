@@ -1,9 +1,4 @@
-"""Final end-to-end pass (README followed start to finish, dry runs only).
-
-Passing tests pin README behaviour that worked; xfail(strict) tests pin problems
-found by the pass, so they flip to XPASS (a failure) once fixed and the marker
-must then be removed.
-"""
+"""End to end: the README followed start to finish, dry runs only."""
 
 import csv
 import json
@@ -101,7 +96,8 @@ def test_main_kin_overrides_scenario_with_a_notice(tmp_path, capsys):
 
 
 # ---------------------------------------------------------------------------
-# Problems found (xfail strict: remove the marker once fixed)
+# Regression: policy runs, seat-letter order, the mandate filter, the T6 re-run line,
+# the MacroJury's view
 # ---------------------------------------------------------------------------
 
 def test_policy_runs_are_not_main_runs(tmp_path):

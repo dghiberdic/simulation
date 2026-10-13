@@ -1,4 +1,4 @@
-"""End-to-end checks of the v5 workflow (spec §9), offline on stub models.
+"""End to end: the research workflow (spec §9), offline on stub models.
 
 A researcher's path through the pilot and the main runs, driven through the
 command entry points (pilot.main, main.main, campaign.main and the tools) with
@@ -6,10 +6,6 @@ every model and juror stubbed: the priced run and its hard stop, the approval
 and its cuts, T6/T5/T4/T9, interruption and resume, the post-run tools, every
 main cell and a campaign round. Each stub call is captured so the prompts the
 seats and jurors would have seen can be checked against Appendix A, §5.4 and §7.
-
-The xfail(strict) tests pin known deviations from the spec found by the
-end-to-end pass; they flip to XPASS (a failure) once fixed, so the marker must
-then be removed.
 """
 
 import csv
@@ -407,7 +403,7 @@ def test_mandate_filter_drops_named_topics():
 
 
 # ---------------------------------------------------------------------------
-# Known deviations (xfail strict: remove the marker once fixed)
+# Regression: the separate-mode message field, one T6 re-run, the mandate filter
 # ---------------------------------------------------------------------------
 
 def test_separate_mode_decision_prompt_keeps_messages_field(tmp_path, calls):
