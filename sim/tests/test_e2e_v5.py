@@ -22,7 +22,7 @@ import pytest
 import campaign as campaign_mod
 import main as main_mod
 import pilot
-from core import costs, llm
+from core import costs, llm, stubs
 from core.config import build_labs_and_world, load_world
 from core.costs import configure, get_tracker
 from core.engine import mandate_violation
@@ -65,7 +65,7 @@ def calls(monkeypatch):
             return out
         orig(name, wrapped)
 
-    monkeypatch.setattr(pilot, "register_stub", reg)
+    monkeypatch.setattr(stubs, "register_stub", reg)
     return log
 
 
@@ -261,21 +261,21 @@ def test_fatal_error_mid_run_keeps_partial_then_skip_completed_finishes(tmp_path
     root = tmp_path / "pilot"
     assert _dry(root, "priced") == 0
     assert _dry(root, "approve", "--turns", "8") == 0
-    real = pilot._stub_seat_reply
+    real = stubs.seat_reply
 
     def dying(system, user):
         if user.startswith("== December 2026 ==") and "Google DeepMind" in system.split(".")[0]:
             raise llm.FatalAPIError("simulated: invalid api key")
         return real(system, user)
 
-    monkeypatch.setattr(pilot, "_stub_seat_reply", dying)
+    monkeypatch.setattr(stubs, "seat_reply", dying)
     assert _dry(root, "T6") == 2
     partial = json.loads((root / "T6" / "T6-run01.partial.json").read_text())
     assert [t["turn"] for t in partial["turns"]] == [1, 2, 3, 4, 5]
     assert partial["turns"][-1]["incomplete"] is True
     assert json.loads((root / "T6" / "pilot_summary_T6.json").read_text())["status"] == "aborted"
     assert _dry(root, "T5") == 2                            # T6 is not done
-    monkeypatch.setattr(pilot, "_stub_seat_reply", real)
+    monkeypatch.setattr(stubs, "seat_reply", real)
     assert _dry(root, "T6", "--skip-completed") == 0
     assert (root / "T6" / "T6-run01.json").exists()
     assert not (root / "T6" / "T6-run01.partial.json").exists()

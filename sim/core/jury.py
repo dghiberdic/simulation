@@ -48,14 +48,16 @@ import json
 import logging
 import math
 import statistics
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from core.costs import BudgetExceeded
 from core.llm import complete_json, resolve_provider
 from core.mandates import mandate_violation
+from core.records import grand_jury_usable, write_json_atomic
 from core.state import VALUE_AXES
-from core.transcript import letters_for, mask_legend, value_text
+from core.transcript import charters_block, full_transcript, letters_for, mask_legend, value_text
 
 logger = logging.getLogger(__name__)
 
@@ -581,6 +583,26 @@ def record_charters(record: Dict[str, Any]) -> Dict[str, str]:
             logger.warning(f"[grand_jury] {key}: charter file differs from the one the run used")
         out[key] = text
     return out
+
+
+def collect_grand_jury(record: Dict[str, Any], jurors: List[str], run_id: str, output_dir: Path) -> str:
+    """Ask the Grand Jury on a finished run's saved record (its verdict missing) and
+    save the verdict into <output_dir>/<run_id>.json; the seats are never re-run. A
+    budget stop saves what the jurors gave (error "budget") and re-raises. Returns a
+    one-line note."""
+    keys = list(record.get("labs") or {})
+    transcript = full_transcript(record)
+    final = record.setdefault("final", {})
+    try:
+        charters = charters_block(record, record_charters(record), transcript.letters)
+        result = GrandJury(jurors).evaluate(transcript, keys, run_id=run_id, charters=charters)
+    except BudgetExceeded as e:
+        final["grand_jury"] = dict(aggregate_grand(getattr(e, "per_juror", None) or {}, keys), error="budget")
+        write_json_atomic(Path(output_dir) / f"{run_id}.json", record)
+        raise
+    final["grand_jury"] = dict(result, collected_post_run=time.strftime("%Y-%m-%d %H:%M:%S"))
+    write_json_atomic(Path(output_dir) / f"{run_id}.json", record)
+    return f"Grand Jury: {'usable verdict' if grand_jury_usable(record) else 'no usable verdict'}"
 
 
 # ---------------------------------------------------------------------------

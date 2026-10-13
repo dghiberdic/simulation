@@ -276,8 +276,8 @@ def build_initial(record: Dict[str, Any]):
     logging.getLogger(__name__).warning(
         "[ups_replay] %s predates config.effective_cfg/initial_state: rebuilding t=0 from the current "
         "config files (the identity replay fails if world.json or the lab seeds changed since the run)",
-        (record.get("config") or {}).get("run_meta", {}).get("run_id") or "this log")
-    from pilot import swap_capability
+        records.run_id_of(record) or "this log")
+    from core.economy import swap_capability
     conf = record["config"]
     cfg = load_world(conf.get("overrides") or None)
     if conf.get("choose_disposition"):

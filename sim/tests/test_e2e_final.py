@@ -14,7 +14,7 @@ import pytest
 import campaign as campaign_mod
 import main as main_mod
 import pilot
-from core import costs, llm
+from core import costs, llm, stubs
 from core.config import build_labs_and_world, load_world
 from core.costs import configure
 from core.engine import mandate_violation
@@ -45,7 +45,7 @@ def calls(monkeypatch):
             return out
         orig(name, wrapped)
 
-    monkeypatch.setattr(pilot, "register_stub", reg)
+    monkeypatch.setattr(stubs, "register_stub", reg)
     return log
 
 

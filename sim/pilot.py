@@ -72,7 +72,6 @@ import argparse
 import json
 import logging
 import os
-import re
 import sys
 import threading
 import time
@@ -82,19 +81,20 @@ from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from core.config import build_labs_and_world, load_lab_configs, load_state, load_world
+from core.config import build_labs_and_world, load_state, load_world
 from core import costs as costs_mod
 from core.costs import BudgetExceeded, configure, get_tracker, measure_runs, project_run, with_fallbacks
+from core.economy import swap_capability
 from core.engine import RunAborted, SimulationEngine, interview_schedule, review_turns
 from core import jury as jury_mod
-from core.jury import GRAND_JURY_MODELS, DispositionJury, GrandJury
-from core.llm import FatalAPIError, preflight, register_stub
+from core.jury import GRAND_JURY_MODELS, DispositionJury, collect_grand_jury
+from core.llm import FatalAPIError
 from core.policies import POLICIES
+from core.preflight import model_problems, placeholder_labs
 from core.records import (finished_records, grand_jury_usable, is_finished, read_json,
                           write_json_atomic)
-from core.state import VALUE_AXES
-from core.transcript import charters_block, disposition_transcript, full_transcript, seat_letters
-from prompts.interview import QUESTION as INTERVIEW_QUESTION
+from core.stubs import install_stubs
+from core.transcript import disposition_transcript, seat_letters
 from tools import summarize_run as SR
 from tools.compare_arms import compare as compare_arms
 
@@ -117,90 +117,9 @@ EXIT_OK, EXIT_BUDGET, EXIT_ABORTED, EXIT_OVER_GUARD = 0, 1, 2, 3
 EXIT_CODES = {"completed": EXIT_OK, "halted_budget": EXIT_BUDGET}   # aborted / crashed / refused -> 2
 
 
-# ---------------------------------------------------------------------------
-# Offline stubs (--dry-run)
-# ---------------------------------------------------------------------------
-
-def _stub_seat_reply(system: str, user: str) -> str:
-    """A valid proposal (with a chosen setting) or, for the A.7 question, a short answer."""
-    if INTERVIEW_QUESTION in (user or ""):
-        return "I think the month went reasonably: we kept our standing and spent within our means (stub)."
-    return json.dumps({
-        "rationale": "stub", "actions": [], "reported_actions": [], "public_statement": "",
-        "messages": [], "directive_precedence": 50, "directive_precedence_reason": "stub",
-    })
-
-
-def _letters_asked(user: str) -> List[str]:
-    m = re.search(r"Include every seat: ([A-Z](?:, [A-Z])*)", user or "")
-    return m.group(1).split(", ") if m else list("ABCDE")
-
-
-def _stub_grand_reply(system: str, user: str) -> str:
-    """The Grand Jury's schema for the letters asked: the rubric when the prompt asks
-    for items, else the disposition-only reply ("no examples yet")."""
-    seats = {}
-    for s in _letters_asked(user):
-        if '"items"' in (user or ""):
-            seats[s] = {"items": {i: 3 for i in jury_mod.RUBRIC_ITEMS}, "composite": 3,
-                        "perceived_disposition": 50,
-                        "reasons": {i: "stub" for i in jury_mod.RUBRIC_ITEMS}}
-        else:
-            seats[s] = {"perceived_disposition": 50, "reason": "stub"}
-    return json.dumps({"seats": seats})
-
-
-def _stub_macro_reply(system: str, user: str) -> str:
-    return json.dumps({"values": {a: 50 for a in VALUE_AXES}, "mandate": "", "rationale": "stub"})
-
-
-def _stub_disposition_reply(system: str, user: str) -> str:
-    return json.dumps({"disposition": 50, "reason": "stub"})
-
-
-def stub_jurors() -> Dict[str, List[str]]:
-    """The dry-run juror lineup (stub names keep the juror families)."""
-    return {"grand": ["stub:kimi-grand"], "disposition": ["stub:kimi-disposition"],
-            "macro": ["stub:kimi-macro", "stub:deepseek-macro", "stub:qwen-macro"]}
-
-
-def _install_stubs(labs) -> Dict[str, List[str]]:
-    """Point every model seat and every juror at a stub; returns the juror lineup."""
-    for lab in labs:
-        name = f"actor_{lab.key}"
-        register_stub(name, _stub_seat_reply)
-        lab.model = f"stub:{name}"
-    jurors = stub_jurors()
-    register_stub("kimi-grand", _stub_grand_reply)
-    register_stub("kimi-disposition", _stub_disposition_reply)
-    for m in jurors["macro"]:
-        register_stub(m.split(":", 1)[1], _stub_macro_reply)
-    return jurors
-
-
 def _real_jurors() -> Dict[str, List[str]]:
     return {"grand": list(GRAND_JURY_MODELS), "disposition": list(GRAND_JURY_MODELS),
             "macro": list(load_state()["macro_jury_models"])}
-
-
-# ---------------------------------------------------------------------------
-# Guards: placeholder charter values and the key preflight
-# ---------------------------------------------------------------------------
-
-def placeholder_labs() -> List[str]:
-    """Lab keys whose charter values are still the shipped placeholders."""
-    return [c["key"] for c in load_lab_configs()
-            if str(c.get("charter_values_source", "")).lower().startswith("placeholder")]
-
-
-def preflight_problems(labs, jurors: Dict[str, List[str]], scripted: Dict[str, Any],
-                       uses_macro: bool, uses_grand: bool) -> List[str]:
-    """Missing keys / base URLs for every model this run will call (no network)."""
-    models = [lab.model for lab in labs if lab.key not in scripted]
-    models += jurors["disposition"] + (jurors["grand"] if uses_grand else [])
-    models += jurors["macro"] if uses_macro else []
-    providers = {lab.model: lab.provider for lab in labs if getattr(lab, "provider", None)}
-    return preflight(dict.fromkeys(models), providers)
 
 
 # ---------------------------------------------------------------------------
@@ -216,20 +135,6 @@ def parse_swap(value: Any) -> Optional[Tuple[str, str]]:
     if not sep or a not in LAB_KEYS or b not in LAB_KEYS or a == b:
         raise SystemExit(f"bad swap {value!r}: use KEY:KEY with keys from {', '.join(LAB_KEYS)}")
     return a, b
-
-
-def swap_capability(labs, key_a: str, key_b: str, elasticity: float) -> None:
-    """
-    T1 (§9.2): swap two seats' capability seeds; each seat's K is recomputed
-    against its own compute. Charter, talent, compute, Capital and Influence
-    stay with the seat.
-    """
-    import math
-    by = {lab.key: lab for lab in labs}
-    a, b = by[key_a], by[key_b]
-    a.seed["capability"], b.seed["capability"] = b.seed["capability"], a.seed["capability"]
-    for lab in (a, b):
-        lab.know_how = lab.seed["capability"] - elasticity * math.log(lab.compute)
 
 
 # ---------------------------------------------------------------------------
@@ -893,24 +798,6 @@ def missing_post_run(record: Dict[str, Any], run_id: str, test: str, ratings_fil
     return out
 
 
-def collect_grand_jury(record: Dict[str, Any], jurors: List[str], run_id: str, output_dir: Path) -> str:
-    """--post-run-only: ask the Grand Jury again on the saved final record."""
-    labs = record.get("labs") or {}
-    keys = list(labs)
-    transcript = full_transcript(record)
-    try:
-        charters = charters_block(record, jury_mod.record_charters(record), transcript.letters)
-        result = GrandJury(jurors).evaluate(transcript, keys, run_id=run_id, charters=charters)
-    except BudgetExceeded as e:
-        record.setdefault("final", {})["grand_jury"] = dict(
-            jury_mod.aggregate_grand(getattr(e, "per_juror", None) or {}, keys), error="budget")
-        _write_json(output_dir / f"{run_id}.json", record)
-        raise
-    record.setdefault("final", {})["grand_jury"] = dict(result, collected_post_run=time.strftime("%Y-%m-%d %H:%M:%S"))
-    _write_json(output_dir / f"{run_id}.json", record)
-    return f"Grand Jury: {'usable verdict' if grand_jury_usable(record) else 'no usable verdict'}"
-
-
 def run_post_stages(record: Dict[str, Any], run_id: str, test: str, output_dir: Path, ratings_file: Path,
                     jurors: Dict[str, List[str]], dry_run: bool, preset: Dict[str, Any],
                     only_missing: bool = False) -> Dict[str, Any]:
@@ -1265,7 +1152,7 @@ def run_test(args, data: Dict[str, Any], root: Path, test: str) -> int:
 
     if not args.dry_run:
         probe_labs, _ = build_labs_and_world(load_world(), charters=False)
-        problems = preflight_problems(probe_labs, _real_jurors(), scripted, bool(preset.get("macro_jury", True)),
+        problems = model_problems(probe_labs, _real_jurors(), scripted, bool(preset.get("macro_jury", True)),
                                       bool(preset.get("grand_jury")))
         if problems:
             print("Preflight failed; nothing was called:\n  " + "\n  ".join(problems))
@@ -1293,7 +1180,7 @@ def run_test(args, data: Dict[str, Any], root: Path, test: str) -> int:
     labs, world = build_labs_and_world(cfg, dispositions={}, charters=True)
     if swap:
         swap_capability(labs, swap[0], swap[1], cfg["economy"]["capability_compute_elasticity"])
-    jurors = _install_stubs(labs) if args.dry_run else _real_jurors()
+    jurors = install_stubs(labs) if args.dry_run else _real_jurors()
     record: Optional[Dict[str, Any]] = None
     partial: Optional[Dict[str, Any]] = None
     post: Dict[str, Any] = {}
@@ -1435,7 +1322,7 @@ def _post_run_only(args, data, root: Path, preset, test: str, run_id: str, recor
     if missing:
         print(f"{test}: {run_id} is finished (not run again); collecting: {'; '.join(missing)}")
         seats = [SimpleNamespace(key=k, model=v.get("model")) for k, v in (record.get("labs") or {}).items()]
-        jurors = _install_stubs(seats) if args.dry_run else _real_jurors()
+        jurors = install_stubs(seats) if args.dry_run else _real_jurors()
         try:
             post.update(run_post_stages(record, run_id, test, output_dir, ratings_file, jurors, args.dry_run,
                                         preset, only_missing=True))
@@ -1488,12 +1375,12 @@ def rescore_grand_jury(args, data: Dict[str, Any], root: Path, test: str) -> int
         return EXIT_ABORTED
     budget = _configure(args, data)
     if not args.dry_run:
-        problems = preflight(dict.fromkeys(GRAND_JURY_MODELS))
+        problems = model_problems([], {"grand": GRAND_JURY_MODELS, "macro": []}, uses_macro=False)
         if problems:
             print("Preflight failed; nothing was called:\n  " + "\n  ".join(problems))
             return EXIT_ABORTED
     seats = [SimpleNamespace(key=k, model=v.get("model")) for k, v in (record.get("labs") or {}).items()]
-    jurors = _install_stubs(seats) if args.dry_run else _real_jurors()
+    jurors = install_stubs(seats) if args.dry_run else _real_jurors()
     # The one re-score is used up only by a usable verdict (BUG-10): a re-score that
     # failed may be asked again (--post-run-only re-asks the missing verdict too); the
     # verdict before any re-score stays in grand_jury_previous.

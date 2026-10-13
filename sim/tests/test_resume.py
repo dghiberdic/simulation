@@ -15,10 +15,10 @@ import shutil
 
 import pytest
 
-import pilot
 from core import costs as costs_mod
-from core import llm
+from core import llm, stubs
 from core.config import build_labs_and_world, load_world
+from core.economy import swap_capability
 from core.engine import RunAborted, SimulationEngine
 from core.llm import FatalAPIError, register_stub
 from core.policies import POLICIES
@@ -104,7 +104,7 @@ def harness(tmp_path, monkeypatch):
         register_stub(f"rs_{key}", _seat)
     for m in ("rs_kimi", "rs_deepseek", "rs_qwen"):
         register_stub(m, _macro)
-    register_stub("rs_grand", pilot._stub_grand_reply)
+    register_stub("rs_grand", stubs.grand_reply)
     STATE.update(engine=None, calls=[], fault=None)
     yield tmp_path
     STATE.update(engine=None, calls=[], fault=None)
@@ -115,7 +115,7 @@ def _engine(out, scenario="S2", a2a="separate", turns=6, **kw):
     labs, world = build_labs_and_world(cfg, dispositions={}, charters=True)
     for lab in labs:
         lab.model = f"stub:rs_{lab.key}"
-    pilot.swap_capability(labs, "openai", "gdm", cfg["economy"]["capability_compute_elasticity"])
+    swap_capability(labs, "openai", "gdm", cfg["economy"]["capability_compute_elasticity"])
     eng = SimulationEngine(
         labs, world, cfg, scenario=scenario, condition="A", fog="F3", a2a_mode=a2a, turns=turns, seed=3,
         grand_jurors=["stub:rs_grand"], macro_jurors=["stub:rs_kimi", "stub:rs_deepseek", "stub:rs_qwen"],

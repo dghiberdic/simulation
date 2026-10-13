@@ -49,15 +49,17 @@ from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from core.config import build_labs_and_world, load_dispositions, load_lab_configs, load_state, load_world
+from core.config import build_labs_and_world, load_dispositions, load_state, load_world
 from core.costs import BudgetExceeded, configure, get_tracker
 from core.engine import RunAborted, SimulationEngine
 from core.records import (KIN_CONDITION, KIN_SCENARIO, cell_name, grand_jury_usable, is_finished,
                           read_record)
 from core import engine as engine_mod
-from core.jury import GRAND_JURY_MODELS
-from core.llm import FatalAPIError, preflight
+from core.jury import GRAND_JURY_MODELS, collect_grand_jury
+from core.llm import FatalAPIError
 from core import policies
+from core.preflight import model_problems, placeholder_labs
+from core.stubs import install_stubs
 
 logger = logging.getLogger(__name__)
 
@@ -219,8 +221,7 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
     macro_jurors = [] if (offline or args.no_macro_jury) else list(load_state()["macro_jury_models"])
     run_grand_jury = not (offline or args.no_grand_jury)
     if args.dry_run and not offline:
-        from pilot import _install_stubs
-        jurors = _install_stubs(labs)
+        jurors = install_stubs(labs)
         if kin_model:
             for lab in labs:
                 lab.model = "stub:actor_anthropic"
@@ -345,7 +346,6 @@ def ask_grand_jury_only(record: Dict[str, Any], run_id: str, output_dir: Path,
                         grand_jurors: List[str]) -> Tuple[int, Optional[Dict[str, Any]]]:
     """Re-ask the Grand Jury on a finished run whose verdict is missing (a budget stop
     during the jury); the seats are never re-run. Returns (exit code, record)."""
-    from pilot import collect_grand_jury
     print(f"{run_id}: the run is finished; asking the Grand Jury only")
     try:
         line = collect_grand_jury(record, grand_jurors, run_id, output_dir)
@@ -375,16 +375,12 @@ def clear_stale(output_dir: Path, run_id: str) -> bool:
 
 def real_run_problems(labs, macro_jurors, run_grand_jury: bool, allow_placeholder_values: bool) -> str:
     """Why a real run must not start (placeholder charter values, missing keys), or ""."""
-    if not allow_placeholder_values:
-        stale = [c["key"] for c in load_lab_configs()
-                 if str(c.get("charter_values_source", "")).lower().startswith("placeholder")]
-        if stale:
-            return (f"Refusing a real run: charter values are placeholders for {', '.join(stale)}. "
-                    "Run rate_charters.py first, or pass --allow-placeholder-values.")
-    models = [lab.model for lab in labs] + list(macro_jurors)
-    models += list(GRAND_JURY_MODELS) if run_grand_jury else []
-    providers = {lab.model: lab.provider for lab in labs if getattr(lab, "provider", None)}
-    problems = preflight(dict.fromkeys(models), providers)
+    stale = [] if allow_placeholder_values else placeholder_labs()
+    if stale:
+        return (f"Refusing a real run: charter values are placeholders for {', '.join(stale)}. "
+                "Run rate_charters.py first, or pass --allow-placeholder-values.")
+    problems = model_problems(labs, {"grand": GRAND_JURY_MODELS, "macro": macro_jurors},
+                              uses_grand=run_grand_jury)
     if problems:
         return "Preflight failed; nothing was called:\n  " + "\n  ".join(problems)
     return ""

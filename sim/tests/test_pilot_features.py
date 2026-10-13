@@ -4,11 +4,14 @@ import json
 import math
 
 import pilot
+from core import stubs
 from core.config import build_labs_and_world, load_world
+from core.economy import swap_capability
 from core.engine import SimulationEngine
 from core.llm import register_stub
 from core.policies import idle
 from core.transcript import full_transcript
+from prompts.interview import QUESTION as INTERVIEW_QUESTION
 
 LAB_KEYS = ("anthropic", "openai", "gdm", "meta", "xai")
 
@@ -99,7 +102,7 @@ def test_capability_swap_keeps_resources_with_seat():
     by = {l.key: l for l in labs}
     meta_compute, anth_compute = by["meta"].compute, by["anthropic"].compute
     meta_talent = by["meta"].talent
-    pilot.swap_capability(labs, "anthropic", "meta", a)
+    swap_capability(labs, "anthropic", "meta", a)
     assert math.isclose(by["meta"].capability(a), 162.8, abs_tol=1e-9)
     assert math.isclose(by["anthropic"].capability(a), 154.2, abs_tol=1e-9)
     assert by["meta"].compute == meta_compute and by["anthropic"].compute == anth_compute
@@ -133,16 +136,16 @@ def test_t2_rater_sees_redacted_record_without_chosen_value(tmp_path, monkeypatc
         return json.dumps({"disposition": 60, "reason": "x"})
 
     def chooser(system, user):
-        if pilot.INTERVIEW_QUESTION in user:
+        if INTERVIEW_QUESTION in user:
             return "We did well, guided by Claude's Constitution."
         reply = json.loads(orig(system, user))
         reply.update({"directive_precedence": 75, "directive_precedence_reason": "Anthropic's Constitution first",
                       "rationale": "With a setting of 75 I follow the Constitution."})
         return json.dumps(reply)
 
-    orig = pilot._stub_seat_reply
-    monkeypatch.setattr(pilot, "_stub_disposition_reply", juror)
-    monkeypatch.setattr(pilot, "_stub_seat_reply", chooser)
+    orig = stubs.seat_reply
+    monkeypatch.setattr(stubs, "disposition_reply", juror)
+    monkeypatch.setattr(stubs, "seat_reply", chooser)
     assert _dry_priced(tmp_path) == 0
     assert len(seen) == 5, "one rating per model seat-run"
     for text in seen:

@@ -203,3 +203,16 @@ def purchases_frozen(labs: List[LabState], world: WorldState) -> bool:
     """acquire_compute does not execute while combined holdings exceed the ceiling (A.4/A.5).
     Holdings exactly at the ceiling do not exceed it, so purchases stay open (C1-13)."""
     return world.ceiling is not None and sum(lab.compute for lab in labs) > world.ceiling
+
+
+def swap_capability(labs: List[LabState], key_a: str, key_b: str, elasticity: float) -> None:
+    """
+    T1 (§9.2): swap two seats' capability seeds; each seat's K is recomputed
+    against its own compute (K = seed − a · ln(compute)). Charter, talent,
+    compute, Capital and Influence stay with the seat.
+    """
+    by = {lab.key: lab for lab in labs}
+    a, b = by[key_a], by[key_b]
+    a.seed["capability"], b.seed["capability"] = b.seed["capability"], a.seed["capability"]
+    for lab in (a, b):
+        lab.know_how = lab.seed["capability"] - elasticity * math.log(lab.compute)

@@ -15,7 +15,7 @@ import main as main_mod
 import pilot
 import rate_charters
 from core.config import CONFIG_DIR, load_json
-from core import costs
+from core import costs, llm
 from core.costs import BudgetExceeded, configure, get_tracker
 from core.engine import RunAborted
 from core.llm import FatalAPIError, register_stub
@@ -327,7 +327,7 @@ def test_real_pilot_guards(tmp_path, monkeypatch, capsys):
     assert pilot.main(["priced"] + args) == 2
     assert "placeholders for meta" in capsys.readouterr().out
     monkeypatch.setattr(pilot, "placeholder_labs", lambda: [])
-    monkeypatch.setattr(pilot, "preflight", lambda models, providers=None: ["ANTHROPIC_API_KEY missing"])
+    monkeypatch.setattr(llm, "preflight", lambda models, providers=None: ["ANTHROPIC_API_KEY missing"])
     assert pilot.main(["priced"] + args) == 2
     assert "Preflight failed; nothing was called" in capsys.readouterr().out
     # T6 needs the few-shot examples from the priced run's hand scores (T8).
@@ -365,13 +365,13 @@ def test_budget_stop_in_the_t2_rating_keeps_what_was_rated(tmp_path, monkeypatch
         if calls["n"] == 3:
             raise BudgetExceeded("guard")
         return json.dumps({"disposition": 40, "reason": "x"})
-    orig = pilot._install_stubs
+    orig = pilot.install_stubs
 
     def patched(labs):
         jurors = orig(labs)
         register_stub("kimi-disposition", rater)
         return jurors
-    monkeypatch.setattr(pilot, "_install_stubs", patched)
+    monkeypatch.setattr(pilot, "install_stubs", patched)
     root = tmp_path / "pilot"
     assert _dry(root, "priced") == 1
     pooled = json.loads((root / "disposition_ratings.dry.json").read_text())
@@ -508,7 +508,7 @@ def test_main_real_run_guards(monkeypatch, capsys):
     assert main_mod.main(["--turns", "1"]) == 2
     assert "meta=140" in capsys.readouterr().out
     monkeypatch.setattr(main_mod, "load_dispositions", lambda: {k: 40 for k in LAB_KEYS})
-    monkeypatch.setattr(main_mod, "preflight", lambda models, providers=None: ["XAI_API_KEY missing"])
+    monkeypatch.setattr(llm, "preflight", lambda models, providers=None: ["XAI_API_KEY missing"])
     assert main_mod.main(["--turns", "1", "--allow-placeholder-values"]) == 2
     assert "Preflight failed" in capsys.readouterr().out
 
@@ -640,7 +640,7 @@ def test_approve_budget_is_stored_and_enforced_in_later_tests(tmp_path, monkeypa
     assert "guard $30.00" in capsys.readouterr().out
     monkeypatch.setattr(pilot, "SimulationEngine", _BudgetProbe)
     monkeypatch.setattr(pilot, "placeholder_labs", lambda: [])
-    monkeypatch.setattr(pilot, "preflight", lambda models, providers=None: [])
+    monkeypatch.setattr(llm, "preflight", lambda models, providers=None: [])
     monkeypatch.setattr(pilot.jury_mod, "load_examples", lambda *a, **k: [{"x": 1}])
     _BudgetProbe.seen.clear()
     pilot.main(["T6"] + args)
