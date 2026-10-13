@@ -8,6 +8,7 @@ import pytest
 from core import policies
 from core.config import build_labs_and_world, load_world
 from core.engine import SimulationEngine
+from core.exits import EXIT_REFUSED
 from tools import identifiability as ID
 
 KEYS = ("anthropic", "openai", "gdm", "meta", "xai")
@@ -90,4 +91,4 @@ def test_pooled_and_cli(tmp_path, capsys):
                                                   "rate": 1.0}
     empty = tmp_path / "empty"
     empty.mkdir()
-    assert ID.main([str(empty)]) == 1
+    assert ID.main([str(empty)]) == EXIT_REFUSED

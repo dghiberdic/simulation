@@ -23,12 +23,12 @@ untested, §6.4). "A run's cost" is read per cell, over the cells the plan with
 the interview keeps (a cut cell never decides), on the unrounded share.
 
 Commands:
-    python campaign.py plan [--budget USD | --headroom USD] [--turns N] [--s2-mode merged|separate]
+    python campaign.py plan [--budget USD | --headroom USD] [--turns N] [--a2a merged|separate]
     python campaign.py run  [--dry-run] [--rounds N] [--replan] [same options]
 
 `run` executes the plan round by round through main.run_cell, one run per cell
 per round, recording the plan, the guard and finished runs in
-<runs dir>/campaign_state.json. A stopped campaign resumes where it left off,
+<output dir>/campaign_state.json. A stopped campaign resumes where it left off,
 with the saved plan: the same cells, cuts and set-up, and rounds = rounds done +
 floor(budget left / round cost) (never more than first planned). `run
 --replan` re-plans the cells from the budget left instead: each cell keeps the
@@ -39,6 +39,9 @@ against that sum. A cell cut before restarts from run 1 only if the re-plan
 keeps it (its full cost is then in the sum). A run stopped by the
 guard during its Grand Jury is finished and saved: it counts as done with its
 jury missing, and the resume asks only that jury.
+
+Exit codes (core.exits): 0 done, else the stopping run's code (1 budget guard,
+2 refused, aborted or crashed).
 
 Money: the shared ledger's guard (a ledger total) is fixed when the campaign is
 first planned. --budget USD is that total, as in every other tool (default
@@ -59,6 +62,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from core.config import RUNS_DIR, load_world
 from core.costs import configure, get_tracker, kin_seat_scale, project_run, with_fallbacks
 from core.engine import interview_schedule, review_turns
+from core.exits import EXIT_OK
 from core.records import (KIN_CONDITION, KIN_SCENARIO, cell_name, finished_records, is_finished,
                           write_json_atomic)
 
@@ -357,7 +361,7 @@ def run_campaign(plan: Dict[str, Any], runs_dir: Path, dry_run: bool, rounds: Op
             done.setdefault(c["name"], []).append(a.run_id)
             write_state(state_path, state)
     print(f"[campaign] {total} round(s) complete")
-    return 0
+    return EXIT_OK
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -370,7 +374,7 @@ def build_parser() -> argparse.ArgumentParser:
     money.add_argument("--headroom", type=float, default=None,
                        help="USD the main runs may add on top of the ledger's measured spend so far")
     p.add_argument("--turns", type=int, default=None, help="run length (default: the pilot's T7 decision, else 8)")
-    p.add_argument("--s2-mode", choices=["merged", "separate"], default=None,
+    p.add_argument("--a2a", choices=["merged", "separate"], default=None,
                    help="S2 and kin message mode (default: T9's decision from the pilot logs)")
     p.add_argument("--pilot-dir", default=None, help="pilot root for the measured inputs (default data/pilot)")
     p.add_argument("--max-runs", type=int, default=MAX_RUNS)
@@ -379,7 +383,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="run: re-plan the cells and rounds from the budget left instead of resuming the "
                         "saved plan (rounds = rounds done + floor(budget left / round cost))")
     p.add_argument("--dry-run", action="store_true", help="stub models and jurors; logs under data/runs/dry")
-    p.add_argument("--runs-dir", default=None, help="where the cells' logs go (default data/runs)")
+    p.add_argument("--output", default=None,
+                   help="directory for the cells' logs and campaign_state.json (default data/runs; dry: "
+                        "data/runs/dry)")
     p.add_argument("--spend-file", default=None)
     p.add_argument("--verbose", action="store_true")
     return p
@@ -393,7 +399,7 @@ def main(argv=None) -> int:
     pilot_root = Path(args.pilot_dir) if args.pilot_dir else pilot.pilot_root(args.dry_run)
     configure(spend_file=Path(args.spend_file) if args.spend_file else None)
     spent = get_tracker().persisted_total()
-    runs_dir = Path(args.runs_dir) if args.runs_dir else RUNS_DIR / ("dry" if args.dry_run else "")
+    runs_dir = Path(args.output) if args.output else RUNS_DIR / ("dry" if args.dry_run else "")
     state_path = runs_dir / STATE_NAME
     state = read_state(state_path)
     saved = state.get("plan") if isinstance(state.get("plan"), dict) and state["plan"].get("cells") else None
@@ -425,14 +431,14 @@ def main(argv=None) -> int:
         budget = max(ROUND_BUDGET - spent, 0.0)
     plan = build_campaign(pilot_inputs(pilot_root), budget,
                           turns=args.turns or (saved or {}).get("turns") or pilot_turns(pilot_root),
-                          s2_mode=args.s2_mode or pilot_s2_mode(pilot_root, include_dry=args.dry_run),
+                          s2_mode=args.a2a or pilot_s2_mode(pilot_root, include_dry=args.dry_run),
                           max_runs=args.max_runs, done=done_counts)
     print("\n".join(campaign_lines(plan)))
     if args.command == "plan":
         if saved:
             print(f"  a campaign is in progress in {runs_dir} ({completed_rounds(saved, done)} round(s) done): "
                   "`run` resumes its saved plan; `run --replan` adopts a new one")
-        return 0
+        return EXIT_OK
     guard = spent + budget
     print(f"[campaign] guard: ledger total ${guard:.2f} (${spent:.2f} spent so far)")
     state["guard"] = round(guard, 4)

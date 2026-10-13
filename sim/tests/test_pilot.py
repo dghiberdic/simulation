@@ -17,6 +17,7 @@ import rate_charters
 from core.config import CONFIG_DIR, load_json
 from core import costs, llm
 from core.costs import BudgetExceeded, configure, get_tracker
+from core.exits import EXIT_FAILED
 from core.engine import RunAborted
 from core.llm import FatalAPIError, register_stub
 from core.policies import POLICIES
@@ -270,7 +271,7 @@ def test_approve_refused_when_the_plan_exceeds_the_guard(tmp_path, monkeypatch, 
     for name in data["presets"]:
         data["presets"][name]["est_cost"] = [20.0, 30.0]
     monkeypatch.setattr(pilot, "load_pilot", lambda: data)
-    assert _dry(root, "approve", "--turns", "8") == pilot.EXIT_OVER_GUARD
+    assert _dry(root, "approve", "--turns", "8") == EXIT_FAILED
     assert "APPROVAL REFUSED" in capsys.readouterr().out
     assert not (root / pilot.APPROVAL_NAME).exists()
     # The team may move the guard (--budget): the plan is then re-cut against it.

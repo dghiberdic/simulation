@@ -39,7 +39,7 @@ Existing templates are never overwritten (they may hold our scores) unless
 --force. The T1 runs (priced and T6) are the ones we score (§9.2).
 
 CLI:
-  python tools/export_transcripts.py data/pilot/priced data/pilot/T6 [--out data/pilot/human]
+  python tools/export_transcripts.py data/pilot/priced data/pilot/T6 [--output data/pilot/human]
                                      [--include-dry] [--force]
 """
 
@@ -54,6 +54,7 @@ from typing import Any, Dict, List, Optional, Tuple
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.costs import scripted_seats                                     # noqa: E402
+from core.exits import EXIT_OK, EXIT_REFUSED                            # noqa: E402
 from core.transcript import disposition_transcript, full_transcript, seat_letters   # noqa: E402
 from core.records import finished_records, run_id_of                     # noqa: E402
 from tools.disposition import HUMAN_COLUMNS                              # noqa: E402
@@ -128,7 +129,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(description="Redacted transcripts, the letter key and blank score sheets "
                                             "for the human steps (T2, T8).")
     p.add_argument("logs", nargs="+", help="run logs or directories (searched recursively)")
-    p.add_argument("--out", default=None, help="output directory (default: <first log dir>/human)")
+    p.add_argument("--output", default=None, help="output directory (default: <first log dir>/human)")
     p.add_argument("--include-dry", action="store_true", help="read dry-run records too")
     p.add_argument("--force", action="store_true", help="overwrite existing hand_scores / human_ratings templates")
     args = p.parse_args(argv)
@@ -139,9 +140,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 if not r.get("letter_salt") and not r.get("seat_letters")]
     if not records:
         print("no finished run records (dry-run records need --include-dry)")
-        return 1
+        return EXIT_REFUSED
     first = Path(args.logs[0])
-    out = Path(args.out) if args.out else (first if first.is_dir() else first.parent) / "human"
+    out = Path(args.output) if args.output else (first if first.is_dir() else first.parent) / "human"
     res = export(records, out, args.force)
     for path, rec in unsalted:          # the letters just drawn must stay the run's letters
         _write_record(path, rec)
@@ -153,7 +154,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     for name, wrote in res["templates_written"].items():
         if not wrote:
             print(f"  {name} exists and was kept (it may hold our scores); --force overwrites it")
-    return 0
+    return EXIT_OK
 
 
 if __name__ == "__main__":

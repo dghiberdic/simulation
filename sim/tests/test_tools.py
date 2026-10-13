@@ -2022,7 +2022,7 @@ def test_export_transcripts_blind_texts_key_and_templates(tmp_path, capsys):
     (tmp_path / "logs").mkdir()
     (tmp_path / "logs" / "priced-run01.json").write_text(json.dumps(rec))
     out = tmp_path / "human"
-    assert X.main([str(tmp_path / "logs"), "--out", str(out)]) == 0
+    assert X.main([str(tmp_path / "logs"), "--output", str(out)]) == 0
     blind = out / "blind" / "priced-run01"
     key = list(_csv.DictReader(open(out / "key" / "letters.csv")))
     letters = {r["lab"]: r["letter"] for r in key}
@@ -2052,7 +2052,7 @@ def test_export_transcripts_blind_texts_key_and_templates(tmp_path, capsys):
     # Our scores are never overwritten by a second export.
     (out / "blind" / "human_ratings.csv").write_text(
         f"run_id,letter,disposition\npriced-run01,{letters['anthropic']},40\n")
-    assert X.main([str(tmp_path / "logs"), "--out", str(out)]) == 0
+    assert X.main([str(tmp_path / "logs"), "--output", str(out)]) == 0
     assert "kept" in capsys.readouterr().out
     assert "40" in (out / "blind" / "human_ratings.csv").read_text()
     # A blank template reads as "nothing scored yet", not as an error.

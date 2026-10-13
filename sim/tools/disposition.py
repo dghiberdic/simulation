@@ -63,6 +63,7 @@ from typing import Any, Dict, List, Optional, Tuple
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.config import CONFIG_DIR, PILOT_DIR                            # noqa: E402
+from core.exits import EXIT_FAILED, EXIT_OK, EXIT_REFUSED, EXIT_WAITING     # noqa: E402
 from tools.jury_check import letters_to_labs, missing_columns, seat_ident, spearman
 
 logger = logging.getLogger(__name__)
@@ -79,8 +80,6 @@ SE_TOL = 1e-9                  # compared unrounded: an exact 5 passes, 5.004 do
 MIN_SEAT_RUNS = 3              # over at least this many rated seat-runs
 SCRIPTED_SEATS = {"T5": ("xai",)}   # T5's scripted intruder never counts
 DEFAULT_DISPOSITION = 50       # neutral fallback when a seat has nothing to go on
-DEFAULTED_EXIT = 3
-WAITING_EXIT = 4
 WAITING = "waiting for human ratings"
 
 
@@ -341,32 +340,32 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.write and args.allow_stub:
         print("Refusing --write together with --allow-stub: stub or dry-run ratings must never set "
               "main-run dispositions.")
-        return 2
+        return EXIT_REFUSED
     try:
         human = read_human_ratings(Path(args.human))
     except ValueError as e:
         print(str(e))
-        return 2
+        return EXIT_REFUSED
     if human is None:
         print(f"{WAITING}: {args.human} not found (columns {','.join(HUMAN_COLUMNS)}). Rate the "
               "ten T1 seat-runs blind first; the juror's ratings are not shown until then.")
-        return WAITING_EXIT
+        return EXIT_WAITING
     try:
         payload = json.loads(Path(args.input).read_text())
     except (OSError, ValueError) as e:
         print(f"cannot read {args.input}: {e}")
-        return 2
+        return EXIT_REFUSED
     stubs = stub_count(payload)
     if stubs and not args.allow_stub:
         print(f"Refusing: {stubs} rating(s)/choice(s) in {args.input} come from dry runs or stub "
               "jurors. Use the real pooled file, or --allow-stub to test the tool.")
-        return 2
+        return EXIT_REFUSED
     dispositions, report = resolve_t2(payload, human)
     _print_report(report)
     if report["defaulted"] and not args.force:
         print(f"Not resolved: {', '.join(report['defaulted'])} defaulted to {DEFAULT_DISPOSITION}"
               + (" — nothing written" if args.write else "") + ". Pass --force to accept.")
-        return DEFAULTED_EXIT
+        return EXIT_FAILED
     if args.write:
         out_path = Path(args.output)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -374,7 +373,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         logger.info(f"[save] wrote {out_path}")
     else:
         print("(not written; pass --write to save config/dispositions.json)")
-    return 0
+    return EXIT_OK
 
 
 if __name__ == "__main__":

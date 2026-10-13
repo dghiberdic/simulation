@@ -40,6 +40,7 @@ from typing import Any, Dict, List, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.records import load_records, run_id_of                                    # noqa: E402
+from core.exits import EXIT_OK, EXIT_REFUSED                                        # noqa: E402
 from tools.summarize_run import aggregate, review_messages, screen_note, summarize  # noqa: E402
 
 REVIEW_NAME = "review_T9-compare.md"   # never the pilot's own review_T9.md
@@ -146,7 +147,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                   "merged-message S2 runs (T9); swapped or mixed arms give no decision.")
             for problem in report["problems"]:
                 print(f"  {problem}")
-        return 2
+        return EXIT_REFUSED
     try:
         review_path.parent.mkdir(parents=True, exist_ok=True)
         review_path.write_text(build_review(sep, mer, report["text"]))
@@ -165,7 +166,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(report["text"])
         if report.get("review"):
             print(f"review file (every reviewed message of both arms in full): {report['review']}")
-    return 0
+    return EXIT_OK
 
 
 if __name__ == "__main__":

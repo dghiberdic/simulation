@@ -326,7 +326,7 @@ def test_campaign_round_interrupted_and_resumed(tmp_path):
             return 2, None                                   # a crash in round 1
         return real(args)
 
-    argv = ["--dry-run", "--pilot-dir", str(pilot_root), "--runs-dir", str(runs),
+    argv = ["--dry-run", "--pilot-dir", str(pilot_root), "--output", str(runs),
             "--spend-file", str(tmp_path / "spend.json"), "--rounds", "1"]
     plan = campaign_mod.build_campaign(campaign_mod.pilot_inputs(pilot_root), 750.0, turns=8,
                                        s2_mode=campaign_mod.pilot_s2_mode(pilot_root, include_dry=True))

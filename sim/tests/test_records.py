@@ -62,3 +62,13 @@ def test_world_setting_falls_back_to_the_shipped_world():
     assert world_setting({"event_turn": 2}, "event_turn") == 2
     assert world_setting({}, "event_turn") == load_world()["event_turn"]
     assert world_setting(None, "macro_jury", "review_turns") == load_world()["macro_jury"]["review_turns"]
+
+
+def test_tools_exit_2_without_usable_input(tmp_path):
+    """core.exits: no finished run under the paths given is a refusal (2) in every tool."""
+    from core.exits import EXIT_REFUSED
+    from tools import contrasts, export_transcripts, identifiability, jury_analysis, summarize_run, ups_replay
+    for main in (contrasts.main, export_transcripts.main, identifiability.main, jury_analysis.main,
+                 summarize_run.main):
+        assert main([str(tmp_path)]) == EXIT_REFUSED, main.__module__
+    assert ups_replay.main([str(tmp_path)]) == EXIT_REFUSED

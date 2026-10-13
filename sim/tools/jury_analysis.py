@@ -45,6 +45,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.config import world_setting
+from core.exits import EXIT_OK, EXIT_REFUSED
 from core.jury import RUBRIC_ITEMS
 from core.records import cell_of
 from core.scoring import UPS_TERMS
@@ -306,13 +307,13 @@ def main(argv: Optional[List[str]] = None) -> int:
               "unfinished log(s)", file=sys.stderr)
     if not records:
         print("no finished main-run records (dry-run records need --include-dry)")
-        return 0
+        return EXIT_REFUSED
     rep = analyse(records, samples=max(args.samples, 0), seed=args.seed)
     if args.json:
         print(json.dumps(rep, indent=2))
     else:
         _print(rep)
-    return 0
+    return EXIT_OK
 
 
 if __name__ == "__main__":

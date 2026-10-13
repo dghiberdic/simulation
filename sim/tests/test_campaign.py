@@ -246,7 +246,7 @@ def _ledger(path, total):
 
 
 def _campaign_argv(tmp_path, *extra):
-    return ["run", "--spend-file", str(tmp_path / "spend.json"), "--runs-dir", str(tmp_path / "runs"),
+    return ["run", "--spend-file", str(tmp_path / "spend.json"), "--output", str(tmp_path / "runs"),
             "--pilot-dir", str(tmp_path / "nopilot"), *extra]
 
 
@@ -307,7 +307,7 @@ def test_resume_rounds_follow_the_budget_left(tmp_path, monkeypatch):
     assert all(len(v) == want for v in state["runs"].values())
     # --replan adopts a new plan from the budget left: rounds = done + floor(left / round cost).
     costs.configure()
-    assert campaign.main(["plan", "--spend-file", str(tmp_path / "spend.json"), "--runs-dir",
+    assert campaign.main(["plan", "--spend-file", str(tmp_path / "spend.json"), "--output",
                           str(tmp_path / "runs"), "--pilot-dir", str(tmp_path / "nopilot")]) == 0
 
 

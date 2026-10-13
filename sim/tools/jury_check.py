@@ -19,8 +19,9 @@ the lab key is accepted instead; scores 1-5). The juror's verdict is read from t
 run record's final.grand_jury (core/jury.py: actors[lab]["composite"] and
 ["items"]).
 
-Exit codes: 0 pass, 1 revise, 2 no decision (missing record, hand scores or
-juror scores; rubric skipped for want of examples; fewer than five seat-runs).
+Exit codes (core.exits): 0 pass, 3 revise, 4 waiting for our hand scores, 2 no
+decision (unreadable record or hand scores, missing juror scores, rubric
+skipped for want of examples, fewer than five seat-runs).
 
 Also used by tools/jury_analysis.py and tools/disposition.py: spearman()
 (average-rank Spearman rho) and run_keys().
@@ -43,6 +44,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.config import PILOT_DIR
+from core.exits import EXIT_FAILED, EXIT_OK, EXIT_REFUSED, EXIT_WAITING
 from core.jury import RUBRIC_ITEMS
 from core.records import run_id_of
 
@@ -304,23 +306,23 @@ def main(argv: Optional[List[str]] = None) -> int:
         record = json.loads(Path(args.record).read_text())
     except (OSError, ValueError) as e:
         print(f"cannot read {args.record}: {e}")
-        return 2
+        return EXIT_REFUSED
     try:
         hand = read_hand_scores(Path(args.hand))
     except ValueError as e:
         print(str(e))
-        return 2
+        return EXIT_REFUSED
     if hand is None:
         print(f"waiting for our hand scores: {args.hand} not found "
               f"(columns {','.join(HAND_COLUMNS)})")
-        return 2
+        return EXIT_WAITING
     run_id = args.run_id or _run_id(record, Path(args.record).name.split(".")[0])
     rep = compare(record, run_id, hand)
     if args.json:
         print(json.dumps(rep, indent=2))
     else:
         _print(rep)
-    return {"pass": 0, "revise": 1}.get(rep["decision"], 2)
+    return {"pass": EXIT_OK, "revise": EXIT_FAILED}.get(rep["decision"], EXIT_REFUSED)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import json
 import pytest
 
 from core import costs
+from core.exits import EXIT_FAILED, EXIT_WAITING
 from core.jury import RUBRIC_ITEMS, GrandJury
 from core.llm import register_stub
 from tools import jury_check as jc
@@ -104,10 +105,10 @@ def test_t8_cli(tmp_path, capsys):
     rec = _t6_record([5, 1, 3, 3, 3], "kimi-t8-cli")
     (tmp_path / "T6-run01.json").write_text(json.dumps(rec))
     hand = _hand(tmp_path / "h.csv", [3] * 5)
-    assert jc.main([str(tmp_path / "T6-run01.json"), "--hand", str(hand)]) == 1
+    assert jc.main([str(tmp_path / "T6-run01.json"), "--hand", str(hand)]) == EXIT_FAILED
     out = capsys.readouterr().out
     assert "DECISION: revise" in out and "revise the examples once" in out
-    assert jc.main([str(tmp_path / "T6-run01.json"), "--hand", str(tmp_path / "none.csv")]) == 2
+    assert jc.main([str(tmp_path / "T6-run01.json"), "--hand", str(tmp_path / "none.csv")]) == EXIT_WAITING
     assert "waiting for our hand scores" in capsys.readouterr().out
     rec = _t6_record([3] * 5, "kimi-t8-cli2")
     rec.pop("run_id")

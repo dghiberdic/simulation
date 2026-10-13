@@ -5,6 +5,7 @@ import re
 
 import pytest
 
+from core.exits import EXIT_FAILED, EXIT_WAITING
 from tools import disposition as dt
 
 KEYS = ["anthropic", "openai", "gdm", "meta", "xai"]
@@ -45,7 +46,7 @@ def test_waiting_for_human_ratings(tmp_path, capsys):
     code = dt.main([str(pool), "--human", str(tmp_path / "none.csv"), "--write",
                     "--output", str(tmp_path / "out.json")])
     out = capsys.readouterr().out
-    assert code == dt.WAITING_EXIT and "waiting for human ratings" in out
+    assert code == EXIT_WAITING and "waiting for human ratings" in out
     # juror ratings stay hidden: no rated value (20, 35, 50, 65, 80) as a number, no juror name;
     # paths are removed first (the tmp path may hold any digits)
     shown = out.replace(str(tmp_path), "<tmp>")
@@ -139,7 +140,7 @@ def test_no_chosen_value_defaults_and_cli_exit_3(tmp_path, capsys):
     hcsv.write_text("run_id,lab,disposition\n" + "".join(f"{r},{k},{v}\n" for (r, k), v in human.items()))
     out = tmp_path / "out.json"
     assert dt.main([str(tmp_path / "pool.json"), "--human", str(hcsv), "--write",
-                    "--output", str(out)]) == dt.DEFAULTED_EXIT
+                    "--output", str(out)]) == EXIT_FAILED
     assert not out.exists()
     assert dt.main([str(tmp_path / "pool.json"), "--human", str(hcsv), "--write",
                     "--output", str(out), "--force"]) == 0

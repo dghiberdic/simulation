@@ -55,7 +55,8 @@ Usage (from sim/):
     python tools/ups_replay.py <log.json | dir> [--json]
 
 A directory is searched recursively for finished run logs (final scores;
-*.partial.json skipped).
+*.partial.json skipped). Exit codes (core.exits): 0 every identity replay
+reproduces its run, 3 one does not, 2 no finished run log.
 """
 
 import argparse
@@ -71,6 +72,7 @@ from core import records, scoring                               # noqa: E402
 from core.actions import INTRUDE                                # noqa: E402
 from core.config import build_labs_and_world, load_world        # noqa: E402
 from core.engine import SimulationEngine                        # noqa: E402
+from core.exits import EXIT_FAILED, EXIT_OK, EXIT_REFUSED       # noqa: E402
 from core.resume import all_draws, complete_turns               # noqa: E402
 from core.rng import KeyedRNG                                   # noqa: E402
 
@@ -477,7 +479,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     logs = find_logs(Path(args.path))
     if not logs:
         print(f"no finished run logs under {args.path}")
-        return 1
+        return EXIT_REFUSED
     results = []
     for path, record in logs:
         if not (records.is_run_record(record) and records.is_finished(record)):
@@ -489,7 +491,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(format_result(path, res) + "\n")
     if args.json:
         print(json.dumps([dict(r, path=str(pth)) for pth, r in results], indent=2, default=str))
-    return 0 if all(r["identity"]["ok"] for _, r in results) else 2
+    return EXIT_OK if all(r["identity"]["ok"] for _, r in results) else EXIT_FAILED
 
 
 if __name__ == "__main__":

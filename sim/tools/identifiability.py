@@ -45,6 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.config import load_charter, load_lab_configs                        # noqa: E402
 from core.costs import scripted_seats                                          # noqa: E402
+from core.exits import EXIT_OK, EXIT_REFUSED                                   # noqa: E402
 from core.names import CATEGORIES, LAB_NAMES                                   # noqa: E402
 from core.transcript import charters_block, disposition_transcript, full_transcript  # noqa: E402
 
@@ -261,10 +262,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                if not is_partial_path(path) and rec.get("turns")]
     if not records:
         print("no run records (dry-run records need --include-dry)")
-        return 1
+        return EXIT_REFUSED
     rep = identifiability(records)
     print(json.dumps(rep, indent=2) if args.json else format_report(rep))
-    return 0
+    return EXIT_OK
 
 
 if __name__ == "__main__":

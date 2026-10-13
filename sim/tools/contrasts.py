@@ -54,6 +54,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.records import is_finished, is_partial_path, load_records, run_id_of, run_kind  # noqa: E402
+from core.exits import EXIT_OK, EXIT_REFUSED                                    # noqa: E402
 from tools.summarize_run import summarize                                       # noqa: E402
 
 CONDITIONS = ("A0", "A", "B", "C")
@@ -245,10 +246,10 @@ def main(argv: Optional[List[str]] = None) -> int:
               file=sys.stderr)
     if not records:
         print("no finished main-run records (dry-run records need --include-dry)")
-        return 1
+        return EXIT_REFUSED
     res = contrasts(records, args.boot, args.seed, cut=campaign_cuts(args.logs, args.state))
     print(json.dumps(res, indent=2, default=str) if args.json else format_result(res))
-    return 0
+    return EXIT_OK
 
 
 if __name__ == "__main__":

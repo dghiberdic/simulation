@@ -63,9 +63,10 @@ Commands:
            --force, --post-run-only, --force-order, --allow-placeholder-values,
            --allow-no-examples, --sequential.
 
-Exit codes: 0 done (including the hard stop and a skipped completed test), 1
-budget guard, 2 aborted, crashed or refused (an unknown test included), 3
-approval refused (the re-priced plan exceeds the guard after the cuts).
+Exit codes (core.exits): 0 done (including the hard stop and a skipped
+completed test), 1 budget guard, 2 aborted, crashed or refused (an unknown test
+included), 3 approval refused (the re-priced plan exceeds the guard after the
+cuts).
 """
 
 import argparse
@@ -86,6 +87,7 @@ from core import costs as costs_mod
 from core.costs import BudgetExceeded, configure, get_tracker, measure_runs, project_run, with_fallbacks
 from core.economy import swap_capability
 from core.engine import RunAborted, SimulationEngine, interview_schedule, review_turns
+from core.exits import EXIT_BUDGET, EXIT_FAILED, EXIT_OK, EXIT_REFUSED
 from core import jury as jury_mod
 from core.jury import GRAND_JURY_MODELS, MACRO_JURY_MODELS, DispositionJury, collect_grand_jury
 from core.llm import FatalAPIError
@@ -109,7 +111,6 @@ SHARE_NAME = "share.txt"
 COMMANDS = ("plan", "approve", "all")
 
 JUROR_PURPOSES = ("grand_jury", "macro_jury", "disposition_jury")
-EXIT_OK, EXIT_BUDGET, EXIT_ABORTED, EXIT_OVER_GUARD = 0, 1, 2, 3
 EXIT_CODES = {"completed": EXIT_OK, "halted_budget": EXIT_BUDGET}   # aborted / crashed / refused -> 2
 
 
@@ -1002,7 +1003,7 @@ def _dispatch(args) -> int:
     if args.test not in (data.get("presets") or {}):
         print(f"Unknown test {args.test!r}: choose one of {', '.join(data.get('order') or [])}, "
               f"or a command ({', '.join(COMMANDS)}).")
-        return EXIT_ABORTED
+        return EXIT_REFUSED
     if args.rescore_grand_jury:
         return rescore_grand_jury(args, data, root, args.test)
     return run_test(args, data, root, args.test)
@@ -1017,11 +1018,11 @@ def approve(args, data: Dict[str, Any], root: Path) -> int:
     """
     if not test_done(root, "priced"):
         print("Refusing to approve: the priced run is not done (python pilot.py priced).")
-        return EXIT_ABORTED
+        return EXIT_REFUSED
     allowed = data.get("t7_turns") or [8, 12]
     if args.turns is None or args.turns not in allowed:
         print(f"approve needs the team's T7 decision: --turns {' or --turns '.join(str(t) for t in allowed)}")
-        return EXIT_ABORTED
+        return EXIT_REFUSED
     # data["budget_guard"] is --budget (a team decision to move the guard), else the
     # earlier approval's, else pilot.json's; it is stored and enforced from now on.
     plan = build_plan(data, root, turns=args.turns)
@@ -1029,7 +1030,7 @@ def approve(args, data: Dict[str, Any], root: Path) -> int:
     if plan["stop"]:
         print(f"\nAPPROVAL REFUSED: the re-priced plan ({usd(plan['total'])}) exceeds the {usd(plan['guard'])} "
               "guard after every cut. Stop and agree on the next step (spec §9.2).")
-        return EXIT_OVER_GUARD
+        return EXIT_FAILED
     approval = {"turns": args.turns, "cuts": [{k: v for k, v in c.items() if k != "saves"} for c in plan["cuts"]],
                 "budget_guard": plan["guard"],
                 "plan_total": plan["total"], "reserve": plan["reserve"], "basis": plan["basis"],
@@ -1123,7 +1124,7 @@ def run_test(args, data: Dict[str, Any], root: Path, test: str) -> int:
     why = _refusal(args, data, root, test, preset, approval)
     if why:
         print(f"Refusing {test}: {why}.")
-        return EXIT_ABORTED
+        return EXIT_REFUSED
     if args.dry_run and preset.get("requires_examples") and not jury_mod.load_examples():
         logger.warning("[T8] no few-shot examples yet: the Grand Jury records 'no examples yet' (dry run)")
     budget = _configure(args, data)
@@ -1151,12 +1152,12 @@ def run_test(args, data: Dict[str, Any], root: Path, test: str) -> int:
                                       bool(preset.get("grand_jury")))
         if problems:
             print("Preflight failed; nothing was called:\n  " + "\n  ".join(problems))
-            return EXIT_ABORTED
+            return EXIT_REFUSED
         claimed = claim_run_id(output_dir, run_id, expect, ratings_file, force=args.force)
         if claimed is None:
             print(f"Refusing {test}: {run_id} has a finished record of this set-up; pass --force to run it "
                   "again (the old record is kept aside).")
-            return EXIT_ABORTED
+            return EXIT_REFUSED
         run_id = claimed
 
     plan = build_plan(data, root, approval=approval)
@@ -1267,7 +1268,7 @@ def _write_summary(args, data: Dict[str, Any], root: Path, test: str, run_id: st
     _print_summary(summary)
     if status == "completed" and preset.get("hard_stop") and not args.rerun:
         _hard_stop(args, data, root, summary)
-    return EXIT_CODES.get(status, EXIT_ABORTED)
+    return EXIT_CODES.get(status, EXIT_REFUSED)
 
 
 def _hard_stop(args, data: Dict[str, Any], root: Path, summary: Dict[str, Any]) -> None:
@@ -1311,7 +1312,7 @@ def _post_run_only(args, data, root: Path, preset, test: str, run_id: str, recor
     budget = _configure(args, data)
     if record is None:
         print(f"{test}: {run_id} has no finished record; nothing collected")
-        return EXIT_ABORTED
+        return EXIT_REFUSED
     missing = missing_post_run(record, run_id, test, ratings_file, preset)
     post: Dict[str, Any] = {"errors": [], "done": [], "rated": 0, "post_run_only": True}
     if missing:
@@ -1329,7 +1330,7 @@ def _post_run_only(args, data, root: Path, preset, test: str, run_id: str, recor
         still = missing_post_run(record, run_id, test, ratings_file, preset)
         if still:
             print(f"  still missing: {'; '.join(still)}")
-            return EXIT_ABORTED
+            return EXIT_REFUSED
     summary = read_summary(root, test, rerun=bool(args.rerun))
     if summary and summary.get("status") == "completed" and summary.get("run_id") == run_id and not missing:
         print(f"{test}: {run_id} complete")
@@ -1348,32 +1349,32 @@ def rescore_grand_jury(args, data: Dict[str, Any], root: Path, test: str) -> int
     """
     if test != "T6":
         print("Refusing: --rescore-grand-jury is for T6 only (the Grand Jury's rubric runs on the T6 run, T8).")
-        return EXIT_ABORTED
+        return EXIT_REFUSED
     run_id = (read_summary(root, "T6") or {}).get("run_id") or "T6-run01"
     output_dir = root / "T6"
     record = read_json(output_dir / f"{run_id}.json")
     if not isinstance(record, dict) or not (record.get("final") or {}).get("scores"):
         print(f"Refusing: no finished T6 record at {output_dir / (run_id + '.json')}.")
-        return EXIT_ABORTED
+        return EXIT_REFUSED
     if bool((record.get("config") or {}).get("dry_run")) != bool(args.dry_run):
         print(f"Refusing: {run_id} is a {'dry' if not args.dry_run else 'real'} record; pass "
               f"{'--dry-run' if not args.dry_run else 'no --dry-run'} to re-score it.")
-        return EXIT_ABORTED
+        return EXIT_REFUSED
     final = record["final"]
     if "grand_jury_previous" in final and grand_jury_usable(record):
         print(f"Refusing: {run_id} was already re-scored once (final.grand_jury_previous exists; T8 revises "
               "the examples once).")
-        return EXIT_ABORTED
+        return EXIT_REFUSED
     examples = jury_mod.load_examples()
     if not examples and not args.dry_run:
         print("Refusing: config/jury_examples.json has no few-shot examples; revise them first (T8).")
-        return EXIT_ABORTED
+        return EXIT_REFUSED
     budget = _configure(args, data)
     if not args.dry_run:
         problems = model_problems([], {"grand": GRAND_JURY_MODELS, "macro": []}, uses_macro=False)
         if problems:
             print("Preflight failed; nothing was called:\n  " + "\n  ".join(problems))
-            return EXIT_ABORTED
+            return EXIT_REFUSED
     seats = [SimpleNamespace(key=k, model=v.get("model")) for k, v in (record.get("labs") or {}).items()]
     jurors = install_stubs(seats) if args.dry_run else _real_jurors()
     # The one re-score is used up only by a usable verdict: a re-score that
@@ -1399,10 +1400,10 @@ def rescore_grand_jury(args, data: Dict[str, Any], root: Path, test: str) -> int
             _write_json(output_dir / f"{run_id}.json", record)
         print(f"Grand Jury failed: {type(e).__name__}: {e}; the re-score is not used up "
               "(the verdict is unchanged): run --rescore-grand-jury again")
-        return EXIT_ABORTED
+        return EXIT_REFUSED
     if not grand_jury_usable(record):
         print(f"  {line}; {retry}")
-        return EXIT_ABORTED
+        return EXIT_REFUSED
     print(f"  {line}; compare with our hand scores: python tools/jury_check.py {output_dir / (run_id + '.json')}")
     return EXIT_OK
 

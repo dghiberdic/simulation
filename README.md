@@ -87,7 +87,7 @@ with `--dry-run`) runs in a few seconds; dry logs and ratings stay under
 ```bash
 python tools/summarize_run.py --t1 data/pilot/dry --include-dry
 python tools/summarize_run.py data/pilot/dry --include-dry --decide T3,T4
-python tools/export_transcripts.py data/pilot/dry/priced data/pilot/dry/T6 --include-dry --out /tmp/human
+python tools/export_transcripts.py data/pilot/dry/priced data/pilot/dry/T6 --include-dry --output /tmp/human
 python tools/disposition.py data/pilot/dry/disposition_ratings.dry.json --human /tmp/human/blind/human_ratings.csv --allow-stub
 python tools/jury_check.py data/pilot/dry/T6/T6-run01.json --hand /tmp/human/blind/hand_scores.csv
 python tools/compare_arms.py --separate data/pilot/dry/T4 --merged data/pilot/dry/T9 --include-dry
@@ -221,7 +221,7 @@ the juror sees (seats as letters A–E; names, charters and chosen settings
 masked; no interviews):
 
 ```bash
-python tools/export_transcripts.py data/pilot/priced data/pilot/T6 --out data/pilot/human
+python tools/export_transcripts.py data/pilot/priced data/pilot/T6 --output data/pilot/human
 ```
 
 It writes, per run, `blind/<run_id>/grand_jury.txt` (the Grand Jury view, for
@@ -253,10 +253,10 @@ T6-run01,E,2,1,2,3,2,2
 
 Score the T6 run's five before looking at the juror's scores; then
 `python tools/jury_check.py data/pilot/T6/T6-run01.json` compares them
-(exit 0 pass, 1 revise: composite more than 1 point off on more than one of
+(exit 0 pass, 3 revise: composite more than 1 point off on more than one of
 the five → read the disagreements, revise the examples once, then re-score
 with `python pilot.py T6 --rescore-grand-jury` and run `jury_check.py` again;
-2 no decision).
+4 hand scores not there yet; 2 no decision).
 
 **Few-shot examples — `config/jury_examples.json`.** From the priced run's five
 hand-scored seat-runs, a JSON list, about 3,000 tokens in total: short excerpts,
@@ -350,7 +350,7 @@ perceived vs chosen disposition per seat, UPS-weight sensitivity).
    every other tool (default $750, the round's budget, pilot included);
    `--headroom USD` sets it to the spend so far plus USD instead. Cells are cut whole
    (B, kin, A0, C) below 6 runs per cell; at most 12 (`--max-runs`).
-   `--turns`, `--s2-mode merged|separate` override the pilot's decisions.
+   `--turns`, `--a2a merged|separate` override the pilot's decisions.
 3. Run: `python campaign.py run [--rounds N]`. Interleaved rounds, one run per
    cell per round, priority A, C, A0, kin, B. `--rounds N` is the TOTAL number
    of rounds to have done (rounds already done count), not N more rounds. The first `run` saves its plan
@@ -539,6 +539,19 @@ exceed it by at most one stage of concurrent calls. A timed-out request or
 broken stream is logged at $0 with `possibly_billed`. Dry runs and scripted
 policies never touch the ledger. A halted pilot run exits 1 and keeps its
 partial record and whatever T2 ratings were paid for.
+
+## Exit codes
+
+Every entry point (`main.py`, `pilot.py`, `campaign.py`, `rate_charters.py`,
+`checks/scripted_checks.py`, `tools/*.py`) uses the same codes (`core/exits.py`):
+
+| Code | Meaning |
+|---|---|
+| 0 | done |
+| 1 | halted on the budget guard (partial records kept) |
+| 2 | refused, usage error, missing or unreadable input, or an aborted or crashed run |
+| 3 | the plan or check did not pass: `pilot.py approve` re-priced plan over the guard, a scripted check failed, a UPS identity replay mismatch, `jury_check.py` revise, `disposition.py` seat defaulted |
+| 4 | waiting for human input (hand scores, human ratings) |
 
 ---
 

@@ -41,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from core.config import CONFIG_DIR, LAB_ORDER, load_charter, load_json, pilot_budget_guard
 from core.costs import BudgetExceeded, configure, get_tracker
+from core.exits import EXIT_BUDGET, EXIT_OK, EXIT_REFUSED
 from core.llm import FatalAPIError, complete_json, preflight, register_stub
 from core.state import VALUE_AXES
 
@@ -170,7 +171,7 @@ def main(argv=None) -> int:
                              {c["model"]: c["provider"] for c in cfgs.values() if c.get("provider")})
         if problems:
             print("Preflight failed; nothing was called:\n  " + "\n  ".join(problems))
-            return 2
+            return EXIT_REFUSED
 
     unusable = []
     for key, lab_cfg in cfgs.items():
@@ -181,10 +182,10 @@ def main(argv=None) -> int:
             values, notes = rate_lab(lab_cfg)
         except BudgetExceeded as e:     # exit 1 on the budget guard, like pilot.py
             print(f"halted on the budget guard at {key}: {e}")
-            return 1
+            return EXIT_BUDGET
         except FatalAPIError as e:
             print(f"stopped at {key}: {e}")
-            return 2
+            return EXIT_REFUSED
         except UnusableRating as e:
             # reported, the other seats still rated; the seat keeps its old values.
             print(f"UNUSABLE rating for {key} ({model}): {e}; its config is unchanged")
@@ -201,8 +202,8 @@ def main(argv=None) -> int:
         print(f"measured spend: ${get_tracker().persisted_total():.2f}")
     if unusable:
         print("re-rate: " + "; ".join(f"python rate_charters.py --lab {k}" for k in unusable))
-        return 2
-    return 0
+        return EXIT_REFUSED
+    return EXIT_OK
 
 
 if __name__ == "__main__":

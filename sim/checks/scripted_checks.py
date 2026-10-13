@@ -53,6 +53,7 @@ from core.economy import (
     execute_purchases, macro_growth, purchases_frozen,
 )
 from core.engine import SimulationEngine
+from core.exits import EXIT_FAILED, EXIT_OK
 from core.actions import precheck
 from core.intrusion import copy_gain, exposure_probability, success_probability
 from core.policies import POLICIES, affordable_units, intrude_ev
@@ -1088,4 +1089,4 @@ def run_all(verbose: bool = True) -> bool:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.WARNING)
-    raise SystemExit(0 if run_all() else 1)
+    raise SystemExit(EXIT_OK if run_all() else EXIT_FAILED)

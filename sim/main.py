@@ -31,8 +31,10 @@ saved, verdict pending, before the jury is asked) asks only the Grand Jury. A
 run stopped mid-way (kill, crash, budget guard) resumes when called again with
 the same run id, output and set-up: the turns its partial log holds are
 replayed from the log with no call (core.resume), and the run continues live
-from the first turn the log does not hold complete. Exit codes: 0 done, 1 budget guard (when it trips during the Grand Jury
-the finished record is kept), 2 refused, aborted or crashed.
+from the first turn the log does not hold complete.
+
+Exit codes (core.exits): 0 done, 1 budget guard (when it trips during the Grand
+Jury the finished record is kept), 2 refused, aborted or crashed.
 
 Examples:
   python main.py --scenario S1 --condition A --dry-run
@@ -52,6 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from core.config import LAB_ORDER, RUNS_DIR, build_labs_and_world, load_dispositions, load_world
 from core.costs import BudgetExceeded, configure, get_tracker
 from core.engine import RunAborted, SimulationEngine
+from core.exits import EXIT_BUDGET, EXIT_OK, EXIT_REFUSED
 from core.records import (KIN_CONDITION, KIN_SCENARIO, KIN_SEAT, cell_name, grand_jury_usable, is_finished,
                           read_record)
 from core.jury import GRAND_JURY_MODELS, MACRO_JURY_MODELS, collect_grand_jury
@@ -62,7 +65,6 @@ from core.stubs import install_stubs
 
 logger = logging.getLogger(__name__)
 
-EXIT_JURY_MISSING = 1                  # a budget stop; the run itself is finished and saved
 
 
 def default_run_id(cell: str) -> str:
@@ -181,7 +183,7 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
     if args.kin and (args.scenario, args.condition) != (KIN_SCENARIO, KIN_CONDITION):
         if args.scenario != "S1" or args.condition != "A":      # the defaults: silently the kin set-up
             print("Refusing: the kin cell is S2 under condition A (§6.5).")
-            return 2, None
+            return EXIT_REFUSED, None
         print(f"Note: --kin runs the kin cell, scenario {KIN_SCENARIO} under condition {KIN_CONDITION} "
               f"(§6.5): --scenario/--condition {args.scenario}/{args.condition} overridden to "
               f"{KIN_SCENARIO}/{KIN_CONDITION}.")
@@ -199,13 +201,13 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
     dispositions, why = resolve_dispositions(args)
     if why:
         print(why)
-        return 2, None
+        return EXIT_REFUSED, None
     labs, world = build_labs_and_world(cfg, dispositions=dispositions, charters=args.policy is None)
     kin_model = apply_kin(labs) if args.kin else None
     why = apply_model_overrides(labs, args.model)
     if why:
         print(why)
-        return 2, None
+        return EXIT_REFUSED, None
 
     configure(spend_file=Path(args.spend_file) if args.spend_file else None,
               budget=None if args.dry_run else args.budget)
@@ -225,7 +227,7 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
         problem = real_run_problems(labs, macro_jurors, run_grand_jury, args.allow_placeholder_values)
         if problem:
             print(problem)
-            return 2, None
+            return EXIT_REFUSED, None
         if args.budget is None:
             logger.warning("[budget] real run without --budget: no spend guard; pass --budget USD")
 
@@ -237,12 +239,12 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
     if conflict:
         print(f"Refusing: {output_dir / (run_id + '.json')} holds a finished run of another set-up "
               f"({conflict}); pass another --run-id or --output (a finished run is never deleted).")
-        return 2, None
+        return EXIT_REFUSED, None
     if existing is not None:
         if run_grand_jury and not grand_jury_usable(existing):
             return ask_grand_jury_only(existing, run_id, output_dir, grand_jurors)
         print(f"{run_id}: already finished ({output_dir / (run_id + '.json')}); not run again")
-        return 0, existing
+        return EXIT_OK, existing
     if not args.dry_run and not offline:
         clear_stale(output_dir, run_id)
 
@@ -259,7 +261,7 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
             interview_turns=list(args.interview_turns or []), kin=bool(args.kin))
     except ValueError as e:         # a set-up the engine refuses (event turn outside the run)
         print(f"Refusing: {e}.")
-        return 2, None
+        return EXIT_REFUSED, None
     try:
         record = engine.run()
     except BudgetExceeded as e:
@@ -268,22 +270,22 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
             print(f"Halted on the budget guard during the Grand Jury: {e}\nThe run is finished and saved "
                   f"({output_dir / (run_id + '.json')}); only its Grand Jury verdict is missing. Re-running "
                   "this run id asks the Grand Jury only.")
-            return EXIT_JURY_MISSING, saved
+            return EXIT_BUDGET, saved
         print(f"Halted on the budget guard: {e}\nPartial record in {output_dir}")
-        return 1, None
+        return EXIT_BUDGET, None
     except (RunAborted, FatalAPIError) as e:
         print(f"Run aborted: {type(e).__name__}: {e}\nPartial record in {output_dir}")
-        return 2, None
+        return EXIT_REFUSED, None
     except Exception as e:      # any other crash keeps the partial record and exits 2
         logger.exception(f"[crash] {run_id}: {type(e).__name__}: {e}")
         print(f"Run crashed: {type(e).__name__}: {e}\nPartial record in {output_dir}")
-        return 2, None
+        return EXIT_REFUSED, None
 
     _print_scores(record)
     print(f"\nLog: {output_dir / (run_id + '.json')}")
     if policy is None:
         print(f"Measured spend (ledger): ${get_tracker().persisted_total():.2f}")
-    return 0, record
+    return EXIT_OK, record
 
 
 def run_dir(run_id: str, dry_run: bool, policy: Optional[str] = None) -> Path:
@@ -345,12 +347,12 @@ def ask_grand_jury_only(record: Dict[str, Any], run_id: str, output_dir: Path,
         line = collect_grand_jury(record, grand_jurors, run_id, output_dir)
     except BudgetExceeded as e:
         print(f"Halted on the budget guard during the Grand Jury: {e}")
-        return EXIT_JURY_MISSING, record
+        return EXIT_BUDGET, record
     except Exception as e:      # noqa: BLE001 — the run is kept either way
         print(f"Grand Jury failed: {type(e).__name__}: {e}")
-        return 2, record
+        return EXIT_REFUSED, record
     print(f"{run_id}: {line}")
-    return 0, record
+    return EXIT_OK, record
 
 
 def clear_stale(output_dir: Path, run_id: str) -> bool:

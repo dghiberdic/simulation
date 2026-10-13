@@ -85,6 +85,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.config import CONFIG_DIR, world_setting   # noqa: E402
 from core.economy import (HINDCAST_EXPECTED_FRONTIER_GAP, HINDCAST_REAL, HINDCAST_TURN,  # noqa: E402
                           hindcast_gaps)
+from core.exits import EXIT_OK, EXIT_REFUSED   # noqa: E402
 from core.jury import RUBRIC_ITEMS   # noqa: E402
 from core.names import LAB_ALIASES   # noqa: E402
 from core.records import (cell_of, is_finished, is_main_run, load_records, run_id_of,  # noqa: E402
@@ -3213,16 +3214,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.t6_tally:
         result = t6_tally(Path(args.t6_tally))
         print(json.dumps(result, indent=2) if args.json else result["text"])
-        return 0
+        return EXIT_OK
     if args.t1:
         loaded = load_records(args.t1, include_dry=args.include_dry, recursive=True)
         result = t1_decision([rec for _p, rec in loaded])
         print(json.dumps(result, indent=2) if args.json else "T1: " + result["text"])
-        return 0
+        return EXIT_OK
     if args.t7:
         loaded = load_records(args.t7, include_dry=args.include_dry, recursive=True)
         print(t7_line([rec for _p, rec in loaded]) or "T7: no run of 8 or more turns in the logs given")
-        return 0
+        return EXIT_OK
     if not args.logs:
         parser.error("give run logs (or --t1 / --t7 DIR ..., or --t6-tally SHEET)")
 
@@ -3233,7 +3234,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"T6 coding sheet: {n} row(s) in {args.t6_sheet}"
               + (f" ({n - before} new row(s) merged; codes already entered kept)" if before else "")
               + f". {SHEET_HELP}")
-        return 0
+        return EXIT_OK
     every = [rec for _p, rec in loaded]
     records, dropped = main_analysis_records(every, args.include_pilot)
     if dropped:
@@ -3245,7 +3246,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         loaded = [(p, r) for p, r in loaded if any(r is k for k in records)]
     if not records:
         print("no run records to summarise (dry-run records need --include-dry)")
-        return 0
+        return EXIT_REFUSED
     decide = parse_decide(args.decide)
     if args.ups_contribution:
         attach_ups_contributions(records)
@@ -3264,7 +3265,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.json:
         print(json.dumps({"runs": summaries, "aggregate": agg}, indent=2, default=str))
-        return 0
+        return EXIT_OK
     for path, s in summaries.items():
         _print_summary(Path(path).name, s)
     if len(records) > 1:
@@ -3274,7 +3275,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("(main runs: no pilot decision lines; condition contrasts: python tools/contrasts.py <runs dir>)")
     if agg.get("review"):
         print(f"review file (every screened text in full, with verdict and rule): {agg['review']}")
-    return 0
+    return EXIT_OK
 
 
 if __name__ == "__main__":
