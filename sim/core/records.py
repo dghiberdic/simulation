@@ -89,10 +89,22 @@ def is_finished(rec: Any) -> bool:
                 and rec["final"].get("scores"))
 
 
+NO_USABLE_VERDICT = "no usable verdict"
+
+
 def grand_jury_usable(rec: Dict[str, Any]) -> bool:
     """The record holds a Grand Jury verdict (a juror named, no error)."""
     gj = (rec.get("final") or {}).get("grand_jury")
     return isinstance(gj, dict) and bool(gj.get("juror")) and not gj.get("error")
+
+
+def grand_jury_settled(rec: Dict[str, Any]) -> bool:
+    """The Grand Jury was asked to the end of its call chain: a usable verdict, or
+    none usable after the fallback (recorded as such; asking again would not differ
+    from an uninterrupted run, which ends with that verdict). Not settled: no
+    verdict, pending, or stopped by the budget, an interrupt or an error."""
+    gj = (rec.get("final") or {}).get("grand_jury")
+    return grand_jury_usable(rec) or (isinstance(gj, dict) and gj.get("error") == NO_USABLE_VERDICT)
 
 
 def run_meta(rec: Dict[str, Any]) -> Dict[str, Any]:

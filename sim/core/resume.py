@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from core.llm import parse_json_detail
-from core.records import read_json
+from core.records import is_finished, read_json
 
 # Config keys that may differ between the partial log and the resuming run.
 _FREE_CONFIG_KEYS = ("run_meta",)
@@ -102,12 +102,17 @@ def partial_path(output_dir: Path, run_id: str) -> Path:
 
 
 def load_partial(output_dir: Optional[Path], run_id: str) -> Optional[Dict[str, Any]]:
-    """The partial log of run_id, or None (missing, unreadable or not a run record)."""
+    """The partial log of run_id, or None: missing, unreadable, not a run record, or
+    left over beside the finished record of the same run (a stop between writing the
+    final record and removing the log; the next save replaces it)."""
     if output_dir is None:
         return None
     rec = read_json(partial_path(output_dir, run_id))
     if not isinstance(rec, dict) or not isinstance(rec.get("turns"), list) \
             or not isinstance(rec.get("config"), dict):
+        return None
+    final = read_json(Path(output_dir) / f"{run_id}.json")
+    if is_finished(final) and not setup_diffs(rec, final):
         return None
     return rec
 
