@@ -57,6 +57,7 @@ from core.mandates import normalise_spans                                      #
 from core.names import CATEGORIES, LAB_NAMES                                   # noqa: E402
 from core.records import is_dry, is_main_run, is_pilot, is_scripted_run       # noqa: E402
 from core.transcript import (charters_block, disposition_transcript, full_transcript,  # noqa: E402
+from core.cli import run_main
                              term_regex)
 
 VIEWS = ("grand_jury.ledger", "grand_jury.charters", "grand_jury.text", "t2.text")
@@ -326,4 +327,4 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run_main(main))

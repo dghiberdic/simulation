@@ -58,6 +58,7 @@ from core.actions import precheck
 from core.intrusion import copy_gain, exposure_probability, success_probability
 from core.policies import POLICIES, affordable_units, intrude_ev
 from core.state import LabState, LedgerEntry, WorldState, build_lab
+from core.cli import run_main
 from prompts.brief import CONDITION_TEXTS, build_system_prompt
 from prompts.packets import action_list, scenario_items
 from prompts.turn import build_turn_prompt
@@ -1089,4 +1090,4 @@ def run_all(verbose: bool = True) -> bool:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.WARNING)
-    raise SystemExit(EXIT_OK if run_all() else EXIT_FAILED)
+    raise SystemExit(run_main(lambda: EXIT_OK if run_all() else EXIT_FAILED))

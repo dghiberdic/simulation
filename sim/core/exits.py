@@ -8,7 +8,8 @@ rate_charters.py, checks/scripted_checks.py and tools/*.py).
   3  the plan or check did not pass: pilot approve's re-priced plan exceeds the
      guard, a scripted check failed, the UPS identity replay does not reproduce
      the run, the juror's scores need revised examples (T8), a disposition seat
-     defaulted (T2)
+     defaulted (T2), or a finished run has no usable Grand Jury verdict after the
+     whole fallback chain (main.py, campaign.py)
   4  waiting for human input (our hand scores or human ratings are not there yet)
 """
 

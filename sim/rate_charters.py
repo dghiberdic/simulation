@@ -44,6 +44,7 @@ from core.costs import BudgetExceeded, configure, get_tracker
 from core.exits import EXIT_BUDGET, EXIT_OK, EXIT_REFUSED
 from core.llm import FatalAPIError, complete_json, preflight, register_stub
 from core.state import VALUE_AXES
+from core.cli import run_main
 
 logger = logging.getLogger(__name__)
 
@@ -207,4 +208,4 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run_main(main))
