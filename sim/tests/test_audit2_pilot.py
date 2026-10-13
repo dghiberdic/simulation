@@ -462,31 +462,42 @@ class _NoPay:
         raise AssertionError("the finished run was paid for again")
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-pilot-6: re-invoking a pilot test whose run finished but whose "
-                                        "summary is missing/not completed re-runs (re-pays) the whole run")
 def test_finished_pilot_run_is_never_paid_again(tmp_path, monkeypatch):
     for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
         monkeypatch.delenv(k, raising=False)
     _finished_t5(tmp_path)
     _NoPay.built = 0
     monkeypatch.setattr(pilot, "SimulationEngine", _NoPay)
-    pilot.main(["T5", "--dry-run", "--output", str(tmp_path), "--force-order",
-                "--spend-file", str(tmp_path / "spend.json")])
+    argv = ["T5", "--dry-run", "--output", str(tmp_path), "--force-order",
+            "--spend-file", str(tmp_path / "spend.json")]
+    assert not pilot.test_done(tmp_path, "T5")              # its T2 ratings are missing
+    assert pilot.main(argv) == 0                            # collects them only
     assert _NoPay.built == 0
+    s = pilot.read_summary(tmp_path, "T5")
+    assert s["status"] == "completed" and s["post_run_only"] and pilot.test_done(tmp_path, "T5")
+    assert pilot.main(argv) == 2                            # completed: refused, never re-run
+    assert pilot.main(argv + ["--skip-completed"]) == 0 and _NoPay.built == 0
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-pilot-7: claim_run_id deletes a finished (paid) record of the "
-                                        "same set-up before a real pilot run starts")
+def test_post_run_only_marks_the_test_completed(tmp_path, monkeypatch):
+    _finished_t5(tmp_path)
+    monkeypatch.setattr(pilot, "SimulationEngine", _NoPay)
+    assert pilot.main(["T5", "--post-run-only", "--dry-run", "--output", str(tmp_path),
+                       "--spend-file", str(tmp_path / "spend.json")]) == 0
+    assert pilot.test_done(tmp_path, "T5") and _NoPay.built == 0
+
+
 def test_claim_run_id_keeps_a_finished_record(tmp_path):
     path = _finished_t5(tmp_path)
     expect = {"scenario": "S1", "condition": "A", "a2a_mode": "merged", "turns": 4, "seed": 0,
               "rotation": None, "event_turn": 2}
-    pilot.claim_run_id(path.parent, "T5-run01", expect, None)
+    assert pilot.claim_run_id(path.parent, "T5-run01", expect, None) is None
     assert path.exists()
+    # --force: the paid record is moved aside (not read as a run any more), never deleted.
+    assert pilot.claim_run_id(path.parent, "T5-run01", expect, None, force=True) == "T5-run01"
+    assert not path.exists() and len(list(path.parent.glob("T5-run01.json.replaced-*"))) == 1
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-pilot-8: a failed T6 --rerun overwrites the T6 summary, so the "
-                                        "finished T6-run01 no longer counts as done")
 def test_failed_t6_rerun_leaves_t6_done(tmp_path):
     d = tmp_path / "T6"
     d.mkdir()
@@ -523,8 +534,6 @@ def test_final_record_is_on_disk_before_the_grand_jury(tmp_path, monkeypatch):
     assert seen["finished"] is True
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-pilot-10: a T6 --rescore-grand-jury that gets no usable "
-                                        "verdict exits 0 and still uses up the one re-score")
 def test_failed_rescore_exits_nonzero(tmp_path, monkeypatch):
     d = tmp_path / "T6"
     d.mkdir()
@@ -535,16 +544,25 @@ def test_failed_rescore_exits_nonzero(tmp_path, monkeypatch):
 
     def no_verdict(record, jurors, run_id, output_dir):
         record["final"]["grand_jury"] = {"error": "no usable verdict"}
+        pilot._write_json(output_dir / f"{run_id}.json", record)     # as collect_grand_jury does
         return "Grand Jury: no usable verdict"
 
     monkeypatch.setattr(pilot, "collect_grand_jury", no_verdict)
-    code = pilot.main(["T6", "--rescore-grand-jury", "--dry-run", "--output", str(tmp_path),
-                       "--spend-file", str(tmp_path / "spend.json")])
-    assert code != 0
+    argv = ["T6", "--rescore-grand-jury", "--dry-run", "--output", str(tmp_path),
+            "--spend-file", str(tmp_path / "spend.json")]
+    assert pilot.main(argv) != 0
+    # Not used up: a second re-score is allowed, and the first verdict stays as previous.
+    def verdict(record, jurors, run_id, output_dir):
+        record["final"]["grand_jury"] = {"juror": "kimi", "actors": {}}
+        pilot._write_json(output_dir / f"{run_id}.json", record)
+        return "Grand Jury: usable verdict"
+    monkeypatch.setattr(pilot, "collect_grand_jury", verdict)
+    assert pilot.main(argv) == 0
+    saved = json.loads((d / "T6-run01.json").read_text())["final"]
+    assert saved["grand_jury_previous"]["juror"] == "kimi"
+    assert pilot.main(argv) == 2                            # now used up
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-pilot-11: seat_share averages per-test shares, so T5 (four "
-                                        "model seats) inflates the other models' shares and the kin cost")
 def test_seat_share_equal_when_every_model_costs_the_same(tmp_path):
     data = {"order": ["priced", "T5"]}
     for test, share in (("priced", {m: 0.2 for m in MODEL.values()}),

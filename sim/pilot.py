@@ -50,7 +50,13 @@ Commands:
     python pilot.py T6 --rescore-grand-jury    T8: re-ask the Grand Jury on the T6 record after the
                                                examples are revised (seats not re-run; once)
   A completed test is refused unless --skip-completed (skip it, exit 0) or
-  --force (run it again, replacing its run).
+  --force (run it again; a real run's old record is moved aside, never deleted).
+  A finished run is never paid for again: re-invoking its test (or
+  --post-run-only) collects only its missing post-run stages (Grand Jury, T2
+  ratings) and then marks the test completed. A run stopped mid-way resumes
+  from its partial log (core.resume): logged turns are replayed with no call.
+  The T6 re-run writes its own summary (pilot_summary_T6-rerun.json), so a
+  failed re-run never un-does T6, and it can be retried.
   options: --dry-run (stub models and jurors, $0, logs under data/pilot/dry/),
            --output DIR (pilot root), --spend-file, --budget (guard override:
            --budget, else the approval's, else pilot.json's $48), --skip-completed,
@@ -263,18 +269,50 @@ def read_approval(root: Path) -> Optional[Dict[str, Any]]:
     return a if isinstance(a, dict) and a.get("turns") else None
 
 
-def summary_path(root: Path, test: str) -> Path:
-    return root / test / f"pilot_summary_{test}.json"
+def summary_path(root: Path, test: str, rerun: bool = False) -> Path:
+    """The test's summary; the T6 re-run writes its own (BUG-8: a failed re-run never
+    replaces T6's completed summary)."""
+    return root / test / (f"pilot_summary_{test}-rerun.json" if rerun else f"pilot_summary_{test}.json")
 
 
-def read_summary(root: Path, test: str) -> Optional[Dict[str, Any]]:
-    s = _read_json(summary_path(root, test))
+def read_summary(root: Path, test: str, rerun: bool = False) -> Optional[Dict[str, Any]]:
+    s = _read_json(summary_path(root, test, rerun))
     return s if isinstance(s, dict) else None
 
 
-def test_done(root: Path, test: str) -> bool:
-    s = read_summary(root, test)
+def base_run_id(test: str) -> str:
+    return f"{test}-run01"
+
+
+def _completed(s: Optional[Dict[str, Any]]) -> bool:
     return bool(s and s.get("status") == "completed" and s.get("runs_completed"))
+
+
+def test_done(root: Path, test: str) -> bool:
+    """
+    The test is done: its summary says completed, or its run finished and every
+    post-run stage is collected although the summary is missing or failed (a kill or
+    a budget stop during the T2 rating, BUG-6). A summary of the T6 re-run, which
+    older versions wrote over T6's own, never decides T6 (BUG-8): T6's earlier
+    summary (.prev) and T6-run01's record do.
+    """
+    s = read_summary(root, test)
+    if s and test == "T6" and s.get("run_id") == "T6-run02":
+        s = _read_json(summary_path(root, test).with_name("pilot_summary_T6.prev.json"))
+    if _completed(s):
+        return True
+    ids = dict.fromkeys(i for i in ((s or {}).get("run_id"), base_run_id(test)) if i)
+    return any(_post_run_collected(root, test, rid) for rid in ids)
+
+
+def _post_run_collected(root: Path, test: str, run_id: str) -> bool:
+    """True when <run_id>.json is a finished run with no post-run stage missing."""
+    record = _read_json(root / test / f"{run_id}.json")
+    if not SR.is_finished(record):
+        return False
+    preset = resolve_preset(load_pilot(), test)
+    dry = bool((record.get("config") or {}).get("dry_run"))
+    return not missing_post_run(record, run_id, test, ratings_path(root, dry), preset)
 
 
 def resolve_preset(data: Dict[str, Any], name: str, approval: Optional[Dict[str, Any]] = None,
@@ -362,10 +400,13 @@ def measured_inputs(root: Path, data: Dict[str, Any]) -> Optional[Dict[str, Any]
         return None
     out: Dict[str, Any] = {k: round(sum(v) / len(v), 4) for k, v in acc.items()}
     if shares:
-        # Each model's mean share over the tests it played in (T5 has no xAI share),
-        # renormalised, so a test without a model does not overweight the others (CR #3).
-        models = {m for s in shares for m in s}
-        mean = {m: sum(s[m] for s in shares if m in s) / sum(1 for s in shares if m in s) for m in models}
+        # Per test, each model's share times the number of models in it is its cost per
+        # seat-turn relative to that test's mean (1 when all cost the same), so a test
+        # with fewer model seats (T5: xAI scripted) does not inflate the others (BUG-11).
+        # Each model's mean over the tests it played in, normalised once.
+        rel = [{m: v * len(s) for m, v in s.items()} for s in shares]
+        models = {m for r in rel for m in r}
+        mean = {m: sum(r[m] for r in rel if m in r) / sum(1 for r in rel if m in r) for m in models}
         total = sum(mean.values())
         out["seat_share"] = {m: round(v / total, 4) for m, v in mean.items()} if total > 0 else {}
     return out
@@ -794,9 +835,12 @@ def stale_conflict(output_dir: Path, run_id: str, expect: Optional[Dict[str, Any
 
 
 def claim_run_id(output_dir: Path, run_id: str, expect: Optional[Dict[str, Any]],
-                 ratings_file: Optional[Path]) -> str:
-    """The id this run writes under: `run_id` after deleting its stale final (and its
-    pooled ratings), or "<run_id>-vN" when the final there is a different run."""
+                 ratings_file: Optional[Path], force: bool = False) -> Optional[str]:
+    """The id this run writes under: `run_id`, or "<run_id>-vN" when the final there is
+    a different run. A leftover unfinished final there is deleted. A finished (paid)
+    record of this set-up is never deleted (BUG-7): None without `force`; with it, the
+    record is moved aside to <run_id>.json.replaced-<time> (no longer read as a run).
+    Either way the run's pooled T2 ratings are dropped, the run being replaced."""
     candidate, n = run_id, 1
     while stale_conflict(output_dir, candidate, expect):
         n += 1
@@ -805,8 +849,16 @@ def claim_run_id(output_dir: Path, run_id: str, expect: Optional[Dict[str, Any]]
         logger.warning(f"[stale] {run_id}.json in {output_dir} holds a different run; saving as {candidate}")
     path = output_dir / f"{candidate}.json"
     if path.exists():
-        path.unlink()
-        logger.info(f"[stale] removed {path}")
+        if SR.is_finished(_read_json(path)):
+            if not force:
+                logger.warning(f"[stale] {path} is a finished run; kept (pass --force to replace it)")
+                return None
+            moved = path.with_name(f"{path.name}.replaced-{time.strftime('%Y%m%d-%H%M%S')}")
+            path.replace(moved)
+            logger.info(f"[stale] {path} moved aside to {moved.name}")
+        else:
+            path.unlink()
+            logger.info(f"[stale] removed {path}")
         if ratings_file and Path(ratings_file).exists():
             pooled = _read_json(Path(ratings_file)) or {}
             for field in RATING_FIELDS:
@@ -819,9 +871,10 @@ def claim_run_id(output_dir: Path, run_id: str, expect: Optional[Dict[str, Any]]
 
 def completed_record(output_dir: Path, run_id: str, expect: Optional[Dict[str, Any]],
                      dry_run: bool) -> Optional[Dict[str, Any]]:
-    """The finished record at <run_id>.json when it is this same run (--skip-completed)."""
+    """The finished record at <run_id>.json when it is this same run (same set-up, same
+    dry or real mode), else None."""
     rec = _read_json(output_dir / f"{run_id}.json")
-    if not isinstance(rec, dict) or not isinstance(rec.get("turns"), list) or not rec.get("final"):
+    if not SR.is_finished(rec) or not isinstance(rec.get("turns"), list):
         return None
     if bool((rec.get("config") or {}).get("dry_run")) != bool(dry_run):
         return None
@@ -1189,7 +1242,8 @@ def run_test(args, data: Dict[str, Any], root: Path, test: str) -> int:
     approval = read_approval(root)
     preset = resolve_preset(data, test, approval)
     if args.skip_completed and test_done(root, test) and not args.rerun and not args.post_run_only:
-        print(f"{test}: {(read_summary(root, test) or {}).get('run_id')} already completed (skipped)")
+        print(f"{test}: {(read_summary(root, test) or {}).get('run_id') or base_run_id(test)} already "
+              "completed (skipped)")
         return EXIT_OK
     if args.skip_completed and args.rerun and rerun_done(root, args.dry_run):
         print("T6: T6-run02 (the one re-run) already completed (skipped)")
@@ -1212,13 +1266,12 @@ def run_test(args, data: Dict[str, Any], root: Path, test: str) -> int:
               "turns": turns, "seed": seed, "rotation": preset.get("swap"),
               "event_turn": preset.get("event_turn") or load_world().get("event_turn")}
 
-    finished = completed_record(output_dir, run_id, expect, args.dry_run) \
-        if (args.skip_completed or args.post_run_only) else None
-    if args.post_run_only:
-        return _post_run_only(args, data, preset, test, run_id, finished, output_dir, ratings_file)
-    if finished is not None:
-        print(f"{test}: {run_id} already completed (skipped)")
-        return EXIT_OK
+    # A finished run of this set-up is never paid for again (BUG-6): without --force,
+    # only its missing post-run stages are collected, and the test is then done.
+    finished = None if args.force and not args.post_run_only else \
+        completed_record(output_dir, run_id, expect, args.dry_run)
+    if args.post_run_only or finished is not None:
+        return _post_run_only(args, data, root, preset, test, run_id, finished, output_dir, ratings_file)
 
     if not args.dry_run:
         probe_labs, _ = build_labs_and_world(load_world(), charters=False)
@@ -1227,6 +1280,12 @@ def run_test(args, data: Dict[str, Any], root: Path, test: str) -> int:
         if problems:
             print("Preflight failed; nothing was called:\n  " + "\n  ".join(problems))
             return EXIT_ABORTED
+        claimed = claim_run_id(output_dir, run_id, expect, ratings_file, force=args.force)
+        if claimed is None:
+            print(f"Refusing {test}: {run_id} has a finished record of this set-up; pass --force to run it "
+                  "again (the old record is kept aside).")
+            return EXIT_ABORTED
+        run_id = claimed
 
     plan = build_plan(data, root, approval=approval)
     est = next((s for s in plan["steps"] if s["test"] == test), {}).get("costs") or {}
@@ -1251,8 +1310,6 @@ def run_test(args, data: Dict[str, Any], root: Path, test: str) -> int:
     status, aborted = "completed", None
     try:
         get_tracker().check()
-        if not args.dry_run:
-            run_id = claim_run_id(output_dir, run_id, expect, ratings_file)
         engine = SimulationEngine(
             labs, world, cfg, scenario=preset["scenario"], condition=preset["condition"],
             fog=preset.get("fog", "F3"), a2a_mode=preset["a2a"], turns=turns, seed=seed,
@@ -1280,15 +1337,29 @@ def run_test(args, data: Dict[str, Any], root: Path, test: str) -> int:
         status, aborted = "crashed", _failure(run_id, e, output_dir)
     if record is None and aborted and aborted.get("record_path"):
         partial = _read_json(Path(aborted["record_path"]))
+    return _write_summary(args, data, root, test, run_id, preset, budget, record, partial, status,
+                          aborted, post)
 
+
+def _write_summary(args, data: Dict[str, Any], root: Path, test: str, run_id: str, preset: Dict[str, Any],
+                   budget: Optional[float], record: Optional[Dict[str, Any]],
+                   partial: Optional[Dict[str, Any]], status: str, aborted: Optional[Dict[str, Any]],
+                   post: Dict[str, Any]) -> int:
+    """Write and print the test's summary (the T6 re-run's in its own file, so a failed
+    re-run never makes T6 not done, BUG-8); the hard stop after the priced run. Returns
+    the exit code."""
+    approval = read_approval(root)
+    output_dir = root / test
     usage_records = [r for r in (record, partial) if isinstance(r, dict)]
     summary: Dict[str, Any] = {
         "test": test, "run_id": run_id, "dry_run": args.dry_run, "status": status, "aborted": aborted,
-        "runs_completed": int(record is not None), "turns": turns, "preset": {k: v for k, v in preset.items()
-                                                                               if k != "note"},
+        "runs_completed": int(record is not None), "turns": int(preset["turns"]),
+        "preset": {k: v for k, v in preset.items() if k != "note"},
         "budget": budget, "output_dir": str(output_dir), "post_run_errors": post.get("errors") or [],
         "t2_rated": post.get("rated", 0),
     }
+    if post.get("post_run_only"):
+        summary["post_run_only"] = True
     errors: List[str] = []
     for field, build in (
             ("usage", lambda: usage_report(usage_records, [run_id])),
@@ -1310,10 +1381,10 @@ def run_test(args, data: Dict[str, Any], root: Path, test: str) -> int:
             errors.append(f"review: {type(e).__name__}: {e}")
     if errors:
         summary["error"] = "; ".join(errors)
-    sp = summary_path(root, test)
+    sp = summary_path(root, test, rerun=bool(args.rerun))
     if sp.exists():
         try:
-            os.replace(sp, sp.with_name(f"pilot_summary_{test}.prev.json"))
+            os.replace(sp, sp.with_name(sp.stem + ".prev.json"))
         except OSError:
             pass
     # A failed run must not mark the test done: the plan reads "completed".
@@ -1322,7 +1393,7 @@ def run_test(args, data: Dict[str, Any], root: Path, test: str) -> int:
         summary["plan"] = build_plan(data, root, approval=approval)     # now with this test done
         _write_json(sp, summary)
     _print_summary(summary)
-    if status == "completed" and preset.get("hard_stop"):
+    if status == "completed" and preset.get("hard_stop") and not args.rerun:
         _hard_stop(args, data, root, summary)
     return EXIT_CODES.get(status, EXIT_ABORTED)
 
@@ -1360,32 +1431,38 @@ def _hard_stop(args, data: Dict[str, Any], root: Path, summary: Dict[str, Any]) 
         logger.warning(f"[hard stop] could not write {SHARE_NAME}: {e}")
 
 
-def _post_run_only(args, data, preset, test: str, run_id: str, record: Optional[Dict[str, Any]],
+def _post_run_only(args, data, root: Path, preset, test: str, run_id: str, record: Optional[Dict[str, Any]],
                    output_dir: Path, ratings_file: Path) -> int:
-    _configure(args, data)
+    """The missing post-run stages of a finished run (--post-run-only, or a re-invoked
+    test whose run finished: BUG-6). Once nothing is missing, the test's summary says
+    completed (so the plan and `all` never run it again)."""
+    budget = _configure(args, data)
     if record is None:
         print(f"{test}: {run_id} has no finished record; nothing collected")
         return EXIT_ABORTED
     missing = missing_post_run(record, run_id, test, ratings_file, preset)
-    if not missing:
+    post: Dict[str, Any] = {"errors": [], "done": [], "rated": 0, "post_run_only": True}
+    if missing:
+        print(f"{test}: {run_id} is finished (not run again); collecting: {'; '.join(missing)}")
+        seats = [SimpleNamespace(key=k, model=v.get("model")) for k, v in (record.get("labs") or {}).items()]
+        jurors = _install_stubs(seats) if args.dry_run else _real_jurors()
+        try:
+            post.update(run_post_stages(record, run_id, test, output_dir, ratings_file, jurors, args.dry_run,
+                                        preset, only_missing=True))
+        except BudgetExceeded as e:
+            print(f"HALTED on the budget guard: {e}")
+            return EXIT_BUDGET
+        for line in post["done"] + [f"ERROR {e}" for e in post["errors"]]:
+            print(f"  {line}")
+        still = missing_post_run(record, run_id, test, ratings_file, preset)
+        if still:
+            print(f"  still missing: {'; '.join(still)}")
+            return EXIT_ABORTED
+    summary = read_summary(root, test, rerun=bool(args.rerun))
+    if summary and summary.get("status") == "completed" and summary.get("run_id") == run_id and not missing:
         print(f"{test}: {run_id} complete")
         return EXIT_OK
-    print(f"{test}: collecting for {run_id}: {'; '.join(missing)}")
-    seats = [SimpleNamespace(key=k, model=v.get("model")) for k, v in (record.get("labs") or {}).items()]
-    jurors = _install_stubs(seats) if args.dry_run else _real_jurors()
-    try:
-        post = run_post_stages(record, run_id, test, output_dir, ratings_file, jurors, args.dry_run, preset,
-                               only_missing=True)
-    except BudgetExceeded as e:
-        print(f"HALTED on the budget guard: {e}")
-        return EXIT_BUDGET
-    for line in post["done"] + [f"ERROR {e}" for e in post["errors"]]:
-        print(f"  {line}")
-    still = missing_post_run(record, run_id, test, ratings_file, preset)
-    if still:
-        print(f"  still missing: {'; '.join(still)}")
-        return EXIT_ABORTED
-    return EXIT_OK
+    return _write_summary(args, data, root, test, run_id, preset, budget, record, None, "completed", None, post)
 
 
 def rescore_grand_jury(args, data: Dict[str, Any], root: Path, test: str) -> int:
@@ -1393,7 +1470,8 @@ def rescore_grand_jury(args, data: Dict[str, Any], root: Path, test: str) -> int
     T8 (§9.2, A2 M12): after our hand scores disagree and the few-shot examples
     (config/jury_examples.json) are revised once, re-ask the Grand Jury on the
     finished T6 record — the seats are never re-run. The old verdict moves to
-    final.grand_jury_previous; a second re-score is refused. tools/jury_check.py
+    final.grand_jury_previous; a second re-score is refused once one gave a usable
+    verdict (a failed one exits 2 and may be retried, BUG-10). tools/jury_check.py
     then reads the new verdict.
     """
     if test != "T6":
@@ -1410,7 +1488,7 @@ def rescore_grand_jury(args, data: Dict[str, Any], root: Path, test: str) -> int
               f"{'--dry-run' if not args.dry_run else 'no --dry-run'} to re-score it.")
         return EXIT_ABORTED
     final = record["final"]
-    if "grand_jury_previous" in final:
+    if "grand_jury_previous" in final and _gj_usable(record):
         print(f"Refusing: {run_id} was already re-scored once (final.grand_jury_previous exists; T8 revises "
               "the examples once).")
         return EXIT_ABORTED
@@ -1426,18 +1504,32 @@ def rescore_grand_jury(args, data: Dict[str, Any], root: Path, test: str) -> int
             return EXIT_ABORTED
     seats = [SimpleNamespace(key=k, model=v.get("model")) for k, v in (record.get("labs") or {}).items()]
     jurors = _install_stubs(seats) if args.dry_run else _real_jurors()
-    final["grand_jury_previous"] = dict(final.get("grand_jury") or {},
-                                        superseded=time.strftime("%Y-%m-%d %H:%M:%S"))
-    _write_json(output_dir / f"{run_id}.json", record)
+    # The one re-score is used up only by a usable verdict (BUG-10): a re-score that
+    # failed may be asked again (--post-run-only re-asks the missing verdict too); the
+    # verdict before any re-score stays in grand_jury_previous.
+    first = "grand_jury_previous" not in final
+    if first:
+        final["grand_jury_previous"] = dict(final.get("grand_jury") or {},
+                                            superseded=time.strftime("%Y-%m-%d %H:%M:%S"))
+        _write_json(output_dir / f"{run_id}.json", record)
     print(f"T6: re-scoring {run_id} with the revised examples ({len(examples)} example(s)); "
           f"the seats are not re-run" + (f"; guard {usd(budget)}" if budget is not None else ""))
+    retry = (f"the re-score is not used up: re-ask with python pilot.py T6 --post-run-only"
+             f"{' --dry-run' if args.dry_run else ''} (or --rescore-grand-jury again)")
     try:
         line = collect_grand_jury(record, jurors["grand"], run_id, output_dir)
     except BudgetExceeded as e:
-        print(f"HALTED on the budget guard: {e} (the previous verdict is kept as grand_jury_previous)")
+        print(f"HALTED on the budget guard: {e}; no usable verdict: {retry}")
         return EXIT_BUDGET
     except Exception as e:      # noqa: BLE001
-        print(f"Grand Jury failed: {type(e).__name__}: {e} (the previous verdict is kept as grand_jury_previous)")
+        if first:               # nothing was re-scored: the record is as it was
+            final.pop("grand_jury_previous", None)
+            _write_json(output_dir / f"{run_id}.json", record)
+        print(f"Grand Jury failed: {type(e).__name__}: {e}; the re-score is not used up "
+              "(the verdict is unchanged): run --rescore-grand-jury again")
+        return EXIT_ABORTED
+    if not _gj_usable(record):
+        print(f"  {line}; {retry}")
         return EXIT_ABORTED
     print(f"  {line}; compare with our hand scores: python tools/jury_check.py {output_dir / (run_id + '.json')}")
     return EXIT_OK

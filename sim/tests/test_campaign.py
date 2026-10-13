@@ -96,7 +96,9 @@ def test_measured_inputs_average_seat_shares_over_tests_that_played_the_model(tm
             {"status": "completed", "runs_completed": 1, "inputs": {"actor_later_turn": 0.5, "seat_share": sh}}))
     out = pilot.measured_inputs(tmp_path, data)["seat_share"]
     assert sum(out.values()) == pytest.approx(1.0, abs=1e-3)
-    assert out["grok-4.7"] == pytest.approx(0.2 / (0.225 + 0.2 + 0.675), abs=1e-3)
+    # Per test, share x models in the test = relative cost per seat-turn (BUG-11):
+    # priced 0.6, 0.6, 1.8; T5 (no grok) 0.5, 1.5; means 0.55, 0.6, 1.65.
+    assert out["grok-4.7"] == pytest.approx(0.6 / (0.55 + 0.6 + 1.65), abs=1e-3)
 
 
 def test_project_run_and_kin_scale():
