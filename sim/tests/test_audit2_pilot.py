@@ -484,8 +484,6 @@ def _actor(system, user):
                        "messages": []})
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-pilot-9: the engine writes the final record only after the "
-                                        "Grand Jury, so a hard kill during the jury loses the paid run")
 def test_final_record_is_on_disk_before_the_grand_jury(tmp_path, monkeypatch):
     register_stub("audit2_actor", _actor)
     cfg = load_world()

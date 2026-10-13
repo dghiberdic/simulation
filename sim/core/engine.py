@@ -113,6 +113,9 @@ MAX_TOKENS_INTERVIEW = 2000
 MAX_TOKENS_INTERVIEW_RETRY = 4000
 INTERVIEW_ANSWER_TOKENS = 300
 
+# final.grand_jury while the jury has not answered (the final record is saved first).
+GRAND_JURY_PENDING = {"error": "pending", "pending": True}
+
 DEFAULT_EVENT_TURN = 4
 DEFAULT_REVIEW_TURNS = (2, 6, 10)
 
@@ -456,15 +459,18 @@ class SimulationEngine:
             self._abandon_turn(e)
             self._save_partial()
             raise
-        # The run is finished and counts: the Grand Jury never aborts it (S2). A budget
-        # stop or an interrupt (Ctrl-C) during the jury saves the final record first,
-        # then stops the pilot (E41).
+        # The run is finished and counts: the Grand Jury never aborts it (S2). The final
+        # record is on disk, its verdict marked pending, before the jury is asked, so
+        # even a hard kill during the jury keeps the paid run and a re-run asks only
+        # the jury (pilot BUG-9). A budget stop or an interrupt (Ctrl-C) during the
+        # jury saves what the jury returned, then stops the pilot (E41).
+        if self.run_grand_jury:
+            self.record["final"]["grand_jury"] = dict(GRAND_JURY_PENDING)
+        self._save_final()
         try:
             self._grand_jury()
-        except BaseException:
+        finally:
             self._save_final()
-            raise
-        self._save_final()
         return self.record
 
     def _save_final(self) -> None:
