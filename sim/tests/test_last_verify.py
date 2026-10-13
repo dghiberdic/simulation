@@ -347,11 +347,19 @@ def test_readme_campaign_dry_run_command_as_written_is_a_usage_error(capsys):
     assert e.value.code == 2
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-last-6: README writes `campaign.py --dry-run` (no command); "
-                                       "it should read `campaign.py run --dry-run`")
 def test_readme_names_the_campaign_dry_run_with_its_command():
     text = (SIM.parent / "README.md").read_text()
     assert "`campaign.py --dry-run`" not in text
+    assert "`campaign.py run --dry-run`" in text
+
+
+def test_readme_cleanup_items():
+    """D9/D10: the overshoot bound is per process; the T6 re-run's review has its own
+    file; the T2 re-ask path is documented."""
+    text = " ".join((SIM.parent / "README.md").read_text().split())
+    assert "at most one stage of concurrent calls per process sharing the ledger" in text
+    assert "`review_T6-rerun.md`" in text
+    assert "--rerate" in text
 
 
 def test_stale_partial_beside_a_finished_record_is_removed_on_reinvocation(tmp_path):

@@ -214,7 +214,14 @@ as `config.initial_state` (`core.engine.initial_state`).
   run that still misses something (`run_complete`: post-run stages, ratings
   pooled but not in the record `ratings_not_in_record`, the summary, the hard
   stop) to `pilot._post_run_only`; its summary keeps the measured inputs
-  (`measured_usage`, `merge_usage`, else the call log `run_calls`).
+  (`measured_usage`, `merge_usage`, else the call log `run_calls`). A T2
+  rating unusable after the juror's whole chain is settled (a pooled failure
+  row with `settled`, `pilot.settled_unusable`; `unrated_seats` and
+  `missing_post_run` count it done); `--rerate` asks again. A partial log
+  beside the finished record of the same run is removed
+  (`core.resume.remove_stale_partial`, from `pilot.completed_record`,
+  `main.finished_record` and `core.resume.load_partial`). The T6 re-run writes
+  `review_T6-rerun.md` (`pilot.review_path`).
 - T9's set-up: T4's S2 set-up with merged messages and no interview
   (`config/pilot.json`).
 - Hindcast repeated on T4 (no extra cost): `summarize_run.hindcast`,
@@ -283,7 +290,11 @@ as `config.initial_state` (`core.engine.initial_state`).
   `pilot_s2_mode` from T9's finished records; `pilot_turns` from T7;
   `build_campaign`, `run_campaign` with `campaign_state.json` holding the saved
   plan and guard; resume `resume_rounds`, `completed_rounds` (plan flags
-  refused on a resume); `--replan` with `run_order` keeping §9.3's priority;
+  refused on a resume; only a first run refused with nothing on disk re-plans,
+  `campaign.started`); `run_order` puts run r in round r, so a resume finishes
+  the round in progress; `--replan` gives restored cells catch-up offsets
+  (plan `catch_up`) keeping §9.3's priority; interview turns clipped to the
+  run length (`interview_schedule`);
   runs missing their Grand Jury in `jury_missing`, runs with a settled
   unusable verdict in `no_verdict`).
 

@@ -207,7 +207,14 @@ the record, the summary, and after the priced run the hard stop and
 set-up) is found the same way. So after a stop or kill at any point after the
 run, run the same command again; never `--force`. A Grand Jury verdict that
 stayed unusable after the whole fallback is settled (as in an uninterrupted
-run) and is not re-asked: `--rescore-grand-jury` asks again.
+run) and is not re-asked: `--rescore-grand-jury` asks again. Likewise a T2
+rating that stayed unusable after the juror's retries and fallback is settled:
+recorded as unusable in the pooled ratings and listed in the summary's
+post-run errors, the test completes, and it is never re-asked on its own
+(`--skip-completed` exits 0 without a call); `python pilot.py <TEST> --rerate`
+asks the juror again for those seats only (the seats are not re-run). A
+partial log left beside the finished record of the same run (a stop between
+the two writes) is removed by the next invocation.
 
 A completed test is refused unless `--skip-completed` (skip it, exit 0) or
 `--force` (run it again: the old record, and any partial log beside it, are
@@ -218,11 +225,14 @@ complete, `--force` redoes run02; the re-run REPLACES `T6-run01` for T1, T2,
 T6 and T8 — T1 pools the priced run and the latest T6 run, T2 and T8 read the
 latest T6 run, the T6 tally counts the latest T6 run's sheet rows, run01's
 staying on the sheet uncounted — and the decision lines say so; after it,
-plain `T6` and `T6 --post-run-only` mean the re-run), `--rescore-grand-jury`
+plain `T6` and `T6 --post-run-only` mean the re-run; it writes
+`review_T6-rerun.md` and `pilot_summary_T6-rerun.json`, keeping run01's
+`review_T6.md`), `--rescore-grand-jury`
 (T6 only, T8: re-ask the Grand Jury on the latest T6 record after the few-shot
 examples are revised; the seats are not re-run, the old verdict is kept as
 `final.grand_jury_previous`; once), `--post-run-only` (run nothing new;
-complete a finished run as above), `--sequential` (seats one at a time),
+complete a finished run as above), `--rerate` (ask the T2 juror again for a
+finished run's settled unusable ratings), `--sequential` (seats one at a time),
 `--allow-placeholder-values`, `--allow-no-examples`, `--output DIR`,
 `--spend-file FILE`. A `--dry-run` never overwrites or sets aside a real
 run's log (nor the reverse): with the same `--output` it is refused.
@@ -387,7 +397,8 @@ what the mask leaves; the §2 figure pools main model runs, other kinds
 2. Plan: `python campaign.py plan`. It reads the pilot's measured costs
    (`data/pilot`), T7's run length (`approval.json`) and T9's message mode
    (from the T4/T9 logs), decides whether the interview at turns 3, 4, 5 and
-   final fits (≤ 15% of a run's cost), and sets runs per cell from the money
+   the final turn fits (turns past the run's end dropped: at 4 turns, turns 3
+   and 4, the final being turn 4) (≤ 15% of a run's cost), and sets runs per cell from the money
    left under the guard. `--budget USD` is the guard, a ledger total as in
    every other tool (default $750, the round's budget, pilot included);
    `--headroom USD` sets it to the spend so far plus USD instead. Cells are cut whole
@@ -401,7 +412,8 @@ what the mask leaves; the §2 figure pools main model runs, other kinds
    finished run. It stops on the first non-zero exit (1 budget guard, 2
    anything else); `run` again resumes the saved plan: the same cells and
    set-up, and rounds = rounds done + floor(budget left / round cost), never
-   more than first planned. `run --replan` re-plans the cells and runs per
+   more than first planned. A resume finishes the round in progress, in
+   priority order, before the next round begins. `run --replan` re-plans the cells and runs per
    cell from the budget left instead: each cell keeps the runs it actually
    ran, runs per cell are the most R whose remaining cost — the sum over the
    kept cells of (R − runs done in that cell) × run cost — fits the budget
@@ -411,16 +423,18 @@ what the mask leaves; the §2 figure pools main model runs, other kinds
    rounds the campaign has reached, never ahead of a higher-priority cell's
    next run. On a resume without `--replan`, `--budget`, `--headroom`,
    `--turns`, `--a2a` and `--max-runs` are refused (exit 2: they would be
-   ignored). A saved plan under which no run has finished yet (the first run
-   was refused) is planned afresh, keeping its guard unless `--budget` or
-   `--headroom` is given. A run stopped by the guard during its Grand Jury is
+   ignored). The saved plan is kept from the first `run` on, its explicit
+   flags included: a stop or kill during the first run resumes it like any
+   other. Only a first run that was refused with nothing on disk (no record
+   or partial log in its cell) is planned afresh, keeping its guard unless
+   `--budget` or `--headroom` is given. A run stopped by the guard during its Grand Jury is
    finished and saved: it counts as done with its jury missing, and the resume
    asks only that jury. A finished run whose Grand Jury gave no usable verdict
    after the whole fallback (`main.py` exit 3) counts as done and is listed in
    the state's `no_verdict`; the campaign goes on and exits 3 at the end.
 
 The nine cells: S1 and S2 under A0, A, B, C (mixed panel) and the kin cell
-(S2, A, Claude in all five seats). `campaign.py --dry-run` runs the schedule
+(S2, A, Claude in all five seats). `campaign.py run --dry-run` runs the schedule
 on stubs into `data/runs/dry/`.
 
 One cell by hand (`main.py`, what `campaign.py` calls):
@@ -526,7 +540,7 @@ reproduces it exactly; if not, the contributions are not reliable (and
 | Path | What |
 |---|---|
 | `data/pilot/<TEST>/<TEST>-run01.json` | pilot run record (`T6-run02.json` for the re-run; `<run_id>-vN.json` when the base id holds another set-up); `<run_id>.partial.json` while running; `*.replaced-<time>` set aside by `--force` |
-| `data/pilot/<TEST>/pilot_summary_<TEST>.json`, `review_<TEST>.md` | usage, measured inputs, plan, decision lines; screened texts in full (`pilot_summary_T6-rerun.json` for the re-run) |
+| `data/pilot/<TEST>/pilot_summary_<TEST>.json`, `review_<TEST>.md` | usage, measured inputs, plan, decision lines; screened texts in full (`pilot_summary_T6-rerun.json`, `review_T6-rerun.md` for the re-run) |
 | `data/pilot/T9/review_T9-compare.md` | `compare_arms.py`: every reviewed S2 message of both arms |
 | `data/pilot/priced/share.txt` | the hard-stop text for Slack |
 | `data/pilot/approval.json` | T7 run length, cuts and the guard in force (`budget_guard`) |
@@ -598,7 +612,8 @@ campaign) sets it to the ledger's spend so far plus N:
 | `campaign.py run` | fixed when the campaign is first planned: `--budget USD` (default $750) or `--headroom N` (ledger + N); a resume keeps it (and refuses `--budget`/`--headroom` without `--replan`) |
 
 Calls already in flight when the guard trips still complete, so spend can
-exceed it by at most one stage of concurrent calls. A timed-out request or
+exceed it by at most one stage of concurrent calls per process sharing the
+ledger. A timed-out request or
 broken stream is logged at $0 with `possibly_billed`. Dry runs and scripted
 policies never touch the ledger. A halted pilot run exits 1 and keeps its
 partial record and whatever T2 ratings were paid for. Processes sharing the
