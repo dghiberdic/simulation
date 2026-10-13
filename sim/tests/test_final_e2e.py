@@ -142,9 +142,6 @@ def test_post_run_only_collects_the_rerun_grand_jury(tmp_path, capsys):
 # campaign.py: priorities after --replan; an explicit guard on a resume
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, reason="BUG-e2e-4: after run --replan keeps a formerly cut cell, that cell's "
-                                       "catch-up runs (run01..) go before the priority cells' next run, so a "
-                                       "binding guard cuts A and C before A0/kin (§9.3 priority)")
 def test_replan_keeps_priority_order_when_a_cut_cell_returns(tmp_path):
     done = {"S1-A": 4, "S2-A": 4, "S1-C": 4, "S2-C": 4}
     plan = campaign.build_campaign(None, 300.0, turns=8, s2_mode="separate", done=done)
@@ -164,8 +161,6 @@ def _ledger(path, total):
     path.write_text(json.dumps({"total_usd": total, "calls": 0, "by_model": {}}))
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-e2e-5: a first campaign `run` refused before any run saves its "
-                                       "$750 guard; a later `run --headroom 10` silently keeps $750")
 def test_explicit_guard_on_resume_is_not_silently_ignored(tmp_path, monkeypatch, capsys):
     _ledger(tmp_path / "spend.json", 0.0)
     argv = ["run", "--spend-file", str(tmp_path / "spend.json"), "--output", str(tmp_path / "runs"),

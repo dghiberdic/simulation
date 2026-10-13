@@ -507,3 +507,92 @@ def test_budget_is_the_ledger_total_and_headroom_is_on_top(tmp_path, monkeypatch
         state = json.loads((d / "runs" / campaign.STATE_NAME).read_text())
         assert state["guard"] == guard
         assert state["budget_at_plan"] == guard - 50.0
+
+
+# ---------------------------------------------------------------------------
+# main.py: run identity, no usable verdict, dry runs; campaign resume flags
+# ---------------------------------------------------------------------------
+
+def _cell(out, run_id, *extra):
+    argv = ["--dry-run", "--turns", "1", "--output", str(out), "--run-id", run_id, "--no-macro-jury", *extra]
+    return main_mod.run_cell(main_mod.build_parser().parse_args(argv))
+
+
+def test_finished_record_identity_includes_kin_and_policy(tmp_path, capsys):
+    out = tmp_path / "r"
+    assert _cell(out, "x", "--scenario", "S2", "--no-grand-jury")[0] == 0
+    code, _ = _cell(out, "x", "--kin", "--no-grand-jury")
+    assert code == 2 and "kin False != True" in capsys.readouterr().out
+    assert main_mod.main(["--turns", "1", "--output", str(out), "--run-id", "p", "--policy", "idle"]) == 0
+    assert main_mod.main(["--turns", "1", "--output", str(out), "--run-id", "p", "--policy",
+                          "always_intrude"]) == 2
+    assert "policy 'idle' != 'always_intrude'" in capsys.readouterr().out
+
+
+def test_no_usable_grand_jury_verdict_exits_3_and_is_asked_again(tmp_path, monkeypatch):
+    from core import jury as jury_mod
+    orig = jury_mod.GrandJury.evaluate
+    monkeypatch.setattr(jury_mod.GrandJury, "evaluate",
+                        lambda self, *a, **kw: {"error": "no usable verdict", "actors": {}})
+    out = tmp_path / "r"
+    code, rec = _cell(out, "g")
+    assert code == 3 and rec["final"]["scores"]
+    code, _ = _cell(out, "g")                       # still none: asked again, exit 3 again
+    assert code == 3
+    monkeypatch.setattr(jury_mod.GrandJury, "evaluate", orig)
+    monkeypatch.setattr(main_mod.SimulationEngine, "run", lambda self: pytest.fail("seats run again"))
+    code, rec = _cell(out, "g")
+    assert code == 0 and rec["final"]["grand_jury"].get("collected_post_run")
+
+
+def test_campaign_keeps_going_past_a_missing_verdict_and_asks_again(tmp_path):
+    plan = campaign.build_campaign(None, 750.0, turns=8, s2_mode="merged")
+    first = next(c["name"] for c in plan["cells"] if c["runs"])
+    calls, verdicts = [], {"ok": False}
+
+    def fake(args):
+        calls.append(args.run_id)
+        if args.run_id == f"{first}-run01" and not verdicts["ok"]:
+            return 3, {"final": {"scores": [{"lab": "xai"}], "grand_jury": {"error": "no usable verdict"}}}
+        return 0, {"final": {"scores": [{"lab": "xai"}]}}
+    assert campaign.run_campaign(plan, tmp_path, dry_run=True, rounds=1, run_cell=fake) == 3
+    state = json.loads((tmp_path / campaign.STATE_NAME).read_text())
+    assert len(calls) == sum(1 for c in plan["cells"] if c["runs"])          # the round went on
+    assert state["jury_missing"] == [f"{first}-run01"]
+    verdicts["ok"] = True
+    calls.clear()
+    assert campaign.run_campaign(plan, tmp_path, dry_run=True, rounds=1, run_cell=fake) == 0
+    assert calls == [f"{first}-run01"]
+    assert json.loads((tmp_path / campaign.STATE_NAME).read_text())["jury_missing"] == []
+
+
+def test_dry_run_never_touches_a_real_runs_log(tmp_path, capsys):
+    out = tmp_path / "r"
+    out.mkdir()
+    real = {"run_id": "S1-A-run01", "labs": {}, "turns": [{"turn": 1}], "final": {},
+            "config": {"scenario": "S1", "condition": "A", "dry_run": False}}
+    (out / "S1-A-run01.partial.json").write_text(json.dumps(real))
+    before = sorted(p.name for p in out.iterdir())
+    code, _ = _cell(out, "S1-A-run01", "--no-grand-jury")
+    assert code == 2 and "real run's log" in capsys.readouterr().out
+    assert sorted(p.name for p in out.iterdir()) == before
+
+
+def test_resume_refuses_plan_flags_without_replan(tmp_path, monkeypatch, capsys):
+    plan, cost, active, state = _two_rounds_done(tmp_path, monkeypatch)
+    costs.configure()
+    ran = []
+    monkeypatch.setattr(main_mod, "run_cell", lambda a: (ran.append(a.run_id), (0, {}))[1])
+    for flag in (["--budget", "900"], ["--headroom", "10"], ["--turns", "12"], ["--max-runs", "4"]):
+        capsys.readouterr()
+        assert campaign.main(_campaign_argv(tmp_path, *flag)) == 2
+        assert f"{flag[0]} would be ignored" in capsys.readouterr().out and ran == []
+
+
+def test_replan_order_runs_a_restored_cell_at_the_current_round():
+    plan = {"runs_per_cell": 6, "cells": [{"name": n, "runs": 6} for n in ("S1-A", "S2-A", "S1-A0")]}
+    done = {"S1-A": ["r"] * 4, "S2-A": ["r"] * 4}
+    order = [f"{c['name']}-run{r:02d}" for c, r in campaign.run_order(plan, done, 6)]
+    assert order[:3] == ["S1-A-run05", "S2-A-run05", "S1-A0-run01"]
+    assert order[3:6] == ["S1-A-run06", "S2-A-run06", "S1-A0-run02"]
+    assert order[6:] == ["S1-A0-run03", "S1-A0-run04", "S1-A0-run05", "S1-A0-run06"]

@@ -30,18 +30,26 @@ Commands:
 per round, recording the plan, the guard and finished runs in
 <output dir>/campaign_state.json. A stopped campaign resumes where it left off,
 with the saved plan: the same cells, cuts and set-up, and rounds = rounds done +
-floor(budget left / round cost) (never more than first planned). `run
---replan` re-plans the cells from the budget left instead: each cell keeps the
-runs it has done (a cell counts only the runs it actually ran), runs per cell
-are the most R whose remaining cost, the sum over the kept cells of
-(R − done[cell]) × run cost, fits the budget left, and cells are cut whole
-against that sum. A cell cut before restarts from run 1 only if the re-plan
-keeps it (its full cost is then in the sum). A run stopped by the
-guard during its Grand Jury is finished and saved: it counts as done with its
-jury missing, and the resume asks only that jury.
+floor(budget left / round cost) (never more than first planned). On a resume,
+--budget, --headroom, --turns, --a2a and --max-runs are refused (they would be
+ignored): pass --replan to use them. A saved plan under which no run has
+finished yet (the first run was refused or stopped) is planned afresh, with
+its saved guard unless --budget or --headroom is given. `run --replan`
+re-plans the cells from the budget left instead: each cell keeps the runs it
+has done (a cell counts only the runs it actually ran), runs per cell are the
+most R whose remaining cost, the sum over the kept cells of (R − done[cell]) ×
+run cost, fits the budget left, and cells are cut whole against that sum. A
+cell cut before restarts from run 1 only if the re-plan keeps it (its full cost
+is then in the sum), and its catch-up runs go in the rounds the campaign has
+reached, never ahead of a higher-priority cell's next run (run_order). A run
+stopped by the guard during its Grand Jury is finished and saved: it counts as
+done with its jury missing, and the resume asks only that jury. A finished run
+whose Grand Jury gave no usable verdict (main.py exit 3) counts as done too;
+the campaign goes on and asks that jury again on the next `run`.
 
-Exit codes (core.exits): 0 done, else the stopping run's code (1 budget guard,
-2 refused, aborted or crashed).
+Exit codes (core.exits): 0 done, 3 done but a Grand Jury verdict is still
+missing, else the stopping run's code (1 budget guard, 2 refused, aborted or
+crashed).
 
 Money: the shared ledger's guard (a ledger total) is fixed when the campaign is
 first planned. --budget USD is that total, as in every other tool (default
@@ -62,7 +70,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from core.config import RUNS_DIR, load_world
 from core.costs import configure, get_tracker, kin_seat_scale, project_run, with_fallbacks
 from core.engine import interview_schedule, review_turns
-from core.exits import EXIT_OK
+from core.exits import EXIT_FAILED, EXIT_OK, EXIT_REFUSED
 from core.records import (KIN_CONDITION, KIN_SCENARIO, cell_name, finished_records, is_finished,
                           write_json_atomic)
 
@@ -305,8 +313,10 @@ def run_campaign(plan: Dict[str, Any], runs_dir: Path, dry_run: bool, rounds: Op
     Finished runs are recorded in the state file; a re-run resumes. A run halted by
     the guard during its Grand Jury is finished and saved: it counts as done with its
     jury missing, and the next call asks only that jury (main.run_cell does). Stops on
-    a non-zero exit (budget guard: 1; anything else: 2). `n_rounds` (resume) overrides
-    the plan's runs per cell."""
+    a non-zero exit (budget guard: 1; anything else: 2), except a finished run with no
+    usable Grand Jury verdict (exit 3): it counts as done, its jury is asked again on the
+    next call, and the campaign goes on (exit 3 at the end while a verdict is missing).
+    `n_rounds` (resume) overrides the plan's runs per cell."""
     from main import build_parser as main_parser
     if run_cell is None:
         from main import run_cell
@@ -333,6 +343,9 @@ def run_campaign(plan: Dict[str, Any], runs_dir: Path, dry_run: bool, rounds: Op
             continue
         print(f"[campaign] {run_id}: finished, Grand Jury missing; asking the jury only")
         code, _record = run_cell(args_for(cells[name], int(num)))
+        if code == EXIT_FAILED:
+            print(f"[campaign] {run_id}: still no usable Grand Jury verdict; asked again on the next run")
+            continue
         if code != 0:
             print(f"[campaign] stopped at {run_id}'s Grand Jury (exit {code}); re-run to resume")
             return code
@@ -341,27 +354,53 @@ def run_campaign(plan: Dict[str, Any], runs_dir: Path, dry_run: bool, rounds: Op
 
     total = n_rounds if n_rounds is not None else plan["runs_per_cell"]
     total = min(total, rounds) if rounds else total
-    for r in range(1, total + 1):
-        for c in plan["cells"]:
-            if not c["runs"] or len(done.get(c["name"], [])) >= r:
-                continue
-            a = args_for(c, r)
-            print(f"[campaign] round {r}: {a.run_id}")
-            code, record = run_cell(a)
-            if code != 0 and is_finished(record):
-                done.setdefault(c["name"], []).append(a.run_id)
-                jury_missing.append(a.run_id)
-                write_state(state_path, state)
-                print(f"[campaign] {a.run_id} is finished but its Grand Jury is missing (exit {code}); "
-                      "re-run to resume (the jury alone is asked)")
-                return code
-            if code != 0:
-                print(f"[campaign] stopped at {a.run_id} (exit {code}); re-run to resume")
-                return code
+    for c, r in run_order(plan, done, total):
+        a = args_for(c, r)
+        print(f"[campaign] {a.run_id}")
+        code, record = run_cell(a)
+        if code != 0 and is_finished(record):
             done.setdefault(c["name"], []).append(a.run_id)
+            jury_missing.append(a.run_id)
             write_state(state_path, state)
+            if code == EXIT_FAILED:
+                print(f"[campaign] {a.run_id} is finished but has no usable Grand Jury verdict; it counts as "
+                      "done and its jury is asked again on the next run")
+                continue
+            print(f"[campaign] {a.run_id} is finished but its Grand Jury is missing (exit {code}); "
+                  "re-run to resume (the jury alone is asked)")
+            return code
+        if code != 0:
+            print(f"[campaign] stopped at {a.run_id} (exit {code}); re-run to resume")
+            return code
+        done.setdefault(c["name"], []).append(a.run_id)
+        write_state(state_path, state)
+    if jury_missing:
+        print(f"[campaign] {total} round(s) run; Grand Jury verdict still missing for {', '.join(jury_missing)}: "
+              "run again to ask the jury only")
+        return EXIT_FAILED
     print(f"[campaign] {total} round(s) complete")
     return EXIT_OK
+
+
+def run_order(plan: Dict[str, Any], done: Dict[str, List[str]], total: int) -> List[Any]:
+    """
+    The remaining runs (cell, run number) up to `total` per cell, in interleaved
+    rounds in priority order (§9.3). A cell behind the others (one a re-plan
+    restored after a cut) starts its catch-up at the round the campaign has
+    reached, so its runs never go ahead of a higher-priority cell's next run:
+    run r of a cell with d runs done goes in round max(r, R0 + r - d), where R0
+    is the fewest runs done by a cell that has run.
+    """
+    active = [c for c in plan["cells"] if c["runs"]]
+    counts = {c["name"]: len(done.get(c["name"], [])) for c in active}
+    ran = [n for n in counts.values() if n]
+    r0 = min(ran) if ran else 0
+    slots = []
+    for priority, c in enumerate(active):
+        d = counts[c["name"]]
+        for r in range(d + 1, total + 1):
+            slots.append((max(r, r0 + r - d), priority, r, c))
+    return [(c, r) for _slot, _priority, r, c in sorted(slots, key=lambda x: x[:3])]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -377,7 +416,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--a2a", choices=["merged", "separate"], default=None,
                    help="S2 and kin message mode (default: T9's decision from the pilot logs)")
     p.add_argument("--pilot-dir", default=None, help="pilot root for the measured inputs (default data/pilot)")
-    p.add_argument("--max-runs", type=int, default=MAX_RUNS)
+    p.add_argument("--max-runs", type=int, default=None, help=f"runs per cell at most (default {MAX_RUNS})")
     p.add_argument("--rounds", type=int, default=None, help="the total number of rounds to have done (rounds already done count), not N more")
     p.add_argument("--replan", action="store_true",
                    help="run: re-plan the cells and rounds from the budget left instead of resuming the "
@@ -405,7 +444,20 @@ def main(argv=None) -> int:
     saved = state.get("plan") if isinstance(state.get("plan"), dict) and state["plan"].get("cells") else None
     done = state.get("runs") or {}
 
+    # A saved plan under which nothing has finished yet (the first run was refused or
+    # stopped) is planned afresh; its guard is kept unless --budget/--headroom is given.
+    started = any(done.values()) or bool(state.get("jury_missing"))
+    if saved and not started:
+        saved = None
     if saved and args.command == "run" and not args.replan:
+        given = [flag for flag, value in (("--budget", args.budget), ("--headroom", args.headroom),
+                                          ("--turns", args.turns), ("--a2a", args.a2a),
+                                          ("--max-runs", args.max_runs)) if value is not None]
+        if given:
+            print(f"Refusing: {runs_dir} holds a campaign in progress ({completed_rounds(saved, done)} round(s) "
+                  f"done), resumed with its saved plan and guard; {', '.join(given)} would be ignored. Pass "
+                  "--replan to re-plan with them, or drop them to resume.")
+            return EXIT_REFUSED
         # Resume: the saved plan's cells, cuts, set-up and guard are kept; the
         # rounds are those done plus what the budget left pays for.
         guard = state.get("guard")
@@ -420,19 +472,20 @@ def main(argv=None) -> int:
 
     # --replan: each cell keeps the runs it actually ran (never the campaign's
     # completed rounds credited to a cell that has none).
-    done_counts = {name: len(runs) for name, runs in done.items() if runs} if (saved and args.replan) else {}
+    replan = saved if args.command == "run" and args.replan else None
+    done_counts = {name: len(runs) for name, runs in done.items() if runs} if replan else {}
     if args.headroom is not None:
         budget = args.headroom
     elif args.budget is not None:
         budget = max(args.budget - spent, 0.0)
-    elif saved and args.replan and state.get("guard") is not None:
+    elif args.command == "run" and state.get("guard") is not None:
         budget = max(float(state["guard"]) - spent, 0.0)
     else:
         budget = max(ROUND_BUDGET - spent, 0.0)
     plan = build_campaign(pilot_inputs(pilot_root), budget,
-                          turns=args.turns or (saved or {}).get("turns") or pilot_turns(pilot_root),
+                          turns=args.turns or (replan or {}).get("turns") or pilot_turns(pilot_root),
                           s2_mode=args.a2a or pilot_s2_mode(pilot_root, include_dry=args.dry_run),
-                          max_runs=args.max_runs, done=done_counts)
+                          max_runs=args.max_runs or MAX_RUNS, done=done_counts)
     print("\n".join(campaign_lines(plan)))
     if args.command == "plan":
         if saved:

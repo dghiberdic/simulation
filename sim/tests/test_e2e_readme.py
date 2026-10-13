@@ -82,13 +82,17 @@ def test_main_s1_separate_merges_with_a_notice(tmp_path, capsys):
     assert "Note: S1 always merges its messages" in capsys.readouterr().out
 
 
-def test_main_kin_overrides_scenario_with_a_notice(tmp_path, capsys):
+def test_main_kin_notes_only_an_overridden_flag(tmp_path, capsys):
     out = tmp_path / "k"
     assert main_mod.main(["--dry-run", "--kin", "--output", str(out), "--run-id", "k", "--turns", "1",
                           "--no-grand-jury", "--no-macro-jury"]) == 0
     cfg = json.loads((out / "k.json").read_text())["config"]
     assert (cfg["scenario"], cfg["condition"]) == ("S2", "A")
-    assert "Note: --kin runs the kin cell, scenario S2 under condition A" in capsys.readouterr().out
+    assert "Note:" not in capsys.readouterr().out          # no --scenario given: nothing overridden
+    assert main_mod.main(["--dry-run", "--kin", "--scenario", "S1", "--output", str(out), "--run-id", "k1",
+                          "--turns", "1", "--no-grand-jury", "--no-macro-jury"]) == 0
+    assert "Note: --kin runs the kin cell, scenario S2 under condition A (§6.5): --scenario S1 overridden" \
+        in capsys.readouterr().out
     # campaign's own kin call (S2/A already) prints no notice
     assert main_mod.main(["--dry-run", "--kin", "--scenario", "S2", "--output", str(out), "--run-id", "k2",
                           "--turns", "1", "--no-grand-jury", "--no-macro-jury"]) == 0

@@ -34,7 +34,15 @@ replayed from the log with no call (core.resume), and the run continues live
 from the first turn the log does not hold complete.
 
 Exit codes (core.exits): 0 done, 1 budget guard (when it trips during the Grand
-Jury the finished record is kept), 2 refused, aborted or crashed.
+Jury the finished record is kept), 2 refused, aborted or crashed, 3 the run is
+finished but has no usable Grand Jury verdict (every juror failed; calling again
+asks the jury only).
+
+A finished record under the run id is this run only if its set-up (scenario,
+condition, message mode, turns, seed, kin) and its scripted --policy match;
+otherwise the call is refused. A --dry-run never overwrites or sets aside a
+real run's record or partial log at the same --output and --run-id: it is
+refused.
 
 Examples:
   python main.py --scenario S1 --condition A --dry-run
@@ -55,16 +63,18 @@ from core import policies
 from core.config import LAB_ORDER, RUNS_DIR, build_labs_and_world, load_dispositions, load_world
 from core.costs import BudgetExceeded, configure, get_tracker
 from core.engine import RunAborted, SimulationEngine
-from core.exits import EXIT_BUDGET, EXIT_OK, EXIT_REFUSED
+from core.exits import EXIT_BUDGET, EXIT_FAILED, EXIT_OK, EXIT_REFUSED
 from core.jury import GRAND_JURY_MODELS, MACRO_JURY_MODELS, collect_grand_jury
 from core.llm import FatalAPIError
 from core.preflight import model_problems, placeholder_labs
-from core.records import (KIN_CONDITION, KIN_SCENARIO, KIN_SEAT, cell_name, grand_jury_usable, is_dry,
-                          is_finished, read_record)
+from core.records import (KIN_CONDITION, KIN_SCENARIO, KIN_SEAT, PARTIAL_SUFFIX, cell_name,
+                          grand_jury_usable, is_dry, is_finished, is_scripted_run, read_record)
 from core.stubs import install_stubs
 
 logger = logging.getLogger(__name__)
 
+NO_VERDICT = ("{run_id}: no usable Grand Jury verdict (every juror failed); the run is finished and kept. "
+              "Calling again with this run id asks the Grand Jury only (exit 3 until it answers).")
 
 
 def default_run_id(cell: str) -> str:
@@ -107,8 +117,8 @@ def bad_dispositions(dispositions: Dict[str, Any]) -> List[str]:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Main run: one cell (spec §9.3).")
-    p.add_argument("--scenario", choices=["S1", "S2"], default="S1")
-    p.add_argument("--condition", choices=["A0", "A", "B", "C"], default="A")
+    p.add_argument("--scenario", choices=["S1", "S2"], default=None, help="default S1 (the kin cell: S2)")
+    p.add_argument("--condition", choices=["A0", "A", "B", "C"], default=None, help="default A")
     p.add_argument("--kin", action="store_true",
                    help="the kin cell: Claude in all five seats + the §6.5 insert (S2, condition A)")
     p.add_argument("--turns", type=int, default=None, help="run length (default world.json: 8; 12 if T7 says so)")
@@ -180,14 +190,21 @@ def resolve_dispositions(args) -> Tuple[Optional[Dict[str, int]], Optional[str]]
 
 def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
     """Run one cell from parsed arguments; returns (exit code, record or None)."""
-    if args.kin and (args.scenario, args.condition) != (KIN_SCENARIO, KIN_CONDITION):
-        if args.scenario != "S1" or args.condition != "A":      # the defaults: silently the kin set-up
+    if args.kin:
+        # The kin cell is S2 under A (§6.5). A flag given as the mixed-panel default
+        # (--scenario S1) is overridden with a note; any other value is refused.
+        given = {f: v for f, v in (("--scenario", args.scenario), ("--condition", args.condition))
+                 if v is not None}
+        allowed = {"--scenario": ("S1", KIN_SCENARIO), "--condition": ("A", KIN_CONDITION)}
+        if any(v not in allowed[f] for f, v in given.items()):
             print("Refusing: the kin cell is S2 under condition A (§6.5).")
             return EXIT_REFUSED, None
-        print(f"Note: --kin runs the kin cell, scenario {KIN_SCENARIO} under condition {KIN_CONDITION} "
-              f"(§6.5): --scenario/--condition {args.scenario}/{args.condition} overridden to "
-              f"{KIN_SCENARIO}/{KIN_CONDITION}.")
+        overridden = [f"{f} {v}" for f, v in given.items() if v not in (KIN_SCENARIO, KIN_CONDITION)]
+        if overridden:
+            print(f"Note: --kin runs the kin cell, scenario {KIN_SCENARIO} under condition {KIN_CONDITION} "
+                  f"(§6.5): {', '.join(overridden)} overridden.")
         args.scenario, args.condition = KIN_SCENARIO, KIN_CONDITION
+    args.scenario, args.condition = args.scenario or "S1", args.condition or "A"
     cfg = load_world()
     turns = args.turns or int(cfg.get("turns", 8))
     a2a = "merged" if args.scenario == "S1" else args.a2a          # S1 always merges (§5.2)
@@ -234,8 +251,14 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
     # A finished run under this id is never paid for again: a complete record
     # is kept as it is, and one whose Grand Jury is missing has only the jury asked.
     expect = {"scenario": args.scenario, "condition": args.condition, "a2a_mode": a2a, "turns": turns,
-              "seed": args.seed}
-    existing, conflict = finished_record(output_dir, run_id, expect, bool(args.dry_run))
+              "seed": args.seed, "kin": bool(args.kin)}
+    if args.dry_run:
+        other = real_log(output_dir, run_id)
+        if other is not None:
+            print(f"Refusing a dry run: {other} is a real run's log; a dry run never overwrites it or sets "
+                  "it aside. Pass another --output or --run-id.")
+            return EXIT_REFUSED, None
+    existing, conflict = finished_record(output_dir, run_id, expect, bool(args.dry_run), args.policy)
     if conflict:
         print(f"Refusing: {output_dir / (run_id + '.json')} holds a finished run of another set-up "
               f"({conflict}); pass another --run-id or --output (a finished run is never deleted).")
@@ -285,6 +308,9 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
     print(f"\nLog: {output_dir / (run_id + '.json')}")
     if policy is None:
         print(f"Measured spend (ledger): ${get_tracker().persisted_total():.2f}")
+    if run_grand_jury and not grand_jury_usable(record):
+        print(NO_VERDICT.format(run_id=run_id))
+        return EXIT_FAILED, record
     return EXIT_OK, record
 
 
@@ -323,10 +349,12 @@ def apply_model_overrides(labs, overrides: List[str]) -> str:
     return ""
 
 
-def finished_record(output_dir: Path, run_id: str, expect: Dict[str, Any], dry_run: bool
-                    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+def finished_record(output_dir: Path, run_id: str, expect: Dict[str, Any], dry_run: bool,
+                    policy: Optional[str] = None) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """(the finished record at <run_id>.json when it is this run, why it is another run).
-    A dry record never stands in for a real run (and the reverse): it is treated as absent."""
+    The set-up (expect: scenario, condition, message mode, turns, seed, kin) and the
+    scripted --policy must match. A dry record never stands in for a real run (and the
+    reverse): it is treated as absent."""
     rec = read_record(output_dir / f"{run_id}.json")
     if not is_finished(rec):
         return None, None
@@ -335,7 +363,19 @@ def finished_record(output_dir: Path, run_id: str, expect: Dict[str, Any], dry_r
         return None, None
     diffs = [f"{k} {cfg.get(k)!r} != {v!r}" for k, v in expect.items()
              if cfg.get(k) is not None and cfg.get(k) != v]
+    had = cfg.get("policy") or (cfg.get("run_meta") or {}).get("policy") if is_scripted_run(rec) else None
+    if had != policy:
+        diffs.append(f"policy {had!r} != {policy!r}")
     return (None, "; ".join(diffs)) if diffs else (rec, None)
+
+
+def real_log(output_dir: Path, run_id: str) -> Optional[Path]:
+    """A real (not dry) run's finished record or partial log at this run id, if any."""
+    for path in (output_dir / f"{run_id}.json", output_dir / f"{run_id}{PARTIAL_SUFFIX}"):
+        rec = read_record(path)
+        if isinstance(rec, dict) and isinstance(rec.get("turns"), list) and not is_dry(rec):
+            return path
+    return None
 
 
 def ask_grand_jury_only(record: Dict[str, Any], run_id: str, output_dir: Path,
@@ -352,6 +392,9 @@ def ask_grand_jury_only(record: Dict[str, Any], run_id: str, output_dir: Path,
         print(f"Grand Jury failed: {type(e).__name__}: {e}")
         return EXIT_REFUSED, record
     print(f"{run_id}: {line}")
+    if not grand_jury_usable(record):
+        print(NO_VERDICT.format(run_id=run_id))
+        return EXIT_FAILED, record
     return EXIT_OK, record
 
 
