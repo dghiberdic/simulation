@@ -37,12 +37,12 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from core.records import run_id_of, write_json_atomic
+from core.config import CONFIG_DIR, SIM_DIR, load_lab_configs
+from core.records import KIN_SEAT, run_id_of, write_json_atomic
 
 logger = logging.getLogger(__name__)
 
-SIM_DIR = Path(__file__).resolve().parent.parent
-PRICES_FILE = SIM_DIR / "config" / "prices.json"
+PRICES_FILE = CONFIG_DIR / "prices.json"
 DEFAULT_SPEND_FILE = SIM_DIR / "data" / "spend.json"
 
 
@@ -432,9 +432,12 @@ def project_run(inputs: Dict[str, Any], *, turns: int, a2a: str = "merged", inte
     return parts
 
 
-def kin_seat_scale(inputs: Dict[str, Any], kin_model: str = "claude-opus-5-5") -> float:
+def kin_seat_scale(inputs: Dict[str, Any], kin_model: Optional[str] = None) -> float:
     """Seat-play factor of the kin cell (one model in every seat): 5 x that model's
-    measured share of seat play; 1.0 when no share was measured."""
+    measured share of seat play; 1.0 when no share was measured. kin_model defaults
+    to the kin seat's model in config/labs (§6.5: Claude)."""
+    if kin_model is None:
+        kin_model = next(c["model"] for c in load_lab_configs() if c["key"] == KIN_SEAT)
     share = (inputs.get("seat_share") or {}).get(kin_model)
     n_models = len(inputs.get("seat_share") or {}) or 5
     return round(share * n_models, 4) if share else 1.0

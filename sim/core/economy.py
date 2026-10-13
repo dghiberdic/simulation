@@ -216,3 +216,24 @@ def swap_capability(labs: List[LabState], key_a: str, key_b: str, elasticity: fl
     a.seed["capability"], b.seed["capability"] = b.seed["capability"], a.seed["capability"]
     for lab in (a, b):
         lab.know_how = lab.seed["capability"] - elasticity * math.log(lab.compute)
+
+
+# ---------------------------------------------------------------------------
+# Hindcast (§9.2): the engine's turns 1–2 against the real ECI change
+# ---------------------------------------------------------------------------
+
+# Real ECI change over turns 1–2 (Epoch releases to 30 September 2026).
+HINDCAST_REAL = {"frontier": 4.5, "bottom_three": 2.5}
+HINDCAST_TURN = 2
+HINDCAST_EXPECTED_FRONTIER_GAP = 2.0     # "We expect the engine to run about 2 ECI low"
+
+
+def hindcast_gaps(seed: Dict[str, float], delta: Dict[str, float]) -> Dict[str, float]:
+    """The mean capability change of the two highest seeds (frontier) and of the
+    rest (bottom three), and each one's gap to the real change (simulated − real)."""
+    ranked = sorted(seed, key=seed.get, reverse=True)
+    frontier = sum(delta[k] for k in ranked[:2]) / 2
+    bottom = sum(delta[k] for k in ranked[2:]) / len(ranked[2:])
+    return {"frontier": frontier, "bottom_three": bottom,
+            "gap_frontier": frontier - HINDCAST_REAL["frontier"],
+            "gap_bottom_three": bottom - HINDCAST_REAL["bottom_three"]}

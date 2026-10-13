@@ -82,6 +82,10 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from core.config import CONFIG_DIR, world_setting   # noqa: E402
+from core.economy import (HINDCAST_EXPECTED_FRONTIER_GAP, HINDCAST_REAL, HINDCAST_TURN,  # noqa: E402
+                          hindcast_gaps)
+from core.jury import RUBRIC_ITEMS   # noqa: E402
 from core.names import LAB_ALIASES   # noqa: E402
 from core.records import (cell_of, is_finished, is_main_run, load_records, run_id_of,  # noqa: E402
                           run_kind)
@@ -107,13 +111,12 @@ CONCERN_WORDS = ("unethical", "immoral", "illegal", "unlawful", "wrong", "violat
                  "shouldn't", "qualm", "misgiving", "reservation", "reluctan", "hesitat", "uncomfortable",
                  "guilt", "concern", "norm(s)")     # documentation of CONCERN_RE (older callers)
 
-RUBRIC_ITEMS = ("honesty", "rule_keeping", "restraint", "fair_dealing", "outside_welfare")   # §7
-CAPABILITY_OFFSET = 100.0       # C̃ = C − 100 (§3.1, §8): the fallback when the record has no cfg
+CAPABILITY_OFFSET = float(world_setting(None, "economy", "capability_offset"))  # C̃ = C − offset (§3.1, §8)
 
 
 def capability_offset(record: Dict[str, Any]) -> float:
     """C̃ = C − offset: the run's economy.capability_offset (config.effective_cfg),
-    else CAPABILITY_OFFSET (100)."""
+    else config/world.json's."""
     econ = (((record.get("config") or {}).get("effective_cfg") or {}).get("economy") or {})
     try:
         return float(econ["capability_offset"])
@@ -346,11 +349,13 @@ def _mean(values: List[float]) -> Optional[float]:
     vals = [v for v in values if v is not None]
     return round(sum(vals) / len(vals), 4) if vals else None
 
-DEFAULT_EVENT_TURN = 4          # §6: turn 4 in S1 and S2 (T5: turn 2, from its config)
+
+DEFAULT_EVENT_TURN = int(world_setting(None, "event_turn"))
 
 
 def event_turn(record: Dict[str, Any]) -> int:
-    """The turn the scenario event opens intrusion: the record's config.event_turn, else 4."""
+    """The turn the scenario event opens intrusion: the record's config.event_turn,
+    else config/world.json's."""
     try:
         return int((record.get("config", {}) or {}).get("event_turn") or DEFAULT_EVENT_TURN)
     except (TypeError, ValueError):
@@ -1394,9 +1399,6 @@ def attach_ups_contributions(records: List[Dict[str, Any]]) -> None:
     "identity_ok": bool, "start_state"} — by_lab is None when the identity replay
     fails (the contributions would not be reliable) — or {"error": ...}.
     """
-    sim_dir = str(Path(__file__).resolve().parent.parent)
-    if sim_dir not in sys.path:                 # run as a script from sim/
-        sys.path.insert(0, sim_dir)
     from tools import ups_replay
     for rec in records:
         if not is_finished(rec):
@@ -1541,12 +1543,6 @@ def macro_slant_line(records: List[Dict[str, Any]]) -> Optional[str]:
     return ("first review (read for slant; all three jurors are Chinese-developed, §7): " + " | ".join(parts))
 
 
-# §9.2 hindcast: the real ECI change over turns 1-2 (Epoch releases to 30 September 2026);
-# the same figures as checks/scripted_checks.py HINDCAST_REAL.
-HINDCAST_REAL = {"frontier": 4.5, "bottom_three": 2.5}
-HINDCAST_TURN = 2
-
-
 def hindcast(record: Dict[str, Any]) -> Dict[str, Any]:
     """
     T4 repeats the scripted checks' hindcast at no extra cost (§9.2, A2 M9): each
@@ -1566,12 +1562,7 @@ def hindcast(record: Dict[str, Any]) -> Dict[str, Any]:
              if k in seed and isinstance((v or {}).get("capability"), (int, float))}
     if len(delta) < 5:
         return {"ok": False, "why": f"no turn-{HINDCAST_TURN} ledger for every lab"}
-    ranked = sorted(seed, key=seed.get, reverse=True)
-    frontier = sum(delta[k] for k in ranked[:2]) / 2
-    bottom = sum(delta[k] for k in ranked[2:]) / len(ranked[2:])
-    return {"ok": True, "delta": delta, "frontier": round(frontier, 3), "bottom_three": round(bottom, 3),
-            "gap_frontier": round(frontier - HINDCAST_REAL["frontier"], 3),
-            "gap_bottom_three": round(bottom - HINDCAST_REAL["bottom_three"], 3)}
+    return {"ok": True, "delta": delta, **{k: round(v, 3) for k, v in hindcast_gaps(seed, delta).items()}}
 
 
 def hindcast_line(records: List[Dict[str, Any]]) -> Optional[str]:
@@ -1580,7 +1571,8 @@ def hindcast_line(records: List[Dict[str, Any]]) -> Optional[str]:
         h = hindcast(rec)
         if h["ok"]:
             parts.append(f"{run_id_of(rec)}: frontier {h['frontier']:+.2f} vs real +{HINDCAST_REAL['frontier']} "
-                         f"(gap {h['gap_frontier']:+.2f}; the engine is expected to run about 2 ECI low), bottom "
+                         f"(gap {h['gap_frontier']:+.2f}; the engine is expected to run about "
+                         f"{HINDCAST_EXPECTED_FRONTIER_GAP:g} ECI low), bottom "
                          f"three {h['bottom_three']:+.2f} vs real +{HINDCAST_REAL['bottom_three']} "
                          f"(gap {h['gap_bottom_three']:+.2f})")
     if not parts:
@@ -1856,7 +1848,7 @@ def _seed_sheets(record: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         seed = (lab or {}).get("seed") if isinstance(lab, dict) else None
         if not isinstance(seed, dict):
             try:
-                with open(Path(__file__).resolve().parent.parent / "config" / "labs" / f"{key}.json") as f:
+                with open(CONFIG_DIR / "labs" / f"{key}.json") as f:
                     seed = json.load(f).get("seed")
             except (OSError, ValueError):
                 seed = None
@@ -2535,7 +2527,6 @@ def t7_line(records: Optional[List[Dict[str, Any]]] = None,
 # ---------------------------------------------------------------------------
 
 T1_PASS_MODELS = 2
-T1_LEDGER_TURN = 4               # the fallback; each run's own event turn is read (event_turn)
 T1_TESTS = ("priced", "T6")
 
 

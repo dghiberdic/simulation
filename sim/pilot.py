@@ -81,17 +81,17 @@ from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from core.config import build_labs_and_world, load_state, load_world
+from core.config import CONFIG_DIR, LAB_ORDER, PILOT_DIR, build_labs_and_world, load_world
 from core import costs as costs_mod
 from core.costs import BudgetExceeded, configure, get_tracker, measure_runs, project_run, with_fallbacks
 from core.economy import swap_capability
 from core.engine import RunAborted, SimulationEngine, interview_schedule, review_turns
 from core import jury as jury_mod
-from core.jury import GRAND_JURY_MODELS, DispositionJury, collect_grand_jury
+from core.jury import GRAND_JURY_MODELS, MACRO_JURY_MODELS, DispositionJury, collect_grand_jury
 from core.llm import FatalAPIError
 from core.policies import POLICIES
 from core.preflight import model_problems, placeholder_labs
-from core.records import (finished_records, grand_jury_usable, is_finished, read_json,
+from core.records import (DRY_SUBDIR, finished_records, grand_jury_usable, is_finished, read_json,
                           write_json_atomic)
 from core.stubs import install_stubs
 from core.transcript import disposition_transcript, seat_letters
@@ -100,16 +100,12 @@ from tools.compare_arms import compare as compare_arms
 
 logger = logging.getLogger(__name__)
 
-SIM_DIR = Path(__file__).resolve().parent
-PILOT_FILE = SIM_DIR / "config" / "pilot.json"
-PILOT_DATA = SIM_DIR / "data" / "pilot"
-DRY_SUBDIR = "dry"                                      # dry logs never mix with real ones (H7)
+PILOT_FILE = CONFIG_DIR / "pilot.json"
 RATINGS_NAME = "disposition_ratings.json"
 DRY_RATINGS_NAME = "disposition_ratings.dry.json"
 APPROVAL_NAME = "approval.json"
 SHEET_NAME = "T6_coding_sheet.csv"
 SHARE_NAME = "share.txt"
-LAB_KEYS = ("anthropic", "openai", "gdm", "meta", "xai")
 COMMANDS = ("plan", "approve", "all")
 
 JUROR_PURPOSES = ("grand_jury", "macro_jury", "disposition_jury")
@@ -119,7 +115,7 @@ EXIT_CODES = {"completed": EXIT_OK, "halted_budget": EXIT_BUDGET}   # aborted / 
 
 def _real_jurors() -> Dict[str, List[str]]:
     return {"grand": list(GRAND_JURY_MODELS), "disposition": list(GRAND_JURY_MODELS),
-            "macro": list(load_state()["macro_jury_models"])}
+            "macro": list(MACRO_JURY_MODELS)}
 
 
 # ---------------------------------------------------------------------------
@@ -132,8 +128,8 @@ def parse_swap(value: Any) -> Optional[Tuple[str, str]]:
         return None
     a, sep, b = str(value).partition(":")
     a, b = a.strip(), b.strip()
-    if not sep or a not in LAB_KEYS or b not in LAB_KEYS or a == b:
-        raise SystemExit(f"bad swap {value!r}: use KEY:KEY with keys from {', '.join(LAB_KEYS)}")
+    if not sep or a not in LAB_ORDER or b not in LAB_ORDER or a == b:
+        raise SystemExit(f"bad swap {value!r}: use KEY:KEY with keys from {', '.join(LAB_ORDER)}")
     return a, b
 
 
@@ -155,7 +151,7 @@ def pilot_root(dry_run: bool, output: Optional[str] = None) -> Path:
     """The pilot directory: --output, else data/pilot (dry runs: data/pilot/dry)."""
     if output:
         return Path(output)
-    return PILOT_DATA / DRY_SUBDIR if dry_run else PILOT_DATA
+    return PILOT_DIR / DRY_SUBDIR if dry_run else PILOT_DIR
 
 
 def ratings_path(root: Path, dry_run: bool) -> Path:
@@ -254,7 +250,7 @@ def _n_reviews(preset: Dict[str, Any], cfg: Optional[Dict[str, Any]] = None) -> 
 
 
 def _seat_scale(preset: Dict[str, Any]) -> float:
-    return (len(LAB_KEYS) - len(preset.get("scripted_seats") or {})) / len(LAB_KEYS)
+    return (len(LAB_ORDER) - len(preset.get("scripted_seats") or {})) / len(LAB_ORDER)
 
 
 def estimate_preset(data: Dict[str, Any], preset: Dict[str, Any], column: int) -> float:
@@ -324,7 +320,7 @@ def build_plan(data: Dict[str, Any], root: Path, turns: Optional[int] = None,
     order (T9 dropped, then T4's interview) while the column's total exceeds the
     guard; "stop" when it still does. The first column decides.
     """
-    guard = float(data.get("budget_guard", 48))
+    guard = float(data["budget_guard"])
     cfg = cfg or load_world()
     inputs = measured_inputs(root, data)
     basis = "measured" if inputs else "estimate"
@@ -971,7 +967,7 @@ def effective_guard(args, data: Dict[str, Any], approval: Optional[Dict[str, Any
         return float(args.budget)
     if approval and approval.get("budget_guard") is not None:
         return float(approval["budget_guard"])
-    return float(data.get("budget_guard", 48))
+    return float(data["budget_guard"])
 
 
 def usd(x: Any) -> str:

@@ -49,13 +49,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from core.config import build_labs_and_world, load_dispositions, load_state, load_world
+from core.config import LAB_ORDER, RUNS_DIR, build_labs_and_world, load_dispositions, load_world
 from core.costs import BudgetExceeded, configure, get_tracker
 from core.engine import RunAborted, SimulationEngine
-from core.records import (KIN_CONDITION, KIN_SCENARIO, cell_name, grand_jury_usable, is_finished,
+from core.records import (KIN_CONDITION, KIN_SCENARIO, KIN_SEAT, cell_name, grand_jury_usable, is_finished,
                           read_record)
 from core import engine as engine_mod
-from core.jury import GRAND_JURY_MODELS, collect_grand_jury
+from core.jury import GRAND_JURY_MODELS, MACRO_JURY_MODELS, collect_grand_jury
 from core.llm import FatalAPIError
 from core import policies
 from core.preflight import model_problems, placeholder_labs
@@ -63,10 +63,6 @@ from core.stubs import install_stubs
 
 logger = logging.getLogger(__name__)
 
-SIM_DIR = Path(__file__).resolve().parent
-RUNS_DIR = SIM_DIR / "data" / "runs"
-LAB_KEYS = ("anthropic", "openai", "gdm", "meta", "xai")
-KIN_SEAT = "anthropic"                 # §6.5: Claude plays every seat in the kin cell
 EXIT_JURY_MISSING = 1                  # a budget stop; the run itself is finished and saved
 
 
@@ -166,13 +162,13 @@ def resolve_dispositions(args) -> Tuple[Optional[Dict[str, int]], Optional[str]]
     """(dispositions, refusal). Seats play their T2 values (config/dispositions.json);
     --disposition N sets every seat; a scripted or dry run may fall back to 50."""
     if args.disposition is not None:
-        return {k: args.disposition for k in LAB_KEYS}, None
+        return {k: args.disposition for k in LAB_ORDER}, None
     dispositions = load_dispositions() or {}
     bad = bad_dispositions(dispositions)
     if bad:
         return None, ("Refusing the run: config/dispositions.json needs a number from 0 to 100 per seat; "
                       f"got {', '.join(bad)}. Rewrite it with `python tools/disposition.py --write`.")
-    missing = [k for k in LAB_KEYS if dispositions.get(k) is None]
+    missing = [k for k in LAB_ORDER if dispositions.get(k) is None]
     if missing and args.policy is None and not args.dry_run:
         where = ("config/dispositions.json has no setting for " + ", ".join(missing)) if dispositions \
             else "config/dispositions.json is missing"
@@ -180,7 +176,7 @@ def resolve_dispositions(args) -> Tuple[Optional[Dict[str, int]], Optional[str]]
                       "with `python tools/disposition.py --write` — or pass --disposition N.")
     if missing:
         logger.warning(f"[disposition] no T2 value for {', '.join(missing)}: 50 in this scripted / dry run")
-    return {k: dispositions.get(k, 50) for k in LAB_KEYS}, None
+    return {k: dispositions.get(k, 50) for k in LAB_ORDER}, None
 
 
 def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
@@ -219,7 +215,7 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
     policy = policies.POLICIES[args.policy] if args.policy else None
     offline = policy is not None
     grand_jurors = list(GRAND_JURY_MODELS)
-    macro_jurors = [] if (offline or args.no_macro_jury) else list(load_state()["macro_jury_models"])
+    macro_jurors = [] if (offline or args.no_macro_jury) else list(MACRO_JURY_MODELS)
     run_grand_jury = not (offline or args.no_grand_jury)
     if args.dry_run and not offline:
         jurors = install_stubs(labs)
@@ -306,7 +302,7 @@ def apply_model_overrides(labs, overrides: List[str]) -> str:
     """--model KEY=MODEL: set the seat's model, its family and the provider preflight
     checks; an unknown key, an empty model, a model with no known provider or one of a
     juror's family (§7: no juror shares a family with any seat) is refused ("" if fine)."""
-    from core.jury import GRAND_JURY_MODELS, MACRO_JURY_MODELS, juror_family
+    from core.jury import juror_family
     from core.llm import resolve_provider
     juror_families = {juror_family(m) for m in GRAND_JURY_MODELS + MACRO_JURY_MODELS}
     by_key = {lab.key: lab for lab in labs}
@@ -314,7 +310,7 @@ def apply_model_overrides(labs, overrides: List[str]) -> str:
         key, sep, model = pair.partition("=")
         key, model = key.strip(), model.strip()
         if not sep or key not in by_key or not model:
-            return (f"Refusing: bad --model {pair!r}; use KEY=MODEL with KEY one of {', '.join(LAB_KEYS)}, "
+            return (f"Refusing: bad --model {pair!r}; use KEY=MODEL with KEY one of {', '.join(LAB_ORDER)}, "
                     "e.g. meta=claude-opus-5-5.")
         try:
             provider = resolve_provider(model)

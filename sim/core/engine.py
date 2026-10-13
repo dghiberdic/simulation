@@ -63,6 +63,7 @@ from core.actions import (
 )
 from core.whistleblow import report_fee, validate_report   # M16: fee reserved in pass 1
 from core.a2a import A2AChannel
+from core.config import world_setting
 from core.costs import BudgetExceeded
 from core.economy import purchases_frozen
 from core.fog import DEFAULT_FOG, check_fog, describe_action, observed_actions
@@ -113,13 +114,9 @@ MAX_TOKENS_MESSAGE = 8000
 MAX_TOKENS_INTERVIEW = 2000
 # An empty answer (e.g. thinking used the whole cap) is asked once more with this cap.
 MAX_TOKENS_INTERVIEW_RETRY = 4000
-INTERVIEW_ANSWER_TOKENS = 300
 
 # final.grand_jury while the jury has not answered (the final record is saved first).
 GRAND_JURY_PENDING = {"error": "pending", "pending": True}
-
-DEFAULT_EVENT_TURN = 4
-DEFAULT_REVIEW_TURNS = (2, 6, 10)
 
 # Public notices shown to seats: the last three months, each with its month (B12).
 NOTICE_MONTHS = 3
@@ -171,9 +168,9 @@ def _text(value: Any) -> str:
 
 
 def review_turns(cfg: Dict[str, Any], turns: int) -> List[int]:
-    """MacroJury review turns of a run: macro_jury.review_turns (default 2, 6, 10)
-    that fall before the final turn (§5.2 step 6)."""
-    listed = (cfg.get("macro_jury") or {}).get("review_turns", DEFAULT_REVIEW_TURNS)
+    """MacroJury review turns of a run: macro_jury.review_turns (cfg's, else
+    config/world.json's) that fall before the final turn (§5.2 step 6)."""
+    listed = world_setting(cfg, "macro_jury", "review_turns")
     return sorted({int(t) for t in listed if 1 <= int(t) < turns})
 
 
@@ -274,8 +271,7 @@ class SimulationEngine:
         self.turns = turns
         self.seed = seed
         self.keyed = KeyedRNG(seed)                 # every draw keyed and logged
-        self.event_turn = int(event_turn if event_turn is not None
-                              else cfg.get("event_turn", DEFAULT_EVENT_TURN))
+        self.event_turn = int(event_turn if event_turn is not None else world_setting(cfg, "event_turn"))
         self.review_turns = review_turns(cfg, turns)
         # An event turn asked for must fall in the run with a month after it; the config
         # default may lie past a short (pre-event) test run.
@@ -744,7 +740,7 @@ class SimulationEngine:
                     "reason": "call failed", "error": got.get("error")}
         r = responses[-1]
         text = (r.text or "").strip()
-        answer = cut_answer(text, max_tokens=INTERVIEW_ANSWER_TOKENS)
+        answer = cut_answer(text)
         incomplete = bool(text) and r.stop == "max_tokens"
         cut = len(answer) < len(text)
         entry = {"answer": answer, "raw_len": len(text),

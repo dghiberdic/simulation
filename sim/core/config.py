@@ -14,7 +14,10 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
+SIM_DIR = Path(__file__).resolve().parent.parent
+CONFIG_DIR = SIM_DIR / "config"
+RUNS_DIR = SIM_DIR / "data" / "runs"            # main runs (main.py, campaign.py)
+PILOT_DIR = SIM_DIR / "data" / "pilot"          # pilot runs (pilot.py)
 
 LAB_ORDER = ("anthropic", "openai", "gdm", "meta", "xai")
 
@@ -22,6 +25,22 @@ LAB_ORDER = ("anthropic", "openai", "gdm", "meta", "xai")
 def load_json(path: Path) -> Dict[str, Any]:
     with open(path) as f:
         return json.load(f)
+
+
+def world_setting(cfg: Optional[Dict[str, Any]], *path: str) -> Any:
+    """The setting at `path` in cfg (a loaded world config), else the shipped
+    config/world.json's, e.g. world_setting(cfg, "macro_jury", "review_turns")."""
+    node: Any = cfg or {}
+    for key in path:
+        if not isinstance(node, dict) or key not in node:
+            break
+        node = node[key]
+    else:
+        return node
+    node = load_world()
+    for key in path:
+        node = node[key]
+    return node
 
 
 def pilot_budget_guard() -> float:

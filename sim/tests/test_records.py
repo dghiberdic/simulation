@@ -55,3 +55,10 @@ def test_finished_records_drops_partials_side_files_and_dry_dirs(tmp_path):
     assert [r["run_id"] for _p, r in records.load_records([tmp_path])] == ["S1-A-run01", "S1-A-run02"]
     assert [r["run_id"] for _p, r in records.finished_records([tmp_path], recursive=True)] == ["S1-A-run01"]
     assert len(records.finished_records([tmp_path], recursive=True, include_dry=True)) == 2
+
+
+def test_world_setting_falls_back_to_the_shipped_world():
+    from core.config import load_world, world_setting
+    assert world_setting({"event_turn": 2}, "event_turn") == 2
+    assert world_setting({}, "event_turn") == load_world()["event_turn"]
+    assert world_setting(None, "macro_jury", "review_turns") == load_world()["macro_jury"]["review_turns"]

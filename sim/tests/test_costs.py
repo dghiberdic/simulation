@@ -125,3 +125,11 @@ def test_budget_exceeded_carries_attempts_list():
     assert e.attempts == [] and str(e) == "guard"
     e.attempts = [{"stop": "end"}]
     assert BudgetExceeded("other").attempts == []
+
+
+def test_kin_seat_scale_reads_the_kin_seats_model_from_config(monkeypatch):
+    from core import config
+    labs = [dict(c, model="claude-next") if c["key"] == "anthropic" else c for c in config.load_lab_configs()]
+    monkeypatch.setattr(costs, "load_lab_configs", lambda: labs)
+    inputs = {"seat_share": {"claude-next": 0.4, "gpt-6-astra": 0.6}}
+    assert costs.kin_seat_scale(inputs) == pytest.approx(0.8)

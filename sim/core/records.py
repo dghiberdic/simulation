@@ -29,7 +29,8 @@ DRY_SUBDIR = "dry"                  # dry-run logs live under a dry/ directory
 SIDE_FILE_PREFIXES = ("pilot_summary_", "disposition_ratings", "spend", "approval", "post_run_",
                       "campaign_state")
 
-KIN_SCENARIO, KIN_CONDITION = "S2", "A"     # §6.5: the kin cell is S2 under condition A
+# §6.5: the kin cell is S2 under condition A, with this seat's model (Claude) in every seat.
+KIN_SCENARIO, KIN_CONDITION, KIN_SEAT = "S2", "A", "anthropic"
 
 
 # ---------------------------------------------------------------------------

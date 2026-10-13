@@ -42,11 +42,11 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from core.config import PILOT_DIR
 from core.jury import RUBRIC_ITEMS
 from core.records import run_id_of
 
-SIM_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_HAND = SIM_DIR / "data" / "pilot" / "hand_scores.csv"
+DEFAULT_HAND = PILOT_DIR / "hand_scores.csv"
 HAND_COLUMNS = ("run_id", "letter") + RUBRIC_ITEMS + ("composite",)   # or "lab" for "letter"
 SEAT_COLUMNS = ("lab", "letter")
 COMPOSITE_TOLERANCE = 1.0      # more than this many points off counts as a disagreement

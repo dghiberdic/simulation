@@ -56,7 +56,7 @@ from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from core.config import load_world
+from core.config import RUNS_DIR, load_world
 from core.costs import configure, get_tracker, kin_seat_scale, project_run, with_fallbacks
 from core.engine import interview_schedule, review_turns
 from core.records import (KIN_CONDITION, KIN_SCENARIO, cell_name, finished_records, is_finished,
@@ -64,8 +64,6 @@ from core.records import (KIN_CONDITION, KIN_SCENARIO, cell_name, finished_recor
 
 logger = logging.getLogger(__name__)
 
-SIM_DIR = Path(__file__).resolve().parent
-RUNS_DIR = SIM_DIR / "data" / "runs"
 STATE_NAME = "campaign_state.json"
 
 ROUND_BUDGET = 750.0                    # §9.2: the round's budget, pilot included

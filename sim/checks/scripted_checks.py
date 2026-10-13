@@ -47,8 +47,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.config import build_labs_and_world, load_lab_configs, load_world
+from core.config import LAB_ORDER, build_labs_and_world, load_lab_configs, load_world
 from core.economy import (
+    HINDCAST_EXPECTED_FRONTIER_GAP, HINDCAST_REAL, hindcast_gaps,
     execute_purchases, macro_growth, purchases_frozen,
 )
 from core.engine import SimulationEngine
@@ -89,12 +90,7 @@ SPEC_ODDS = {
     "lead_probability": 0.15,
 }
 
-# §9.2 hindcast: real ECI change over turns 1–2 (Epoch releases to 30 Sep 2026).
-HINDCAST_REAL = {"frontier": 4.5, "bottom_three": 2.5}
-HINDCAST_EXPECTED_FRONTIER_GAP = 2.0     # "We expect the engine to run about 2 ECI low"
-
-SEATS = ("anthropic", "openai", "gdm", "meta", "xai")
-_DISPOSITIONS = {k: 50 for k in SEATS}
+_DISPOSITIONS = {k: 50 for k in LAB_ORDER}
 
 
 # ---------------------------------------------------------------------------
@@ -849,8 +845,8 @@ def sc12_fee_payable_at_event() -> CheckResult:
     cfg = load_world()
     icfg = cfg["intrusion"]
     together = fee_margins()
-    alone = {k: fee_margins(buyers=(k,))[k] for k in SEATS}
-    paths = [together[k] for k in SEATS] + [alone[k] for k in SEATS]
+    alone = {k: fee_margins(buyers=(k,))[k] for k in LAB_ORDER}
+    paths = [together[k] for k in LAB_ORDER] + [alone[k] for k in LAB_ORDER]
     passed = all(m["capital"] >= -EPS and m["influence"] >= -EPS for m in paths)
     detail = (f"fee {icfg['fee_capital_per_target']:g} Capital + "
               f"{icfg['fee_influence_per_target']:g} Inf at event t{cfg['event_turn']}; Capital "
@@ -932,12 +928,7 @@ def hindcast(policy: str = "greedy") -> Dict[str, Any]:
     run = _direct_run(policy=policy, turns=2)
     seed = run["seed_c"]
     delta = {k: run["rows"][-1]["c"][k] - seed[k] for k in seed}
-    ranked = sorted(seed, key=seed.get, reverse=True)
-    frontier = sum(delta[k] for k in ranked[:2]) / 2
-    bottom = sum(delta[k] for k in ranked[2:]) / len(ranked[2:])
-    return {"delta": delta, "frontier": frontier, "bottom_three": bottom,
-            "gap_frontier": frontier - HINDCAST_REAL["frontier"],
-            "gap_bottom_three": bottom - HINDCAST_REAL["bottom_three"]}
+    return {"delta": delta, **hindcast_gaps(seed, delta)}
 
 
 def sc14_hindcast() -> CheckResult:

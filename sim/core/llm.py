@@ -79,14 +79,13 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Tuple
 
 from dotenv import load_dotenv
 
+from core.config import SIM_DIR
 from core.costs import BudgetExceeded, cost_of, get_tracker, price_for
 
-SIM_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(SIM_DIR / ".env")
 
 logger = logging.getLogger(__name__)

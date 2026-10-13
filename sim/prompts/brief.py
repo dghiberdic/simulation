@@ -15,7 +15,7 @@ There is one brief (A.1). Its "since 1 August 2026" is the run's start date
 from datetime import date
 from typing import Dict, Optional, Union
 
-DEFAULT_START_DATE = "2026-08-01"
+from prompts.packets import DEFAULT_START_DATE
 
 
 def start_text(start_date: Union[str, date, None] = None) -> str:

@@ -28,7 +28,7 @@ LAB_KEYS = ("anthropic", "openai", "gdm", "meta", "xai")
 @pytest.fixture(autouse=True)
 def _scratch(tmp_path, monkeypatch):
     """Default pilot/run dirs and the spend ledger point at scratch space."""
-    monkeypatch.setattr(pilot, "PILOT_DATA", tmp_path / "pilot_default")
+    monkeypatch.setattr(pilot, "PILOT_DIR", tmp_path / "pilot_default")
     monkeypatch.setattr(main_mod, "RUNS_DIR", tmp_path / "runs_default")
     monkeypatch.setattr(costs, "DEFAULT_SPEND_FILE", tmp_path / "spend.json")
     configure()
@@ -234,7 +234,7 @@ def test_dry_walkthrough_of_the_whole_pilot(tmp_path, capsys):
     ratings = json.loads((root / "disposition_ratings.dry.json").read_text())
     assert [r["test"] for r in ratings["runs"]] == ["priced", "T6", "T5", "T4", "T9"]
     # Dry runs never touch the real pilot directory or the pooled real ratings.
-    assert not (pilot.PILOT_DATA / "disposition_ratings.json").exists()
+    assert not (pilot.PILOT_DIR / "disposition_ratings.json").exists()
 
 
 def test_all_stops_at_the_hard_stop_then_runs_the_rest(tmp_path, capsys):

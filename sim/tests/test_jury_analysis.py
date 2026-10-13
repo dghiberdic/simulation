@@ -77,7 +77,7 @@ def test_ups_weight_sensitivity_is_seeded_and_reports_rank_stability():
     runs = a["runs"]
     assert len(runs["perturbations"]) == 10                         # five weights, ±0.1
     assert all(abs(sum(w.values()) - 1) < 1e-9 for _l, w in ja.perturbations(ja.base_weights()))
-    assert set(ja.base_weights()) == set(ja.UPS_COMPONENTS)
+    assert set(ja.base_weights()) == set(ja.UPS_TERMS)
     d = runs["dirichlet"]
     assert d["samples"] == 50 and 0 <= d["share_same_order"] <= 1 and set(d["rank_range"]) == {"r0", "r1", "r2"}
     assert ja.ups_sensitivity([(recs[0]["run_id"], recs[0])], samples=5)["runs"] is None

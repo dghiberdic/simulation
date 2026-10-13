@@ -18,11 +18,13 @@ model; with the spec's cfg the intrude paragraph reads exactly as A.4/A.5.
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Union
 
+from core.config import world_setting
 from core.state import VALUE_AXES
 
-DEFAULT_START_DATE = "2026-08-01"       # world.json start_date; callers pass the run's
-DEFAULT_EVENT_TURN = 4
-DEFAULT_BUDGET_TOKENS = 500
+# config/world.json's values, for callers that pass none (the engine passes the run's).
+DEFAULT_START_DATE = world_setting(None, "start_date")
+DEFAULT_EVENT_TURN = int(world_setting(None, "event_turn"))
+DEFAULT_BUDGET_TOKENS = int(world_setting(None, "a2a", "outgoing_token_budget_per_turn"))
 
 
 def _units(value: float) -> str:

@@ -44,13 +44,14 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from core.config import world_setting
 from core.jury import RUBRIC_ITEMS
 from core.records import cell_of
+from core.scoring import UPS_TERMS
 from tools.jury_check import run_keys, spearman
 
 MEASURES = tuple(f"items.{i}" for i in RUBRIC_ITEMS) + ("composite", "perceived_disposition")
-UPS_COMPONENTS = ("capability", "concentration", "equity", "norms", "integrity")
-DEFAULT_UPS_WEIGHTS = {k: 0.2 for k in UPS_COMPONENTS}
+EQUAL_WEIGHTS = {k: 1 / len(UPS_TERMS) for k in UPS_TERMS}
 WEIGHT_STEP = 0.1
 DIRICHLET_CONCENTRATION = 4.0
 
@@ -122,23 +123,20 @@ def seat_measures(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def base_weights() -> Dict[str, float]:
-    try:
-        from core.config import load_world
-        w = load_world()["scoring"]["ups_weights"]
-        return {k: float(w[k]) for k in UPS_COMPONENTS}
-    except Exception:
-        return dict(DEFAULT_UPS_WEIGHTS)
+    """The UPS weights of config/world.json (scoring.ups_weights)."""
+    w = world_setting(None, "scoring", "ups_weights")
+    return {k: float(w[k]) for k in UPS_TERMS}
 
 
 def _normalise(w: Dict[str, float]) -> Dict[str, float]:
     total = sum(w.values())
-    return {k: v / total for k, v in w.items()} if total > 0 else dict(DEFAULT_UPS_WEIGHTS)
+    return {k: v / total for k, v in w.items()} if total > 0 else dict(EQUAL_WEIGHTS)
 
 
 def perturbations(weights: Dict[str, float]) -> List[Tuple[str, Dict[str, float]]]:
     """Each weight ±WEIGHT_STEP (floored at 0), all five renormalised."""
     out = []
-    for k in UPS_COMPONENTS:
+    for k in UPS_TERMS:
         for sign, label in ((1, "+"), (-1, "-")):
             w = dict(weights)
             w[k] = max(0.0, w[k] + sign * WEIGHT_STEP)
@@ -148,7 +146,7 @@ def perturbations(weights: Dict[str, float]) -> List[Tuple[str, Dict[str, float]
 
 def dirichlet(weights: Dict[str, float], n: int, seed: int) -> List[Dict[str, float]]:
     rng = random.Random(seed)
-    alphas = {k: max(DIRICHLET_CONCENTRATION * weights[k], 1e-3) for k in UPS_COMPONENTS}
+    alphas = {k: max(DIRICHLET_CONCENTRATION * weights[k], 1e-3) for k in UPS_TERMS}
     out = []
     for _ in range(n):
         draws = {k: rng.gammavariate(a, 1.0) for k, a in alphas.items()}
@@ -157,7 +155,7 @@ def dirichlet(weights: Dict[str, float], n: int, seed: int) -> List[Dict[str, fl
 
 
 def _index(components: Dict[str, float], w: Dict[str, float]) -> float:
-    return sum(w[k] * components[k] for k in UPS_COMPONENTS)
+    return sum(w[k] * components[k] for k in UPS_TERMS)
 
 
 def _order(scores: Dict[str, float]) -> List[str]:
@@ -212,12 +210,12 @@ def ups_sensitivity(records: List[Tuple[str, Dict[str, Any]]], samples: int = 20
     cells: Dict[str, List[Dict[str, float]]] = {}
     for run, rec in records:
         idx = ((rec or {}).get("final") or {}).get("ups_index") or {}
-        comps = {k: _num(idx.get(k)) for k in UPS_COMPONENTS}
+        comps = {k: _num(idx.get(k)) for k in UPS_TERMS}
         if any(v is None for v in comps.values()):
             continue
         runs[run] = comps
         cells.setdefault(cell_of(rec), []).append(comps)
-    cell_means = {c: {k: statistics.fmean(x[k] for x in lst) for k in UPS_COMPONENTS}
+    cell_means = {c: {k: statistics.fmean(x[k] for x in lst) for k in UPS_TERMS}
                   for c, lst in cells.items()}
     perturbed = perturbations(weights)
     draws = dirichlet(weights, samples, seed)

@@ -56,10 +56,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.costs import scripted_seats                                     # noqa: E402
 from core.transcript import disposition_transcript, full_transcript, seat_letters   # noqa: E402
 from core.records import finished_records, run_id_of                     # noqa: E402
+from tools.disposition import HUMAN_COLUMNS                              # noqa: E402
+from tools.jury_check import HAND_COLUMNS                                # noqa: E402
 
-RUBRIC_ITEMS = ("honesty", "rule_keeping", "restraint", "fair_dealing", "outside_welfare")   # §7
-HAND_COLUMNS = ("run_id", "letter") + RUBRIC_ITEMS + ("composite",)
-HUMAN_COLUMNS = ("run_id", "letter", "disposition")
 KEY_COLUMNS = ("run_id", "letter", "lab", "model", "letter_salt")
 
 

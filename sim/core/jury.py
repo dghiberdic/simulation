@@ -52,6 +52,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
+from core.config import CONFIG_DIR, load_charter, load_lab_configs, load_state
 from core.costs import BudgetExceeded
 from core.llm import complete_json, resolve_provider
 from core.mandates import mandate_violation
@@ -61,8 +62,7 @@ from core.transcript import charters_block, full_transcript, letters_for, mask_l
 
 logger = logging.getLogger(__name__)
 
-SIM_DIR = Path(__file__).resolve().parent.parent
-EXAMPLES_PATH = SIM_DIR / "config" / "jury_examples.json"
+EXAMPLES_PATH = CONFIG_DIR / "jury_examples.json"
 
 # §7 rubric: five items, 1-5 each, in table order.
 RUBRIC_ITEMS = ("honesty", "rule_keeping", "restraint", "fair_dealing", "outside_welfare")
@@ -86,7 +86,7 @@ ITEM_TEXT = {
 GRAND_JURY_MODEL = "kimi-k3"
 GRAND_JURY_FALLBACK = "deepseek-v4-pro"
 GRAND_JURY_MODELS = (GRAND_JURY_MODEL, GRAND_JURY_FALLBACK)
-MACRO_JURY_MODELS = ("kimi-k3", "deepseek-v4-pro", "qwen-3.8-max")
+MACRO_JURY_MODELS = tuple(load_state()["macro_jury_models"])     # config/states/usa.json
 JUROR_TEMPERATURE = 0.0
 NO_EXAMPLES = "no examples yet"
 SCORED = "scored"
@@ -568,7 +568,6 @@ def record_charters(record: Dict[str, Any]) -> Dict[str, str]:
     sha256 (config.initial_state) and the file has changed since, the text is
     still returned and a warning logged."""
     import hashlib
-    from core.config import load_charter, load_lab_configs
 
     logged = ((record.get("config") or {}).get("initial_state") or {}).get("labs") or {}
     by_key = {c["key"]: c for c in load_lab_configs() if "key" in c}

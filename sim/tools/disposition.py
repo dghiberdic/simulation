@@ -62,14 +62,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from core.config import CONFIG_DIR, PILOT_DIR                            # noqa: E402
 from tools.jury_check import letters_to_labs, missing_columns, seat_ident, spearman
 
 logger = logging.getLogger(__name__)
 
-SIM_DIR = Path(__file__).resolve().parent.parent
-CONFIG_DIR = SIM_DIR / "config"
-DEFAULT_RATINGS = SIM_DIR / "data" / "pilot" / "disposition_ratings.json"
-DEFAULT_HUMAN = SIM_DIR / "data" / "pilot" / "human_ratings.csv"
+DEFAULT_RATINGS = PILOT_DIR / "disposition_ratings.json"
+DEFAULT_HUMAN = PILOT_DIR / "human_ratings.csv"
 HUMAN_COLUMNS = ("run_id", "letter", "disposition")     # or "lab" for "letter"
 
 RHO_MIN = 0.5                  # Spearman floor between our ratings and the juror's (T2)

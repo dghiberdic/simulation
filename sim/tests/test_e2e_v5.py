@@ -44,7 +44,7 @@ STUB_ANSWER = "I think the month went reasonably"
 @pytest.fixture(autouse=True)
 def _scratch(tmp_path, monkeypatch):
     """Default dirs and the spend ledger in scratch space; no provider can be reached."""
-    monkeypatch.setattr(pilot, "PILOT_DATA", tmp_path / "pilot_default")
+    monkeypatch.setattr(pilot, "PILOT_DIR", tmp_path / "pilot_default")
     monkeypatch.setattr(main_mod, "RUNS_DIR", tmp_path / "runs_default")
     monkeypatch.setattr(campaign_mod, "RUNS_DIR", tmp_path / "runs_default")
     monkeypatch.setattr(costs, "DEFAULT_SPEND_FILE", tmp_path / "spend.json")

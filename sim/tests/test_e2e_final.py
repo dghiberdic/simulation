@@ -25,7 +25,7 @@ CANON = ("anthropic", "openai", "gdm", "meta", "xai")   # the Situation note's l
 
 @pytest.fixture(autouse=True)
 def _scratch(tmp_path, monkeypatch):
-    monkeypatch.setattr(pilot, "PILOT_DATA", tmp_path / "pilot_default")
+    monkeypatch.setattr(pilot, "PILOT_DIR", tmp_path / "pilot_default")
     monkeypatch.setattr(main_mod, "RUNS_DIR", tmp_path / "runs_default")
     monkeypatch.setattr(campaign_mod, "RUNS_DIR", tmp_path / "runs_default")
     monkeypatch.setattr(costs, "DEFAULT_SPEND_FILE", tmp_path / "spend.json")
