@@ -20,12 +20,11 @@ by the number of committers), w_C/w_I the score weights and fee_inf the
 Influence fee over all targets. The Capital fee does not enter the score.
 """
 
-import math
 from typing import Any, Dict, List, Optional, Sequence
 
 from core.economy import purchase_price, purchases_frozen
 from core.intrusion import copy_gain, exposure_probability, success_probability
-from core.state import LabState, WorldState
+from core.state import LabState, WorldState, floor_tenth
 
 T5_INVEST = 2.0   # t5_scripted: Capital invested each turn (unremarkable, truthfully reported)
 # t5_scripted: a bland monthly statement, so a silent seat does not stand out (M23)
@@ -43,9 +42,8 @@ def _elasticity(cfg: Dict[str, Any]) -> float:
 def affordable_units(capital: float, cfg: Dict[str, Any]) -> float:
     """Compute units `capital` pays for, at most the per-turn cap, rounded down to 0.1
     so the request never costs more than the Capital it is drawn from."""
-    units = min(cfg["compute"]["max_purchase_per_turn"],
-                max(0.0, capital) / purchase_price(1.0, cfg["compute"]))
-    return math.floor(units * 10 + 1e-9) / 10
+    return floor_tenth(min(cfg["compute"]["max_purchase_per_turn"],
+                           max(0.0, capital) / purchase_price(1.0, cfg["compute"])))
 
 
 def _buy(lab: LabState, labs, world: WorldState, cfg: Dict[str, Any], fraction: float) -> List[Dict[str, Any]]:

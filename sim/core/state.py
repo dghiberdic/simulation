@@ -31,6 +31,12 @@ VALUE_AXES = (
 )
 
 
+def floor_tenth(x: float) -> float:
+    """x rounded down to 0.1, so a shown figure never exceeds the true one by more than
+    float noise (1e-9, the pre-check's tolerance)."""
+    return math.floor(x * 10 + 1e-8) / 10
+
+
 def month_date(start: date, turn: int, day: int = 1) -> date:
     """Calendar date of a turn: turn 1 is the start month."""
     months = start.month - 1 + (turn - 1)
@@ -123,13 +129,15 @@ class LabState:
         return elasticity * math.log(self.compute) + self.know_how
 
     def public_sheet(self, elasticity: float) -> Dict[str, Any]:
-        """What other actors and the juries see each turn (the Allocator's ledger)."""
+        """What other actors and the juries see each turn (the Allocator's ledger).
+        Capital and Influence are rounded down, so a seat never reads more than it
+        holds and spends (a fee of 3 is never shown as payable from 2.96)."""
         return {
             "lab": self.lab,
             "compute": round(self.compute, 1),
             "capability": round(self.capability(elasticity), 1),
-            "capital": round(self.capital, 1),
-            "influence": round(self.influence, 1),
+            "capital": floor_tenth(self.capital),
+            "influence": floor_tenth(self.influence),
             "talent": round(self.talent, 1),
         }
 

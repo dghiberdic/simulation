@@ -317,3 +317,19 @@ def test_state_values_and_macro_jury_models():
     assert st["values"] == {"time_horizon": 55, "transparency_threshold": 65,
                             "risk_tolerance": 60, "democratic_tendency": 70}
     assert st["macro_jury_models"] == ["kimi-k3", "deepseek-v4-pro", "qwen-3.8-max"]
+
+
+def test_shown_capital_and_influence_never_exceed_the_true_figures():
+    """econ cleanup 7: the ledger rounds Capital and Influence down to 0.1, so a seat
+    holding 2.96 Capital reads 2.9 (not 3.0) and is never shown a fee it cannot pay."""
+    from core.state import floor_tenth
+    cfg = load_world()
+    lab = _labs(cfg)[0]
+    lab.capital, lab.influence = 2.96, 41.99
+    sheet = lab.public_sheet(cfg["economy"]["capability_compute_elasticity"])
+    assert (sheet["capital"], sheet["influence"]) == (2.9, 41.9)
+    lab.capital, lab.influence = 0.1 * 3, 55 - 5 + 0.0
+    sheet = lab.public_sheet(cfg["economy"]["capability_compute_elasticity"])
+    assert (sheet["capital"], sheet["influence"]) == (0.3, 50.0)
+    for x in (0.0, 0.05, 2.96, 3.0, 2.9999999999, 41.99, 99.99, 100.0, 1 / 3):
+        assert floor_tenth(x) <= x + 1e-9 and x - floor_tenth(x) < 0.1
