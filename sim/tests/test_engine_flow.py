@@ -954,7 +954,7 @@ def test_budget_during_macro_jury_keeps_the_votes_cast(tmp_path):
 def test_shown_and_opening_sheets_match_the_prompts():
     """turns[t]["shown_sheets"] is the ledger the seats read that month
     (keyed like public_sheets); turn 1 also records it as "opening_sheets"."""
-    from prompts.turn import _f1
+    from core.fmt import f1
     prompts = {}
     eng = _model_engine(lambda k, s, m, u: _idle(s), turns=3, prompts=prompts)
     rec = eng.run()
@@ -966,7 +966,7 @@ def test_shown_and_opening_sheets_match_the_prompts():
         assert set(shown) == set(t["public_sheets"]) == set(KEYS)
         user = prompts[("meta", "proposal", t["turn"])]
         for key, sheet in shown.items():
-            assert f"{names[key]}: capability {_f1(sheet['capability'])}" in user
+            assert f"{names[key]}: capability {f1(sheet['capability'])}" in user
     # Month 2's ledger is read after month-2 growth: not month 1's closing sheets.
     assert any(rec["turns"][1]["shown_sheets"][k]["capability"]
                != rec["turns"][0]["public_sheets"][k]["capability"] for k in KEYS)

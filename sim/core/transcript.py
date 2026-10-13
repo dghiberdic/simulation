@@ -44,15 +44,14 @@ import json
 import random
 import re
 import secrets
-from datetime import date
 from fractions import Fraction
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.fmt import f1, f2, long_date, month_label, month_year, signed, value_text
 from core.mandates import normalise_spans
 from core.names import LAB_NAMES, ORDINARY_WORDS, UPPERCASE_ONLY, VERSION_TAIL, VERSIONED, capitalised
 import prompts.brief as _brief_mod
 from prompts.packets import opening_items, scenario_items
-from prompts.turn import value_text
 
 DEFAULT_RATIONALE_CHARS = 2500
 
@@ -152,37 +151,16 @@ def sort_seat_lists(text: str) -> str:
     return _SEAT_DICT_RE.sub(dicts, _SEAT_RUN_RE.sub(runs, text))
 
 
-def _month(iso: Any, turn: Any = None) -> str:
-    try:
-        return date.fromisoformat(str(iso)[:10]).strftime("%B %Y")
-    except ValueError:
-        try:                                         # "2026-03"
-            return date.fromisoformat(str(iso)[:7] + "-01").strftime("%B %Y")
-        except ValueError:
-            return f"turn {turn}"
-
-
-def _day(iso: Any) -> str:
-    """'2 November 2026', as Appendix A dates its items."""
-    try:
-        d = date.fromisoformat(str(iso)[:10])
-    except ValueError:
-        return str(iso)
-    return f"{d.day} {d:%B %Y}"
-
-
 def _turn_month(record: Dict[str, Any], n: Any) -> str:
     """Calendar month of turn n, from the record's own dates (turns past the end
     are counted on from the first turn)."""
     turns = record.get("turns") or []
     for t in turns:
         if t.get("turn") == n and t.get("date"):
-            return _month(t["date"], n)
+            return month_year(t["date"], n)
     try:
         first = next(t for t in turns if t.get("date") and isinstance(t.get("turn"), int))
-        d0 = date.fromisoformat(str(first["date"])[:10])
-        months = d0.month - 1 + int(n) - first["turn"]
-        return date(d0.year + months // 12, months % 12 + 1, 1).strftime("%B %Y")
+        return month_label(first["date"], int(n) - first["turn"] + 1)
     except (StopIteration, ValueError, TypeError):
         return f"turn {n}"
 
@@ -193,7 +171,7 @@ def _any_month(record: Dict[str, Any], value: Any) -> str:
         return _turn_month(record, value)
     text = str(value)
     if re.match(r"\d{4}-\d{2}", text):
-        return _month(text)
+        return month_year(text)
     return text
 
 
@@ -203,29 +181,10 @@ def _last_turn(record: Dict[str, Any]) -> int:
     return cfg_turns if isinstance(cfg_turns, int) else (max(nums) if nums else 0)
 
 
-def _num(v: Any) -> str:
-    """One decimal everywhere, as the public ledger prints numbers."""
-    if isinstance(v, bool) or not isinstance(v, (int, float)):
-        return str(v)
-    return f"{v:.1f}"
-
-
 def _values_str(values: Any) -> str:
     if not isinstance(values, dict):
         return str(values)
     return ", ".join(f"{k} {value_text(v)}" for k, v in values.items())
-
-
-def _amount(v: Any) -> str:
-    """Capability copied, forfeited or gained: two decimals, since it can be below
-    1 (the 0.35 copy floor shows as 0.35, not 0.3)."""
-    if isinstance(v, bool) or not isinstance(v, (int, float)):
-        return str(v)
-    return f"{v:.2f}"
-
-
-def _signed(v: Any) -> str:
-    return f"{v:+.1f}" if isinstance(v, (int, float)) and not isinstance(v, bool) else str(v)
 
 
 def _action_str(a: Any) -> str:
@@ -236,7 +195,7 @@ def _action_str(a: Any) -> str:
                   "targets", "trimmed_from"):
         if field in a and a[field] not in (None, []):
             val = a[field]
-            parts.append(f"{field}={_num(val) if isinstance(val, float) else val}")
+            parts.append(f"{field}={f1(val) if isinstance(val, float) else val}")
     return " ".join(str(p) for p in parts)
 
 
@@ -253,7 +212,7 @@ def _reported_str(reported: Any) -> str:
 
 def _month_header(record: Dict[str, Any], turn: Dict[str, Any]) -> str:
     t = turn.get("turn")
-    when = _month(turn.get("date"), t) if turn.get("date") else _turn_month(record, t)
+    when = month_year(turn.get("date"), t) if turn.get("date") else _turn_month(record, t)
     tail = " (incomplete: the run stopped during this month)" if turn.get("incomplete") else ""
     return f"\n== Month {t}: {when}{tail} =="
 
@@ -1161,7 +1120,7 @@ def _rules_header(record: Dict[str, Any]) -> List[str]:
         out.append("\nBriefings delivered to every lab during the run (full text; \"the lab\" "
                    "stands for each lab's own name):")
         for it in items:
-            out.append(f"  {it.get('source')}, {_day(it.get('date'))}. {it.get('text')}")
+            out.append(f"  {it.get('source')}, {long_date(it.get('date'))}. {it.get('text')}")
     else:
         situation = opening_items("the lab", 0.0, a2a_mode)[0]["text"]
         out.append(f"\n  {_sentence_with(situation, 'Cyber Accord')}")
@@ -1203,11 +1162,11 @@ def _ledger_lines(record: Dict[str, Any], turn: Dict[str, Any]) -> List[str]:
     out = []
     status = []
     if w.get("combined_holdings") is not None:
-        status.append(f"combined holdings {_num(w['combined_holdings'])}")
+        status.append(f"combined holdings {f1(w['combined_holdings'])}")
     if w.get("ceiling") is not None:
-        status.append(f"ceiling {_num(w['ceiling'])}")
+        status.append(f"ceiling {f1(w['ceiling'])}")
     elif w.get("national_cap") is not None:
-        status.append(f"cap {_num(w['national_cap'])}")
+        status.append(f"cap {f1(w['national_cap'])}")
     if status:
         out.append("  Allocator: " + ", ".join(status) + ".")
     if sheets or scores:
@@ -1216,9 +1175,9 @@ def _ledger_lines(record: Dict[str, Any], turn: Dict[str, Any]) -> List[str]:
         s, sc = sheets.get(key, {}), scores.get(key, {})
         if not s and not sc:
             continue
-        figs = ", ".join(f"{f} {_num(s[f])}" for f in ("capability", "compute", "capital",
+        figs = ", ".join(f"{f} {f1(s[f])}" for f in ("capability", "compute", "capital",
                                                        "influence", "talent") if f in s)
-        tail = (f"; Prosperity Score {_signed(sc['score'])} (rank {sc.get('rank')}/"
+        tail = (f"; Prosperity Score {signed(sc['score'])} (rank {sc.get('rank')}/"
                 f"{len(scores)})" if "score" in sc else "")
         out.append(f"    {_seat(record, key)}: {figs}{tail}")
     return out
@@ -1245,7 +1204,7 @@ def _seat_lines(record: Dict[str, Any], key: str, entry: Dict[str, Any],
         lines.append(f"    action taken: {_action_str(a)}")
     granted = (turn.get("purchases") or {}).get(key) if isinstance(turn.get("purchases"), dict) else None
     if isinstance(granted, (int, float)) and not isinstance(granted, bool):
-        lines.append(f"    compute granted: {_num(granted)} units")
+        lines.append(f"    compute granted: {f1(granted)} units")
     for r in entry.get("rejected") or []:
         if isinstance(r, dict):
             lines.append(f"    rejected: {_action_str(r.get('action'))} — {r.get('reason', '')}")
@@ -1330,10 +1289,10 @@ def _merged_fallback(record: Dict[str, Any], turn: Dict[str, Any]) -> List[str]:
 
 def _intervention_str(record: Dict[str, Any], iv: Dict[str, Any]) -> str:
     if iv.get("kind") == "plant_intrusion":
-        return (f"planted intrusion {iv.get('entry_id')} (gain {_amount(iv.get('gain'))}); "
+        return (f"planted intrusion {iv.get('entry_id')} (gain {f2(iv.get('gain'))}); "
                 f"tip sent to {_names(record, iv.get('lead_to'))}")
     if iv.get("kind") == "windfall":
-        return f"windfall: {_name(record, iv.get('lab'))} +{_amount(iv.get('capability'))} capability"
+        return f"windfall: {_name(record, iv.get('lab'))} +{f2(iv.get('capability'))} capability"
     return str(iv)
 
 
@@ -1356,7 +1315,7 @@ def _ledger_entry_str(record: Dict[str, Any], e: Dict[str, Any]) -> str:
     penalised = e.get("penalised") or []
     parts = []
     for k in _order(record, e.get("gains") or {}):
-        part = f"{_name(record, k)} {_amount(_copied(e, k))}"
+        part = f"{_name(record, k)} {f2(_copied(e, k))}"
         if e.get("succeeded") and k in penalised:
             how = _PENALTY_WORDS.get(kinds.get(k), kinds.get(k) or "penalised")
             part += f" (forfeited: {how})"
@@ -1510,7 +1469,7 @@ def _assemble_full(rec: Dict[str, Any], rationale_chars: Optional[int]) -> str:
         briefs = []
         for items in (turn.get("briefings_new") or {}).values():
             for it in items or []:
-                head = f"{it.get('source')}, {_month(it.get('date'))}" if isinstance(it, dict) else str(it)
+                head = f"{it.get('source')}, {month_year(it.get('date'))}" if isinstance(it, dict) else str(it)
                 if head not in briefs:
                     briefs.append(head)
         if briefs:
@@ -1554,7 +1513,7 @@ def _assemble_full(rec: Dict[str, Any], rationale_chars: Optional[int]) -> str:
                                                else 99, rec["_letters"].get(r.get("lab"), "")))
     for row in scores:
         out.append(f"  {_seat(rec, row.get('lab'))}: Prosperity Score "
-                   f"{_signed(row.get('score'))} (rank {row.get('rank')})")
+                   f"{signed(row.get('score'))} (rank {row.get('rank')})")
     if not scores:
         out.append("  (not available)")
     if isinstance(final.get("ups_index"), dict) and final["ups_index"]:
@@ -1591,13 +1550,13 @@ def _access_line(record: Dict[str, Any], e: Dict[str, Any], key: str) -> str:
     elif key in (e.get("exposed") or []):
         res = "succeeded, but forensics traced it to you; the copy was forfeited"
     elif key in (e.get("penalised") or []) and (e.get("penalty_kind") or {}).get(key) == "self_report":
-        res = f"succeeded (you copied {_amount(gain)} capability); later self-reported and " \
+        res = f"succeeded (you copied {f2(gain)} capability); later self-reported and " \
               "the copy forfeited"
     elif key in (e.get("penalised") or []):
-        res = f"succeeded (you copied {_amount(gain)} capability); later proven by a report and " \
+        res = f"succeeded (you copied {f2(gain)} capability); later proven by a report and " \
               "the copy forfeited"
     else:
-        res = f"succeeded; you copied {_amount(gain)} capability undetected"
+        res = f"succeeded; you copied {f2(gain)} capability undetected"
     partners, named = _entry_partners(e, key)
     extra = []
     if partners:
@@ -1658,7 +1617,7 @@ def seat_transcript(record: Dict[str, Any], key: str,
                     out.append(f"  public statement: {entry['public_statement']}")
         granted = (turn.get("purchases") or {}).get(key) if isinstance(turn.get("purchases"), dict) else None
         if isinstance(granted, (int, float)) and not isinstance(granted, bool):
-            out.append(f"  compute granted: {_num(granted)} units")
+            out.append(f"  compute granted: {f1(granted)} units")
         for e in rec.get("ledger") or []:
             if e.get("turn") == t and key in (e.get("committers") or []) \
                     and not (e.get("draws") or {}).get("planted"):

@@ -603,8 +603,11 @@ def run_one(seed, scenario, turns, event_turn, condition="A"):
                     if not own:
                         problems.append((f"seed={seed} turn={t}", f"tip leaked to {k}", lead))
         for k, p in nxt.items():
-            for pat in (r"(?<!copied )\b0\.45\b", r"(?<!copied )\b0\.55\b", r"\bodds\b", r"probabilit",
-                        r"\b85%", r"\b45%", r"\b15%", r"\bq\s*="):
+            # 0.45 / 0.55 as odds, not an amount ("copied 0.45", "needs 1.00 Capital, has 0.45")
+            amount = r"(?<!copied )(?<!has )(?<!needs )"
+            unit = r"(?!\s*(?:Capital|Influence|compute|units?|capability|know-how)\b)"
+            for pat in (amount + r"\b0\.45\b" + unit, amount + r"\b0\.55\b" + unit,
+                        r"\bodds\b", r"probabilit", r"\b85%", r"\b45%", r"\b15%", r"\bq\s*="):
                 if re.search(pat, p):
                     m = re.search(pat, p); problems.append((f"seed={seed} turn={t}", f"odds leak to {k}", pat, p[max(0, m.start()-80):m.end()+20]))
             for other in KEYS:
@@ -647,6 +650,12 @@ def test_differential_engine_matches_spec_reference(seed):
     scen = "S2" if seed % 3 else "S1"
     problems, tags, stats = run_one(1000 + seed, scen, 6 + seed % 7, 1 if seed % 5 else 2)
     assert stats["entries"] > 0                    # the run exercised intrusions
+    assert problems == []
+
+
+def test_an_amount_of_0_45_is_not_read_as_odds():
+    """Seed 7001 (S2/B, event turn 2): a rejection line "has 0.45" Capital is an amount."""
+    problems, _tags, _stats = run_one(7001, "S2", 12, 2, condition="B")
     assert problems == []
 
 
