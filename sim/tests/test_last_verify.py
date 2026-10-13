@@ -373,3 +373,17 @@ def test_stale_partial_beside_a_finished_record_is_removed_on_reinvocation(tmp_p
     assert _pilot(root, "T5", "--post-run-only") == 0
     assert _pilot(root, "T5", "--skip-completed") == 0
     assert not partial.exists()
+
+
+@pytest.mark.xfail(strict=True, reason="BUG-last-8: after a stop mid-round, the resumed campaign runs the "
+                                       "higher-priority cells' next round before the unfinished round's "
+                                       "remaining cells")
+def test_resume_mid_round_finishes_the_round_first():
+    """§9.3: "Runs go in interleaved rounds, one per cell, in priority A, C, A0, kin, B".
+    Stopped during round 1 after S1-A, S2-A and S1-C: round 1's S2-C comes next, not
+    S1-A's run 2 (fuzz seed 30012 ran S1-A-run02, S2-A-run02, S1-C-run02 first)."""
+    names = ["S1-A", "S2-A", "S1-C", "S2-C", "S1-A0"]
+    plan = {"cells": [{"name": n, "runs": 2} for n in names], "runs_per_cell": 2}
+    done = {"S1-A": ["S1-A-run01"], "S2-A": ["S2-A-run01"], "S1-C": ["S1-C-run01"]}
+    order = [(c["name"], r) for c, r in campaign.run_order(plan, done, 2)]
+    assert order[:2] == [("S2-C", 1), ("S1-A0", 1)]
