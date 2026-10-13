@@ -457,7 +457,7 @@ class SimulationEngine:
         opening_c = self._capabilities() if turn == 1 else None
         self._opening_own = ({lab.key: lab.private_sheet(self.elasticity) for lab in self.labs}
                              if turn == 1 else {})
-        growth = self._macro_growth(turn)
+        growth = self._macro_growth()
         self._apply_event(turn)
         economy.apply_value_pull(self.labs, world, self.cfg)
         self._repaid = dict(growth.get("repaid") or {})
@@ -549,7 +549,7 @@ class SimulationEngine:
         for key, got in (partial.get("results") or {}).items():
             slot = actors.setdefault(key, {})
             if partial["stage"] == "interview":
-                slot["interview"] = self._interview_entry(key, got)
+                slot["interview"] = self._interview_entry(got)
                 continue
             obj, attempts = got["result"] or (None, [])
             if partial["stage"] in ("offer", "reply"):
@@ -567,7 +567,7 @@ class SimulationEngine:
             "actors": actors, "draws": self.keyed.take()})
         logger.error(f"[abort] turn {inflight['turn']} incomplete at {inflight.get('stage')}: {err}")
 
-    def _macro_growth(self, turn: int) -> Dict[str, Any]:
+    def _macro_growth(self) -> Dict[str, Any]:
         """§5.2 step 1 with keyed shocks: (turn, "shock", None, lab)."""
         def shock_u(t: int, key: str) -> float:
             return self.keyed.uniform(t, "shock", None, key)
@@ -696,9 +696,9 @@ class SimulationEngine:
         for lab in self.labs:
             d = decisions.get(lab.key) or {}
             if lab.key in self.seat_policies:
-                out[lab.key] = self._skipped_interview(lab, "scripted seat")
+                out[lab.key] = self._skipped_interview("scripted seat")
             elif d.get("forfeited") or not d.get("attempts") or lab.key not in self._proposal_prompts:
-                out[lab.key] = self._skipped_interview(lab, "no usable proposal")
+                out[lab.key] = self._skipped_interview("no usable proposal")
             else:
                 asked.append(lab)
 
@@ -719,14 +719,14 @@ class SimulationEngine:
             return {"responses": responses}
 
         for key, got in self._gather(asked, call, "interview").items():
-            out[key] = self._interview_entry(key, got)
+            out[key] = self._interview_entry(got)
             out[key]["proposal_attempts"] = len(decisions[key].get("attempts") or [])
         return {lab.key: out[lab.key] for lab in self.labs if lab.key in out}
 
-    def _skipped_interview(self, lab: LabState, reason: str) -> Dict[str, Any]:
+    def _skipped_interview(self, reason: str) -> Dict[str, Any]:
         return {"answer": "", "raw_len": 0, "model": None, "skipped": True, "reason": reason}
 
-    def _interview_entry(self, key: str, got: Dict[str, Any]) -> Dict[str, Any]:
+    def _interview_entry(self, got: Dict[str, Any]) -> Dict[str, Any]:
         """The logged interview (A.7). An answer cut by the output cap
         (stop "max_tokens") is marked incomplete; an answer still empty after the
         one retry at MAX_TOKENS_INTERVIEW_RETRY is skipped ("empty answer", with
@@ -869,7 +869,7 @@ class SimulationEngine:
             # missing or invalid one never costs the month's actions; it stays unset and
             # is asked again next month (E37).
             choosing = self.choose_disposition and lab.disposition is None
-            chosen_now = choosing and self._set_disposition(lab, reply, turn)
+            chosen_now = choosing and self._set_disposition(lab, reply)
             setting_note = (setting_problem(reply) if choosing and not chosen_now
                             and lab.key not in self.seat_policies
                             and not decisions[lab.key]["forfeited"] else None)
@@ -926,7 +926,7 @@ class SimulationEngine:
         for lab in self.labs:
             tot = {"capital": 0.0, "influence": 0.0}
             for a in accepted_by[lab.key]:
-                ch = charge(lab, a, self.labs, world, self.cfg)
+                ch = charge(lab, a, self.cfg)
                 tot["capital"] += ch["capital"]
                 tot["influence"] += ch["influence"]
             if lab.key in fees:
@@ -987,7 +987,7 @@ class SimulationEngine:
             "public_notices": [n["text"] for n in intr["notices"] + wb["notices"]],
         }
 
-    def _set_disposition(self, lab: LabState, reply: Dict[str, Any], turn: int) -> bool:
+    def _set_disposition(self, lab: LabState, reply: Dict[str, Any]) -> bool:
         """Reply key "directive_precedence" (or the old "disposition", K4); the record
         field stays "disposition"."""
         d = as_disposition(chosen_value(reply))

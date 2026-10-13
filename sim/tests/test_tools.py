@@ -1189,15 +1189,13 @@ def test_r4_compare_arms_refuses_non_s2_and_writes_review(tmp_path, capsys):
 # Round 5 (P67-P75)
 # ---------------------------------------------------------------------------
 
-def test_r5_review_file_named_by_decided_tests():
-    t3 = {"config": {"run_meta": {"test": "T3"}}}
-    t4 = {"config": {"run_meta": {"test": "T4"}}}
-    assert SR.review_tag([t3, t4], ["T3"]) == "pool-T3"
-    assert SR.review_tag([t3, t4], ["T3", "T6"]) == "pool-T3-T6"
-    assert SR.review_tag([t4], None) == "pool"                       # R6B-5: never the pilot's review_T4.md
-    assert SR.review_tag([t4], None, ["T4", "T6"]) == "pool-T4-T6"
-    assert SR.review_tag([t3, t4], None, ["T3", "T7"]) == "pool-T3-T7"
-    assert SR.review_tag([t3, t4], None, []) == "pool"
+def test_review_file_named_by_decided_tests():
+    assert SR.review_tag(["T3"]) == "pool-T3"
+    assert SR.review_tag(["T3", "T6"]) == "pool-T3-T6"
+    assert SR.review_tag(None) == "pool"                       # R6B-5: never the pilot's review_T4.md
+    assert SR.review_tag(None, ["T4", "T6"]) == "pool-T4-T6"
+    assert SR.review_tag(None, ["T3", "T7"]) == "pool-T3-T7"
+    assert SR.review_tag(None, []) == "pool"
 
 
 def test_r5_pooled_reviews_do_not_overwrite_each_other(tmp_path, capsys):

@@ -296,7 +296,7 @@ def resolve_t2(payload: Dict[str, Any], human: Optional[Dict[Tuple[str, str], fl
                           "defaulted": defaulted, "notes": notes}
 
 
-def _print_report(dispositions: Dict[str, int], report: Dict[str, Any]) -> None:
+def _print_report(report: Dict[str, Any]) -> None:
     print("=" * 72)
     print("T2 DISPOSITIONS (§2, §9.2)")
     print("=" * 72)
@@ -362,7 +362,7 @@ def main(argv: Optional[List[str]] = None) -> int:
               "jurors. Use the real pooled file, or --allow-stub to test the tool.")
         return 2
     dispositions, report = resolve_t2(payload, human)
-    _print_report(dispositions, report)
+    _print_report(report)
     if report["defaulted"] and not args.force:
         print(f"Not resolved: {', '.join(report['defaulted'])} defaulted to {DEFAULT_DISPOSITION}"
               + (" — nothing written" if args.write else "") + ". Pass --force to accept.")

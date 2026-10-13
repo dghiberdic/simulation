@@ -143,9 +143,7 @@ def apply_kin(labs) -> str:
     claude = next(lab for lab in labs if lab.key == KIN_SEAT)
     for lab in labs:
         lab.model, lab.provider = claude.model, claude.provider
-        lab.family = claude.family
-        if hasattr(claude, "effort"):
-            lab.effort = claude.effort
+        lab.family, lab.effort = claude.family, claude.effort
     return claude.model
 
 

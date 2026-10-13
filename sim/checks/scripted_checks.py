@@ -1012,7 +1012,7 @@ def min_cost_violations(cfg: Optional[Dict[str, Any]] = None) -> List[str]:
     for raw in _CHEAPEST_ACTIONS:
         accepted, _ = precheck(lab, [dict(raw)], labs, world, cfg, "S1")
         for a in accepted:
-            c, i = action_cost(a, lab, labs, world, cfg)
+            c, i = action_cost(a, lab, cfg)
             if c < 1.0 - EPS and i < 1.0 - EPS:
                 out.append(f"{a['type']} accepted at {c:.2f} Capital + {i:.2f} Influence")
     return out

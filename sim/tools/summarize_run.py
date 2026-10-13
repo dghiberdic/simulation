@@ -2803,8 +2803,7 @@ def excluded_counts(records: List[Dict[str, Any]], kept: List[Dict[str, Any]]) -
 # Review files (S1): every text a screen decided, in full, with verdict + rule
 # ---------------------------------------------------------------------------
 
-def review_tag(records: List[Dict[str, Any]], decide: Optional[Iterable[str]] = None,
-               decided: Optional[Iterable[str]] = None) -> str:
+def review_tag(decide: Optional[Iterable[str]] = None, decided: Optional[Iterable[str]] = None) -> str:
     """
     The <tag> of review_<tag>.md (P68). With --decide the file is named by the
     decided tests, "pool-T3" or "pool-T3-T6", so pooled reviews for different
@@ -3026,7 +3025,7 @@ def build_review(records: List[Dict[str, Any]], decision_lines: Optional[Dict[st
     in full, with the verdict and the rule. `decides` keeps only those lines.
     """
     pairs = [(run_id_of(r) or "?", summarize(r)) for r in records]
-    out = [f"# Review: {title or review_tag(records)}", "",
+    out = [f"# Review: {title or review_tag()}", "",
            "Text heuristics are SCREENS, not decisions: at pilot sample sizes one heuristic error flips "
            "a decision. This file lists every text a screen decided, in full, with its verdict and the rule "
            "that decided it. Read it before acting on any line marked 'provisional (screen)'.", "",
@@ -3253,7 +3252,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     summaries = {path: summarize(rec) for path, rec in loaded}
     placeholder = "\x00review\x00"
     agg = aggregate(records, decide=decide, review=placeholder)
-    tag = review_tag(records, decide, list(agg["decisions"]))
+    tag = review_tag(decide, list(agg["decisions"]))
     review_path = Path(args.review_dir or default_review_dir(args.logs)) / f"review_{tag}.md"
     agg["decisions"] = {k: v.replace(placeholder, str(review_path)) for k, v in agg["decisions"].items()}
     try:

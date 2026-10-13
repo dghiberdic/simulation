@@ -282,7 +282,7 @@ def _flatten(raw: Dict[str, Any]) -> Dict[str, Any]:
     return flat
 
 
-def normalise_action(raw: Dict[str, Any], lab: LabState, labs, scenario: str) -> Dict[str, Any]:
+def normalise_action(raw: Dict[str, Any], lab: LabState, labs) -> Dict[str, Any]:
     """
     Canonical action dict. Accepts "type"/"action"/"action_type", parameters
     nested under "parameters"/"params"/"args"/"arguments", numbers as strings
@@ -329,8 +329,7 @@ def normalise_action(raw: Dict[str, Any], lab: LabState, labs, scenario: str) ->
 # Costs
 # ---------------------------------------------------------------------------
 
-def action_cost(action: Dict[str, Any], lab: LabState, labs, world: WorldState,
-                cfg: Dict[str, Any]) -> Tuple[float, float]:
+def action_cost(action: Dict[str, Any], lab: LabState, cfg: Dict[str, Any]) -> Tuple[float, float]:
     """(Capital, Influence) charged for a normalised action."""
     acfg = cfg["actions"]
     kind = action["type"]
@@ -460,7 +459,7 @@ def precheck(lab: LabState, raw_actions: List[Dict[str, Any]], labs, world: Worl
             reject(f"at most {max_actions} actions a month")
             continue
         try:
-            action = normalise_action(raw, lab, labs, scenario)
+            action = normalise_action(raw, lab, labs)
         except (ValueError, TypeError, AttributeError) as e:
             reject(f"malformed: {e}")
             continue
@@ -471,7 +470,7 @@ def precheck(lab: LabState, raw_actions: List[Dict[str, Any]], labs, world: Worl
         if reason:
             reject(reason)
             continue
-        cost_c, cost_i = action_cost(action, lab, labs, world, cfg)
+        cost_c, cost_i = action_cost(action, lab, cfg)
         # Actions costing less than 1 Capital or Influence are rejected (C2-11)
         if cost_c < min_cost - EPS and cost_i < min_cost - EPS:
             reject(f"every action must cost at least {min_cost:g} Capital or Influence")
@@ -503,8 +502,7 @@ def _clamp(value: float, lo: float = 0.0, hi: float = 100.0) -> float:
     return max(lo, min(hi, value))
 
 
-def charge(lab: LabState, action: Dict[str, Any], labs, world: WorldState,
-           cfg: Dict[str, Any]) -> Dict[str, float]:
+def charge(lab: LabState, action: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, float]:
     """
     Deduct one pre-checked action's cost (the G1 reservation pass). intrude
     pays its fees here (then call intrusion.resolve(..., fees_charged=True));
@@ -516,7 +514,7 @@ def charge(lab: LabState, action: Dict[str, Any], labs, world: WorldState,
     """
     if action["type"] == ACQUIRE_COMPUTE:
         return {"capital": 0.0, "influence": 0.0}
-    cost_c, cost_i = action_cost(action, lab, labs, world, cfg)
+    cost_c, cost_i = action_cost(action, lab, cfg)
     before_c, before_i = lab.capital, lab.influence
     lab.capital = max(0.0, lab.capital - cost_c)
     lab.influence = _clamp(lab.influence - cost_i)
@@ -589,6 +587,6 @@ def execute(lab: LabState, action: Dict[str, Any], labs, world: WorldState,
     """
     if action["type"] in ENGINE_ACTIONS:
         raise ValueError(f"{action['type']} is resolved by the engine, not execute()")
-    cost = charge(lab, action, labs, world, cfg)
+    cost = charge(lab, action, cfg)
     effect = apply(lab, action, labs, world, cfg)
     return {"lab": lab.key, "type": action["type"], "cost": cost, "effect": effect}

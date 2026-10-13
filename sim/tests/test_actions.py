@@ -50,15 +50,15 @@ def test_action_types_and_resolve_lab(labs):
 
 def test_normalise_tolerates_model_quirks(labs):
     me = by(labs, "openai")
-    a = normalise_action({"action": "Acquire Compute", "units": "12"}, me, labs, "S1")
+    a = normalise_action({"action": "Acquire Compute", "units": "12"}, me, labs)
     assert a == {"type": "acquire_compute", "units": 12.0}
     a = normalise_action({"action_type": "publish_narrative", "target": "Meta",
-                          "axis": "Risk Tolerance", "delta": "-3"}, me, labs, "S1")
+                          "axis": "Risk Tolerance", "delta": "-3"}, me, labs)
     assert a == {"type": "publish_narrative", "target": "meta", "axis": "risk_tolerance", "delta": -3.0}
-    a = normalise_action({"type": "intrude", "targets": "Meta, xAI"}, me, labs, "S1")
+    a = normalise_action({"type": "intrude", "targets": "Meta, xAI"}, me, labs)
     assert a == {"type": "intrude", "targets": ["meta", "xai"], "intruders": ["openai"]}
     a = normalise_action({"type": "intrude", "intruders": ["self", "xAI"], "targets": ["gdm"]},
-                         me, labs, "S2")
+                         me, labs)
     assert a["intruders"] == ["openai", "xai"]
 
 
@@ -149,7 +149,7 @@ def test_precheck_intrude_rules(labs, world, cfg):
     assert len(accepted) == 1 and rejected[0]["reason"] == "one intrude a month"
     # Fees count against running resources: 2 targets = 2 Cap + 4 Inf (1 Cap + 2 Inf per target)
     assert action_cost({"type": "intrude", "targets": ["meta", "gdm"], "intruders": ["openai"]},
-                       me, labs, world, cfg) == (2.0, 4.0)
+                       me, cfg) == (2.0, 4.0)
 
 
 # ---------------------------------------------------------------------------
@@ -223,15 +223,14 @@ def test_charge_then_apply_equals_execute(labs, world, cfg):
     me, meta = by(labs, "openai"), by(labs, "meta")
     me.capital, me.influence, meta.influence = 200.0, 60.0, 40.0
     act = {"type": "diminish_competitor", "target": "meta", "points": 5.0}
-    assert charge(me, act, labs, world, cfg) == {"capital": 5.0, "influence": 5.0}
+    assert charge(me, act, cfg) == {"capital": 5.0, "influence": 5.0}
     assert (me.capital, me.influence, meta.influence) == (195.0, 55.0, 40.0)
     assert apply(me, act, labs, world, cfg) == {"target": "meta", "influence_lost": 5.0}
     assert (me.capital, me.influence, meta.influence) == (195.0, 55.0, 35.0)
     # intrude: charge() takes the fees; acquire_compute is charged by execute_purchases
-    fee = charge(me, {"type": "intrude", "targets": ["meta", "gdm"], "intruders": ["openai"]},
-                 labs, world, cfg)
+    fee = charge(me, {"type": "intrude", "targets": ["meta", "gdm"], "intruders": ["openai"]}, cfg)
     assert fee == {"capital": 2.0, "influence": 4.0} and me.capital == 193.0
-    assert charge(me, {"type": "acquire_compute", "units": 10.0}, labs, world, cfg) == \
+    assert charge(me, {"type": "acquire_compute", "units": 10.0}, cfg) == \
         {"capital": 0.0, "influence": 0.0}
     assert me.capital == 193.0
     with pytest.raises(ValueError):
@@ -240,7 +239,7 @@ def test_charge_then_apply_equals_execute(labs, world, cfg):
         apply(me, {"type": "acquire_compute", "units": 5.0}, labs, world, cfg)
     # charge reports what was actually deducted (Influence floors at 0)
     me.influence = 3.0
-    assert charge(me, {"type": "lobby_institution"}, labs, world, cfg)["influence"] == 3.0
+    assert charge(me, {"type": "lobby_institution"}, cfg)["influence"] == 3.0
     rec = execute(me, {"type": "invest_capital", "amount": 4.0}, labs, world, cfg)
     assert rec["cost"] == {"capital": 4.0, "influence": 0.0} and rec["effect"]["invested"] == 4.0
 
@@ -257,7 +256,7 @@ def test_two_pass_order_is_simultaneous(labs, world, cfg):
     assert [a["type"] for a in checked["anthropic"]] == ["lobby_institution", "accelerate_infrastructure"]
     for k, acts in checked.items():
         for a in acts:
-            charge(by(labs, k), a, labs, world, cfg)
+            charge(by(labs, k), a, cfg)
     for k, acts in checked.items():
         for a in acts:
             apply(by(labs, k), a, labs, world, cfg)
@@ -290,12 +289,12 @@ def test_resolve_lab_aliases_and_lists(labs):
     assert resolve_lab({"lab": "OpenAI"}, labs) == "openai"
     me = by(labs, "openai")
     for raw in ("Meta and xAI", "Meta & xAI", "Meta/xAI", "Meta, xAI", ["Meta and xAI"]):
-        a = normalise_action({"type": "intrude", "targets": raw}, me, labs, "S1")
+        a = normalise_action({"type": "intrude", "targets": raw}, me, labs)
         assert a["targets"] == ["meta", "xai"], raw
-    a = normalise_action({"type": "intrude", "target": "Grok"}, me, labs, "S1")
+    a = normalise_action({"type": "intrude", "target": "Grok"}, me, labs)
     assert a["targets"] == ["xai"]
     a = normalise_action({"type": "intrude", "intruders": "us and Gemini",
-                          "targets": [{"lab": "Claude"}]}, me, labs, "S2")
+                          "targets": [{"lab": "Claude"}]}, me, labs)
     assert a == {"type": "intrude", "targets": ["anthropic"], "intruders": ["gdm", "openai"]}
 
 
@@ -303,19 +302,19 @@ def test_normalise_nested_params_and_units(labs):
     me = by(labs, "openai")
     for nest in ("parameters", "params", "args", "arguments"):
         a = normalise_action({"action": "invest_capital", nest: {"amount": "10 Capital"}},
-                             me, labs, "S1")
+                             me, labs)
         assert a == {"type": "invest_capital", "amount": 10.0}, nest
     a = normalise_action({"type": "diminish_competitor",
-                          "parameters": {"target": "Gemini", "points": "2.5 points"}}, me, labs, "S1")
+                          "parameters": {"target": "Gemini", "points": "2.5 points"}}, me, labs)
     assert a == {"type": "diminish_competitor", "points": 2.5, "target": "gdm"}
     a = normalise_action({"type": "acquire_compute", "units": "20 units",
-                          "params": {"units": 3}}, me, labs, "S1")
+                          "params": {"units": 3}}, me, labs)
     assert a["units"] == 20.0          # top-level field wins
     a = normalise_action({"type": "publish_narrative", "target": "Meta", "axis": "risk_tolerance",
-                          "delta": "+3"}, me, labs, "S1")
+                          "delta": "+3"}, me, labs)
     assert a["delta"] == 3.0
     with pytest.raises(ValueError):
-        normalise_action({"type": "invest_capital", "amount": "ten"}, me, labs, "S1")
+        normalise_action({"type": "invest_capital", "amount": "ten"}, me, labs)
 
 
 # ---------------------------------------------------------------------------
@@ -360,14 +359,14 @@ def test_intruders_split_on_every_separator(labs):
     for raw in ("Meta + xAI", "Meta with xAI", "Meta; xAI", "us & xAI", ["Meta (us)", "xAI"],
                 "Meta, Inc. and xAI"):
         a = normalise_action({"type": "intrude", "intruders": raw, "targets": ["OpenAI"]},
-                             me, labs, "S2")
+                             me, labs)
         assert a["intruders"] == ["meta", "xai"], raw
-    a = normalise_action({"type": "intrude", "targets": "Anthropic, Inc."}, me, labs, "S1")
+    a = normalise_action({"type": "intrude", "targets": "Anthropic, Inc."}, me, labs)
     assert a["targets"] == ["anthropic"]
     with pytest.raises(ValueError, match="one lab per entry"):
-        normalise_action({"type": "intrude", "targets": ["OpenAI Google"]}, me, labs, "S1")
+        normalise_action({"type": "intrude", "targets": ["OpenAI Google"]}, me, labs)
     with pytest.raises(ValueError, match="unknown lab"):
-        normalise_action({"type": "intrude", "targets": "OAI"}, me, labs, "S1")
+        normalise_action({"type": "intrude", "targets": "OAI"}, me, labs)
 
 
 def test_numbers_scientific_ranges_and_units(labs):
@@ -375,7 +374,7 @@ def test_numbers_scientific_ranges_and_units(labs):
     me = by(labs, "openai")
 
     def amount(value):
-        return normalise_action({"type": "invest_capital", "amount": value}, me, labs, "S1")["amount"]
+        return normalise_action({"type": "invest_capital", "amount": value}, me, labs)["amount"]
 
     assert amount("1e3") == 1000.0 and amount("2.5E1") == 25.0 and amount("1e-1") == 0.1
     for text in ("5 units", "5 unit", "5 Capital", "5 influence", "5 points", "5 point", "5 cap",
@@ -438,13 +437,13 @@ def test_legal_suffixes_and_non_lab_parts_resolve_to_the_one_lab(labs):
              "OpenAI, Co": "openai"}
     for text, key in cases.items():
         assert resolve_parts(text, labs, "meta") == ([key], None), text
-        action = normalise_action({"type": "intrude", "targets": text}, me, labs, "S1")
+        action = normalise_action({"type": "intrude", "targets": text}, me, labs)
         assert action["targets"] == [key], text
     # a part naming another lab still counts; with no lab named, unknown words are errors
     assert resolve_parts("xAI, which accessed OpenAI", labs, "meta")[0] == ["openai", "xai"]
     assert resolve_parts("DeepSeek, Inc.", labs, "meta") == ([], "DeepSeek")
     with pytest.raises(ValueError):
-        normalise_action({"type": "intrude", "targets": "DeepSeek, Ltd"}, me, labs, "S1")
+        normalise_action({"type": "intrude", "targets": "DeepSeek, Ltd"}, me, labs)
     # "co" is dropped only as a whole word
     assert resolve_parts("co-founder", labs, "meta")[1] == "co-founder"
 
