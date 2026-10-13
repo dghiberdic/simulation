@@ -565,7 +565,7 @@ def apply(lab: LabState, action: Dict[str, Any], labs, world: WorldState,
         target = by_key[action["target"]]
         axis = action["axis"]
         before = target.values[axis]
-        target.values[axis] = int(round(_clamp(before + action["delta"])))
+        target.values[axis] = _clamp(before + action["delta"])
         effect.update({"target": target.key, "axis": axis, "from": before, "to": target.values[axis]})
     elif kind == DIMINISH_COMPETITOR:
         # Floors at 0: the target's own costs were reserved first (G1)

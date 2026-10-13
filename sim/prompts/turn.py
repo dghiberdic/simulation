@@ -106,6 +106,12 @@ def _g(num: float) -> str:
     return str(int(num)) if float(num).is_integer() else str(num)
 
 
+def value_text(value: float) -> str:
+    """A value (0–100, real-valued, §3.2) as models see it: the nearest whole point,
+    halves rounded up."""
+    return str(math.floor(float(value) + 0.5))
+
+
 def long_date(iso: str) -> str:
     """"2026-11-02" -> "2 November 2026" (the Appendix A header form)."""
     d = date.fromisoformat(iso)
@@ -163,7 +169,7 @@ def _fmt_own(own: Dict[str, Any], lab: Optional[str]) -> str:
         lines.append("  " + ", ".join(parts))
     values = own.get("values") or {}
     if values:
-        vals = ", ".join(f"{_AXIS_LABELS.get(k, k)} {v}" for k, v in values.items())
+        vals = ", ".join(f"{_AXIS_LABELS.get(k, k)} {value_text(v)}" for k, v in values.items())
         lines.append("  Your lab's value profile (0–100; does not enter the Prosperity Score): "
                      + vals)
     # The directive-precedence setting is in the system prompt; not repeated here (E6).

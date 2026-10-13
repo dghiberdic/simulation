@@ -71,16 +71,19 @@ def prorate_purchases(requests: Dict[str, float], headroom: float) -> Dict[str, 
     return {key: units * k for key, units in requests.items()}
 
 
-def value_pull(values: Dict[str, int], state_values: Dict[str, int],
-               charter_values: Dict[str, int], disposition: int, max_step: int) -> Dict[str, int]:
-    """Move each value at most ±max_step towards (1 − d)·state + d·charter (§3.2)."""
+def value_pull(values: Dict[str, float], state_values: Dict[str, float],
+               charter_values: Dict[str, float], disposition: int,
+               max_step: float) -> Dict[str, float]:
+    """Move each value min(max_step, |gap|) towards target = (1 − d)·state + d·charter
+    (§3.2: "up to 1 point (not rounded)"). Values are real-valued, so a value within
+    max_step of its target lands on it; prompts show them rounded."""
     d = disposition / 100.0
     pulled = {}
     for axis in VALUE_AXES:
         target = (1 - d) * state_values[axis] + d * charter_values[axis]
         current = values[axis]
-        step = max(-max_step, min(max_step, round(target - current)))
-        pulled[axis] = max(0, min(100, current + step))
+        step = max(-max_step, min(max_step, target - current))
+        pulled[axis] = max(0.0, min(100.0, current + step))
     return pulled
 
 

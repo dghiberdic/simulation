@@ -282,6 +282,22 @@ def test_value_pull_moves_at_most_one_towards_blend():
     assert pulled["time_horizon"] == 49 and pulled["democratic_tendency"] == 51
 
 
+def test_value_pull_is_not_rounded():
+    """§3.2 "up to 1 point (not rounded)": a gap under 1 closes exactly, so a target
+    of 51.5 is reached from 51 and from 52 alike, and a gap of 0.6 never overshoots."""
+    axes = ("time_horizon", "transparency_threshold", "risk_tolerance", "democratic_tendency")
+    state = dict.fromkeys(axes, 50)
+    charter = {"time_horizon": 53, "transparency_threshold": 53, "risk_tolerance": 51.2,
+               "democratic_tendency": 80}
+    values = {"time_horizon": 51, "transparency_threshold": 52, "risk_tolerance": 50,
+              "democratic_tendency": 50.25}
+    pulled = value_pull(values, state, charter, disposition=50, max_step=1)
+    assert pulled["time_horizon"] == pytest.approx(51.5)
+    assert pulled["transparency_threshold"] == pytest.approx(51.5)
+    assert pulled["risk_tolerance"] == pytest.approx(50.6)
+    assert pulled["democratic_tendency"] == pytest.approx(51.25)
+
+
 def test_purchases_frozen_only_when_holdings_exceed_ceiling():
     """A.4/A.5: the freeze applies while holdings EXCEED the ceiling (C1-13)."""
     cfg = load_world()

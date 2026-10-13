@@ -757,6 +757,16 @@ def test_own_sheet_income_colon_and_no_invested_line():
     assert "next month" not in later and "invested" not in later
 
 
+def test_own_sheet_shows_values_rounded():
+    """§3.2: values are real-valued; the seat's profile shows each to the nearest point."""
+    from prompts.turn import _fmt_own, value_text
+    assert [value_text(v) for v in (51.5, 51.49, 0.5, 72, 99.999)] == ["52", "51", "1", "72", "100"]
+    sheet = _fmt_own({"values": {"time_horizon": 51.5, "transparency_threshold": 57.4,
+                                 "risk_tolerance": 32.0, "democratic_tendency": 34.6}}, "OpenAI")
+    assert "time horizon 52, transparency threshold 57, risk tolerance 32, democratic tendency 35" \
+        in sheet
+
+
 def test_named_list_section():
     """E38: the persistent list of accesses the seat was named in."""
     from prompts.turn import NAMED_HEADING, context_block

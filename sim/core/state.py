@@ -112,8 +112,8 @@ class LabState:
     know_how: float = 0.0           # K: algorithms, weights, data
     invested: float = 0.0           # invest_capital principal repaid next turn
     income: float = 0.0             # Capital income booked this turn
-    # Values
-    values: Dict[str, int] = field(default_factory=dict)
+    # Values: real-valued (§3.2 pull is not rounded); shown rounded
+    values: Dict[str, float] = field(default_factory=dict)
     disposition: Optional[int] = None   # 0–100, fixed per run; None until chosen (pilot T2)
     disposition_reason: str = ""
     # Private items delivered to this seat (leads, failed-intrusion notices, directives)

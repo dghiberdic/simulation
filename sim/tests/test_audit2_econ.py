@@ -5,9 +5,7 @@ driven side by side with the real engine under scripted schedule policies.
 
 The reference below does NOT import core.economy or core.scoring: every
 formula and constant is re-derived from the spec text, and the seeds are the
-§4 table. The only engine-side reading adopted is that values are integers
-moved by round(target − value) clipped to ±1 (§3.2 is silent on rounding;
-see the audit report).
+§4 table. Values move up to 1 point towards the blend target, not rounded (§3.2).
 """
 
 import math
@@ -47,7 +45,8 @@ class RLab:
         self.talent, self.compute, self.capital, self.influence = t, float(c), float(cap), float(inf)
         self.K = eci - 3.6 * math.log(c)           # §3.1: K = seed C − compute term
         self.invested = self.income = 0.0
-        self.values, self.charter, self.d = dict(charter), dict(charter), d
+        self.values = {ax: float(v) for ax, v in charter.items()}
+        self.charter, self.d = dict(charter), d
 
     @property
     def C(self):
@@ -90,7 +89,7 @@ class RWorld:
             d = l.d / 100
             for ax in AXES:
                 tgt = (1 - d) * self.state[ax] + d * l.charter[ax]
-                l.values[ax] += max(-1, min(1, round(tgt - l.values[ax])))
+                l.values[ax] += max(-1.0, min(1.0, tgt - l.values[ax]))
 
     def execute(self, acts):
         frozen = self.ceiling is not None and self.holdings() > self.ceiling
@@ -190,7 +189,7 @@ def _compare(schedule, seed, turns, event_turn):
             for got, want in zip(e[:6], (l.compute, l.capital, l.influence, l.talent, l.K, l.income)):
                 assert got == pytest.approx(want, abs=1e-9), (schedule, seed, t, l.key)
                 checked += 1
-            assert e[6] == l.values, (schedule, t, l.key)
+            assert e[6] == pytest.approx(l.values, abs=1e-9), (schedule, t, l.key)
         us, growth, ceiling = snap["_w"]
         assert us == pytest.approx(rw.us) and growth == pytest.approx(rw.growth)
         assert (ceiling is None) == (rw.ceiling is None)
@@ -238,17 +237,17 @@ def test_cap_binds_on_turn_one_under_max_buying():
     assert granted[1] == pytest.approx(75.0, abs=1e-6) and granted[2] == pytest.approx(75.0, abs=1e-6)
 
 
-def test_value_pull_integer_steps_converge_at_one_point_a_turn():
-    """§3.2 reading: values stay integers, move at most 1 a turn, and end within
-    one point of the blend target."""
+def test_value_pull_moves_one_point_a_turn_and_lands_on_target():
+    """§3.2: each turn a value moves min(1, |gap|) towards the blend target, not
+    rounded, so after 12 turns every value is max(0, |charter − target| − 12) from it:
+    a value that started within 12 points sits exactly on its target."""
     rec, rw, _ = _compare("idle", 1, 12, event_turn=4)
     for l in rw.labs:
         d = l.d / 100
         for ax in AXES:
             tgt = (1 - d) * STATE0[ax] + d * l.charter[ax]
-            assert isinstance(l.values[ax], int)
             dist0 = abs(l.charter[ax] - tgt)
-            assert abs(l.values[ax] - tgt) <= max(1.0, dist0 - 12) + 1e-9
+            assert abs(l.values[ax] - tgt) == pytest.approx(max(0.0, dist0 - 12), abs=1e-9)
 
 
 # ---------------------------------------------------------------------------
