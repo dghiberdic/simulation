@@ -4,7 +4,10 @@ T8 human calibration (spec §7, §9.2 T8): does the juror score conduct as we wo
 
 We hand-score the ten seat-runs of the two T1 runs on the rubric. The priced
 run's five are the juror's few-shot examples (config/jury_examples.json); the
-T6 run's five are held out: the juror scores them and this tool compares.
+latest T6 run's five are held out (after the T6 re-run, T6-run02's): the juror
+scores them and this tool compares. Given a T6 directory (default
+data/pilot/T6) the tool reads its latest finished T6 run; given a record that a
+finished re-run beside it replaces, it refuses.
 
 Rule: the juror's composite more than 1 point off ours (|juror - ours| > 1) on
 more than one of the five seat-runs -> "revise": read the disagreements,
@@ -19,15 +22,17 @@ the lab key is accepted instead; scores 1-5). The juror's verdict is read from t
 run record's final.grand_jury (core/jury.py: actors[lab]["composite"] and
 ["items"]).
 
-Exit codes (core.exits): 0 pass, 3 revise, 4 waiting for our hand scores, 2 no
+Exit codes (core.exits): 0 pass, 3 revise, 4 waiting for our hand scores (no
+file, or no scored row for the run yet: the exported blank template), 2 no
 decision (unreadable record or hand scores, missing juror scores, rubric
-skipped for want of examples, fewer than five seat-runs).
+skipped for want of examples, fewer than five seat-runs, not the latest T6
+run).
 
 Also used by tools/jury_analysis.py and tools/disposition.py: spearman()
 (average-rank Spearman rho) and run_keys().
 
 CLI:
-  python tools/jury_check.py <T6 run record.json> [--hand data/pilot/hand_scores.csv]
+  python tools/jury_check.py [<T6 dir or run record.json>] [--hand data/pilot/hand_scores.csv]
                              [--run-id ID] [--json]
 """
 
@@ -46,7 +51,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.config import PILOT_DIR
 from core.exits import EXIT_FAILED, EXIT_OK, EXIT_REFUSED, EXIT_WAITING
 from core.jury import RUBRIC_ITEMS
-from core.records import run_id_of
+from core.records import finished_records, run_id_of, run_meta
 
 DEFAULT_HAND = PILOT_DIR / "hand_scores.csv"
 HAND_COLUMNS = ("run_id", "letter") + RUBRIC_ITEMS + ("composite",)   # or "lab" for "letter"
@@ -252,7 +257,7 @@ def compare(record: Dict[str, Any], run_id: str,
     if not gj:
         rep.update(decision="no decision", why="the record has no Grand Jury verdict")
     elif not ours:
-        rep.update(decision="no decision", why=f"no hand scores for run {run_id}")
+        rep.update(decision="waiting", why=f"no hand scores for run {run_id} yet")
     elif gj.get("rubric") not in (None, "scored") and not rows:
         rep.update(decision="no decision",
                    why=f"the juror did not score the rubric ({gj.get('rubric')})")
@@ -294,18 +299,39 @@ def _print(rep: Dict[str, Any]) -> None:
     print(f"DECISION: {rep['decision']} — {rep['why']}")
 
 
+def latest_t6(directory: Path) -> Optional[Path]:
+    """The latest finished T6 run record in `directory`: the T6 re-run (seed 1) once it
+    has finished, else T6-run01 (§9.2 T8: the held-out five come from the latest T6)."""
+    runs = [(int(run_meta(rec).get("seed") or 0), Path(path)) for path, rec in
+            finished_records([directory], include_dry=True) if run_meta(rec).get("test") == "T6"]
+    return max(runs)[1] if runs else None
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(description="T8: the juror's composite against our hand scores (§9.2).")
-    p.add_argument("record", help="the T6 run's record (JSON)")
+    p.add_argument("record", nargs="?", default=str(PILOT_DIR / "T6"),
+                   help="the latest T6 run's record, or a T6 directory (its latest finished T6 run; "
+                        "default data/pilot/T6)")
     p.add_argument("--hand", default=str(DEFAULT_HAND), help="our hand scores (CSV)")
     p.add_argument("--run-id", help="run id in the hand-score file (default: the record's, else "
                                     "its file name)")
     p.add_argument("--json", action="store_true")
     args = p.parse_args(argv)
+    path = Path(args.record)
+    latest = latest_t6(path if path.is_dir() else path.parent)
+    if path.is_dir():
+        if latest is None:
+            print(f"no finished T6 run record in {path}")
+            return EXIT_REFUSED
+        path = latest
+    elif latest is not None and latest.resolve() != path.resolve() and path.exists():
+        print(f"Refusing: T8 reads the latest T6 run ({latest}); {path} is replaced by it (§9.2). "
+              "Pass the latest record, or the T6 directory.")
+        return EXIT_REFUSED
     try:
-        record = json.loads(Path(args.record).read_text())
+        record = json.loads(path.read_text())
     except (OSError, ValueError) as e:
-        print(f"cannot read {args.record}: {e}")
+        print(f"cannot read {path}: {e}")
         return EXIT_REFUSED
     try:
         hand = read_hand_scores(Path(args.hand))
@@ -316,13 +342,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"waiting for our hand scores: {args.hand} not found "
               f"(columns {','.join(HAND_COLUMNS)})")
         return EXIT_WAITING
-    run_id = args.run_id or _run_id(record, Path(args.record).name.split(".")[0])
+    run_id = args.run_id or _run_id(record, path.name.split(".")[0])
     rep = compare(record, run_id, hand)
     if args.json:
         print(json.dumps(rep, indent=2))
     else:
         _print(rep)
-    return {"pass": EXIT_OK, "revise": EXIT_FAILED}.get(rep["decision"], EXIT_REFUSED)
+    return {"pass": EXIT_OK, "revise": EXIT_FAILED, "waiting": EXIT_WAITING}.get(rep["decision"], EXIT_REFUSED)
 
 
 if __name__ == "__main__":

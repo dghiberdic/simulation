@@ -52,10 +52,11 @@ Any mismatch is reported (identity.ok = False) and the contributions are then
 not reliable (typically config/world.json changed since the run).
 
 Usage (from sim/):
-    python tools/ups_replay.py <log.json | dir> [--json]
+    python tools/ups_replay.py <log.json | dir> [--json] [--include-dry]
 
 A directory is searched recursively for finished run logs (final scores;
-*.partial.json skipped). Exit codes (core.exits): 0 every identity replay
+*.partial.json skipped; dry-run logs only with --include-dry; a log file given
+by name is always read). Exit codes (core.exits): 0 every identity replay
 reproduces its run, 3 one does not, 2 no finished run log.
 """
 
@@ -89,12 +90,13 @@ FINAL_KEYS = ("scores", "integrity_inputs", "ups_index", "prosperity", "disposit
 # Log reading
 # ---------------------------------------------------------------------------
 
-def find_logs(path: Path) -> List[Tuple[Path, Optional[Dict[str, Any]]]]:
+def find_logs(path: Path, include_dry: bool = False) -> List[Tuple[Path, Optional[Dict[str, Any]]]]:
     """[(path, record)]: a file as given; a directory searched recursively for
-    finished run logs (core.records.finished_records, dry runs included)."""
+    finished run logs (core.records.finished_records; dry runs only with include_dry)."""
     if path.is_file():
         return [(path, records.read_record(path))]
-    return [(Path(p), rec) for p, rec in records.finished_records([path], include_dry=True, recursive=True)]
+    return [(Path(p), rec) for p, rec in records.finished_records([path], include_dry=include_dry,
+                                                                  recursive=True)]
 
 
 def _strip_action(a: Dict[str, Any]) -> Dict[str, Any]:
@@ -473,10 +475,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(description="UPS contribution per actor (spec §8), offline.")
     p.add_argument("path", help="a run log (.json) or a directory of run logs")
     p.add_argument("--json", action="store_true", help="print JSON instead of a table")
+    p.add_argument("--include-dry", action="store_true",
+                   help="in a directory, read dry-run logs too (a log file given by name is always read)")
     args = p.parse_args(argv)
     import logging
     logging.basicConfig(level=logging.WARNING)
-    logs = find_logs(Path(args.path))
+    logs = find_logs(Path(args.path), include_dry=args.include_dry)
     if not logs:
         print(f"no finished run logs under {args.path}")
         return EXIT_REFUSED
@@ -489,6 +493,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         results.append((path, res))
         if not args.json:
             print(format_result(path, res) + "\n")
+    if not results:
+        print(f"no finished run log in {args.path}")
+        return EXIT_REFUSED
     if args.json:
         print(json.dumps([dict(r, path=str(pth)) for pth, r in results], indent=2, default=str))
     return EXIT_OK if all(r["identity"]["ok"] for _, r in results) else EXIT_FAILED

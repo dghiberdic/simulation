@@ -26,7 +26,9 @@ run with merged messages; swapped or mixed arms are refused (exit 2).
 CLI:
   python tools/compare_arms.py --separate data/pilot/T4 --merged data/pilot/T9
                                [--review-dir DIR] [--json] [--include-dry]
-  (directories or log files; dry-run records are skipped unless --include-dry;
+  (directories, searched at any depth, or log files; only finished runs count, a
+   partial log of an aborted run never does; dry-run records are skipped unless
+   --include-dry; either arm empty -> exit 2 and nothing written;
    review_T9-compare.md goes to --review-dir, default the first --merged directory;
    the pilot's own review_T9.md beside its summary is never overwritten)
 """
@@ -39,7 +41,7 @@ from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.records import load_records, run_id_of                                    # noqa: E402
+from core.records import finished_records, run_id_of                                # noqa: E402
 from core.exits import EXIT_OK, EXIT_REFUSED                                        # noqa: E402
 from tools.summarize_run import aggregate, review_messages, screen_note, summarize  # noqa: E402
 
@@ -133,8 +135,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--json", action="store_true")
     p.add_argument("--include-dry", action="store_true", help="read dry-run records too")
     args = p.parse_args(argv)
-    sep = [r for _p, r in load_records(args.separate, include_dry=args.include_dry)]
-    mer = [r for _p, r in load_records(args.merged, include_dry=args.include_dry)]
+    sep = [r for _p, r in finished_records(args.separate, include_dry=args.include_dry, recursive=True)]
+    mer = [r for _p, r in finished_records(args.merged, include_dry=args.include_dry, recursive=True)]
+    empty = [f"--{name} {' '.join(paths)}" for name, paths, recs in
+             (("separate", args.separate, sep), ("merged", args.merged, mer)) if not recs]
+    if empty:
+        print(f"no finished run log in {'; '.join(empty)}"
+              + ("" if args.include_dry else " (dry-run logs need --include-dry)") + "; nothing written")
+        return EXIT_REFUSED
     first = Path(args.merged[0])
     review_path = Path(args.review_dir) if args.review_dir else (first if first.is_dir() else first.parent)
     review_path = review_path / REVIEW_NAME

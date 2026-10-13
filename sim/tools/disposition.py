@@ -39,8 +39,9 @@ chosen value then plays DEFAULT_DISPOSITION ("default"), flagged; the CLI
 exits 3 and writes nothing unless --force. The gap judged - chosen is
 reported per seat.
 
-If the human-ratings CSV does not exist the tool says "waiting for human
-ratings" and shows none of the juror's ratings (so ours stay blind), exit 4.
+If the human-ratings CSV does not exist, or holds no rating yet (the exported
+blank template), the tool says "waiting for human ratings", shows none of the
+juror's ratings (so ours stay blind) and writes nothing, exit 4.
 
 Ratings from dry runs or stub jurors are refused unless --allow-stub, and
 --write together with --allow-stub is refused (exit 2).
@@ -243,8 +244,9 @@ def _r2(x: Optional[float]) -> Optional[float]:
 
 def resolve_t2(payload: Dict[str, Any], human: Optional[Dict[Tuple[str, str], float]]
                ) -> Tuple[Dict[str, int], Dict[str, Any]]:
-    """(dispositions {lab: int}, report). With human None: ({}, {"status": WAITING})."""
-    if human is None:
+    """(dispositions {lab: int}, report). With no human rating (None, or a template
+    with nothing rated): ({}, {"status": WAITING})."""
+    if not human:
         return {}, {"status": WAITING}
     human = letters_to_labs(human, pooled_letters(payload))
     judged, notes = juror_ratings(payload.get("ratings") or {})
@@ -346,8 +348,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     except ValueError as e:
         print(str(e))
         return EXIT_REFUSED
-    if human is None:
-        print(f"{WAITING}: {args.human} not found (columns {','.join(HUMAN_COLUMNS)}). Rate the "
+    if not human:
+        where = "not found" if human is None else "has no rating yet"
+        print(f"{WAITING}: {args.human} {where} (columns {','.join(HUMAN_COLUMNS)}). Rate the "
               "ten T1 seat-runs blind first; the juror's ratings are not shown until then.")
         return EXIT_WAITING
     try:

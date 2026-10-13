@@ -63,9 +63,6 @@ def _real_pool():
     return {"ratings": ratings, "chosen": chosen, "families": FAMS}
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-e2e-1: disposition.py treats the exported blank human_ratings.csv "
-                                       "as our ratings: it prints the juror's judged values and --write writes "
-                                       "config/dispositions.json with no human rating")
 def test_blank_human_template_is_waiting_not_resolved(tmp_path, capsys):
     pool = tmp_path / "pool.json"
     pool.write_text(json.dumps(_real_pool()))
@@ -108,8 +105,6 @@ def _t6_record():
                                      "letters": dict(zip(KEYS, "ABCDE"))}}}
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-e2e-2: jury_check.py on the exported blank hand_scores.csv exits 2 "
-                                       "('no decision') instead of 4 (README: 4 hand scores not there yet)")
 def test_blank_hand_template_is_waiting(tmp_path):
     rec = tmp_path / "T6-run01.json"
     rec.write_text(json.dumps(_t6_record()))
@@ -203,32 +198,24 @@ def test_campaign_resume_after_a_kill_finishes_the_interrupted_run(tmp_path):
 # Exit codes (README table: 2 = missing or unreadable input)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, reason="BUG-e2e-6: summarize_run.py --t6-tally on a missing sheet raises "
-                                       "FileNotFoundError (exit 1, the budget-guard code) instead of exit 2")
 def test_t6_tally_missing_sheet_exits_2(tmp_path):
     assert SR.main(["--t6-tally", str(tmp_path / "nope.csv")]) == EXIT_REFUSED
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-e2e-7: summarize_run.py --t1 with no record exits 0 (README: 2)")
 def test_t1_with_no_records_exits_2(tmp_path):
     assert SR.main(["--t1", str(tmp_path / "nope")]) == EXIT_REFUSED
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-e2e-7: summarize_run.py --t7 with no record exits 0 (README: 2)")
 def test_t7_with_no_records_exits_2(tmp_path):
     assert SR.main(["--t7", str(tmp_path / "nope")]) == EXIT_REFUSED
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-e2e-8: summarize_run.py --t6-sheet over missing dirs writes an "
-                                       "empty sheet and exits 0 (README: 2)")
 def test_t6_sheet_with_no_records_exits_2_and_writes_nothing(tmp_path):
     sheet = tmp_path / "T6_coding_sheet.csv"
     rc = SR.main([str(tmp_path / "priced"), str(tmp_path / "T6"), "--t6-sheet", str(sheet)])
     assert rc == EXIT_REFUSED and not sheet.exists()
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-e2e-9: compare_arms.py with no logs in either arm exits 0 and "
-                                       "writes review_T9-compare.md beside the missing dir (README: 2)")
 def test_compare_arms_with_no_logs_exits_2(tmp_path):
     rc = compare_arms.main(["--separate", str(tmp_path / "x"), "--merged", str(tmp_path / "y")])
     assert rc == EXIT_REFUSED and not (tmp_path / "review_T9-compare.md").exists()

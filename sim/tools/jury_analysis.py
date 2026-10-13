@@ -6,6 +6,8 @@ One juror (core/jury.py) scores each seat per run: five rubric items (1-5),
 a holistic composite (1-5) and a perceived disposition (0-100). Per seat this
 tool reports, over every run with a usable verdict, the number of runs, the
 mean and the SD of each item, the composite and the perceived disposition.
+The kin cell's runs (Claude in every seat, §6.5, descriptive) are kept apart
+from the mixed panel: their seats are reported as "<seat> (kin)".
 There is no juror adjustment: one juror, whose family plays no seat. Runs whose juror skipped the rubric ("no examples yet")
 contribute their perceived disposition only. The UPS contribution is an
 offline replay (§8), not a jury measure, and is not reported here.
@@ -76,9 +78,16 @@ def _r(x: Optional[float], nd: int = 2) -> Optional[float]:
     return None if x is None else round(x, nd)
 
 
+def seat_label(record: Dict[str, Any], seat: str) -> str:
+    """The seat as reported: "<seat> (kin)" in a kin-cell run, which never pools with
+    the mixed panel's seat (another model plays it)."""
+    return f"{seat} (kin)" if cell_of(record or {}).startswith("kin-") else seat
+
+
 def extract_rows(record: Dict[str, Any], run: str,
                  notes: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-    """One row per (measure, seat) of this run's verdict: {run, measure, seat, value}."""
+    """One row per (measure, seat) of this run's verdict: {run, measure, seat, value}
+    (seat as seat_label gives it)."""
     notes = notes if notes is not None else []
     gj = ((record or {}).get("final") or {}).get("grand_jury")
     if not isinstance(gj, dict) or not isinstance(gj.get("actors"), dict):
@@ -99,7 +108,7 @@ def extract_rows(record: Dict[str, Any], run: str,
         vals = {f"items.{i}": _num(items.get(i)) for i in RUBRIC_ITEMS}
         vals["composite"] = _num(a.get("composite"))
         vals["perceived_disposition"] = _num(a.get("perceived_disposition"))
-        rows += [{"run": run, "measure": m, "seat": seat, "value": v}
+        rows += [{"run": run, "measure": m, "seat": seat_label(record, seat), "value": v}
                  for m, v in vals.items() if v is not None]
     return rows
 
@@ -241,7 +250,7 @@ def analyse(records: List[Dict[str, Any]], samples: int = 200, seed: int = 0,
     for run, rec in zip(keys, records):
         named.append((run, rec))
         for k, lab in ((rec or {}).get("labs") or {}).items():
-            seat_models.setdefault(k, set()).add(str((lab or {}).get("model") or "?"))
+            seat_models.setdefault(seat_label(rec, k), set()).add(str((lab or {}).get("model") or "?"))
         rows += extract_rows(rec, run, notes)
         gj = ((rec or {}).get("final") or {}).get("grand_jury") or {}
         runs[run] = {"cell": cell_of(rec or {}), "juror": gj.get("juror"),

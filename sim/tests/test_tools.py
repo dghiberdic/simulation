@@ -683,13 +683,15 @@ def test_compare_arms_skips_dry(tmp_path, capsys):
     dry = _record()
     dry["config"]["dry_run"] = True
     (tmp_path / "d.json").write_text(json.dumps(dry))
-    assert compare_arms.main(["--separate", str(tmp_path), "--merged", str(tmp_path)]) == 0
-    assert "need logs for both arms" in capsys.readouterr().out
+    assert compare_arms.main(["--separate", str(tmp_path), "--merged", str(tmp_path)]) == 2
+    out = capsys.readouterr().out
+    assert "no finished run log" in out and "--include-dry" in out
+    assert not (tmp_path / compare_arms.REVIEW_NAME).exists()
     # The same separate-mode logs given as the merged arm are refused, never compared.
     assert compare_arms.main(["--separate", str(tmp_path), "--merged", str(tmp_path),
                               "--include-dry"]) == 2
     out = capsys.readouterr().out
-    assert "need logs" not in out and "Refusing to compare" in out and "a2a_mode 'separate', not 'merged'" in out
+    assert "no finished run log" not in out and "Refusing to compare" in out and "a2a_mode 'separate', not 'merged'" in out
 
 
 def test_incomplete_turns_are_skipped():
@@ -1707,7 +1709,9 @@ def test_main_analyses_exclude_scripted_and_dry_runs(tmp_path, capsys):
     assert [records.run_kind(r) for r in (main_run, scripted, dry, pilot_run)] == ["main", "policy", "dry", "pilot"]
     kept, dropped = SR.main_analysis_records([main_run, scripted, dry, pilot_run])
     assert kept == [main_run] and dropped == 3
-    assert SR.main_analysis_records([scripted])[0] == [scripted]        # a scripted run alone: summarised
+    assert SR.main_analysis_records([scripted]) == ([], 1)               # scripted runs: only when asked
+    assert SR.main_analysis_records([scripted], include_policy=True)[0] == [scripted]
+    assert SR.main_analysis_records([dry, pilot_run]) == ([dry], 1)      # dry main runs: no pilot pooled
     for name, rec in (("m", main_run), ("p", scripted), ("d", dry), ("t", pilot_run)):
         (tmp_path / f"{name}.json").write_text(json.dumps(rec))
     assert SR.main([str(tmp_path), "--json", "--include-dry"]) == 0
@@ -1886,7 +1890,7 @@ def _macro_record():
 
 def test_macro_jury_first_review_and_mandates_by_cell(capsys):
     """Per review the values before and after, each vote, the mandate issued or
-    dropped; the first review is the pilot's slant read; mandates grouped by cell."""
+    dropped; in a pilot run the first review is the slant read; mandates grouped by cell."""
     m = summarize(_macro_record())["macro_jury"]
     assert m["cell"] == "S2-C" and m["first_review"]["turn"] == 2
     assert m["first_review"]["votes"]["kimi-k3"]["mandate"] == "Labs must not intrude."
@@ -1894,7 +1898,10 @@ def test_macro_jury_first_review_and_mandates_by_cell(capsys):
     assert m["dropped"][0]["reason"] == "mentions intrusion" and m["mandates"] == [
         {"turn": 3, "text": "Invest in safety research."}]
     lines = "\n".join(SR.macro_lines(m))
-    assert "first review: the pilot's slant read" in lines and "mandate dropped (mentions intrusion)" in lines
+    assert "slant read" not in lines and "mandate dropped (mentions intrusion)" in lines     # a main run
+    pilot_rec = _macro_record()
+    pilot_rec["config"]["run_meta"] = {"pilot": True, "test": "T4", "run_id": "T4-run01"}
+    assert "first review: the pilot's slant read" in "\n".join(SR.macro_lines(summarize(pilot_rec)["macro_jury"]))
     other = _macro_record()
     other["config"]["run_meta"]["cell"] = "S1-A"
     agg = aggregate([_macro_record(), other])["macro_jury"]["by_cell"]
@@ -2100,3 +2107,18 @@ def test_hand_scores_and_human_ratings_by_letter_map_through_the_seat_letters(tm
     pairs = {p["lab"]: p["ours"] for p in report["agreement"]["pairs"]}
     assert pairs == {"anthropic": 60, "openai": 20, "gdm": 40}
     assert report["agreement"]["rho"] == 1.0
+
+
+def test_compare_arms_reads_finished_runs_only_at_any_depth(tmp_path, capsys):
+    """An aborted arm run's partial log never counts; arm directories are searched recursively."""
+    sep, mer = _record(), _record()
+    mer["config"]["a2a_mode"] = "merged"
+    (tmp_path / "T4" / "a").mkdir(parents=True)
+    (tmp_path / "T9").mkdir()
+    (tmp_path / "T4" / "a" / "T4-run01.json").write_text(json.dumps(sep))
+    (tmp_path / "T9" / "T9-run01.partial.json").write_text(json.dumps(dict(mer, final={})))
+    assert compare_arms.main(["--separate", str(tmp_path / "T4"), "--merged", str(tmp_path / "T9")]) == 2
+    assert "no finished run log in --merged" in capsys.readouterr().out
+    (tmp_path / "T9" / "T9-run01.json").write_text(json.dumps(mer))
+    assert compare_arms.main(["--separate", str(tmp_path / "T4"), "--merged", str(tmp_path / "T9")]) == 0
+    assert "separate  runs 1" in capsys.readouterr().out
