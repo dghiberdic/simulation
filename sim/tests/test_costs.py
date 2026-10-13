@@ -1,5 +1,7 @@
 """Pricing math, conservative unknown-model price, persisted ledger and budget guard."""
 
+import json
+
 import pytest
 
 from core import costs
@@ -133,3 +135,25 @@ def test_kin_seat_scale_reads_the_kin_seats_model_from_config(monkeypatch):
     monkeypatch.setattr(costs, "load_lab_configs", lambda: labs)
     inputs = {"seat_share": {"claude-next": 0.4, "gpt-6-astra": 0.6}}
     assert costs.kin_seat_scale(inputs) == pytest.approx(0.8)
+
+
+def _record_many(spend_file, n):
+    from core.costs import CostTracker
+    tracker = CostTracker(spend_file)
+    for _ in range(n):
+        tracker.record("claude-opus-5-5", "actor", "r", 0, 0, cost=0.01)
+
+
+def test_parallel_processes_never_lose_a_ledger_increment(tmp_path):
+    """Two processes writing one ledger: every paid call is on it (cross-process lock)."""
+    import multiprocessing
+    ctx = multiprocessing.get_context("fork")
+    spend = tmp_path / "spend.json"
+    procs = [ctx.Process(target=_record_many, args=(spend, 150)) for _ in range(3)]
+    for p in procs:
+        p.start()
+    for p in procs:
+        p.join()
+    ledger = json.loads(spend.read_text())
+    assert ledger["calls"] == 450 and abs(ledger["total_usd"] - 4.5) < 1e-6
+    assert len((tmp_path / "spend_calls.jsonl").read_text().splitlines()) == 450

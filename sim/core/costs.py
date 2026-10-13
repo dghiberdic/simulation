@@ -14,7 +14,10 @@ whose stream broke after the 200 response started (stop "stream_error"), is
 logged there too, at cost 0 with "possibly_billed": true (the provider may
 have finished and billed it; its cost is unknown), and never enters the total.
 
-Thread-safe: core.llm calls record()/check() from one thread per seat.
+Thread- and process-safe: core.llm calls record()/check() from one thread per
+seat, and the ledger's read-modify-write holds an exclusive lock on
+<ledger>.lock (fcntl), so parallel processes on one ledger (a campaign and
+rate_charters.py, two main.py runs) never lose an increment.
 
 Parallel overshoot bound: the guard is checked before every HTTP request,
 but the seats of a stage (and parallel jurors) run at once, so requests already
@@ -31,10 +34,12 @@ cached_tokens is the subset billed at the cached rate. output_tokens includes
 reasoning tokens (providers bill them as output).
 """
 
+import fcntl
 import json
 import logging
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -120,6 +125,18 @@ class CostTracker:
     def calls_file(self) -> Path:
         return self.spend_file.with_name(f"{self.spend_file.stem}_calls.jsonl")
 
+    @contextmanager
+    def _ledger_lock(self):
+        """Exclusive across processes: every process writing this ledger takes it."""
+        lock_path = self.spend_file.with_name(f"{self.spend_file.name}.lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock_path, "a") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+
     # -- ledger -------------------------------------------------------------
 
     def _read_ledger(self) -> Dict[str, Any]:
@@ -158,15 +175,17 @@ class CostTracker:
         }
         with self._lock:
             self.calls.append(entry)
-            if cost > 0:
-                ledger = self._read_ledger()
-                ledger["total_usd"] = ledger.get("total_usd", 0.0) + cost
-                ledger["calls"] = ledger.get("calls", 0) + 1
-                by_model = ledger.setdefault("by_model", {})
-                by_model[model] = by_model.get(model, 0.0) + cost
-                ledger["updated"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-                self._write_ledger(ledger)
-            if cost > 0 or possibly_billed:
+            if not (cost > 0 or possibly_billed):
+                return cost
+            with self._ledger_lock():
+                if cost > 0:
+                    ledger = self._read_ledger()
+                    ledger["total_usd"] = ledger.get("total_usd", 0.0) + cost
+                    ledger["calls"] = ledger.get("calls", 0) + 1
+                    by_model = ledger.setdefault("by_model", {})
+                    by_model[model] = by_model.get(model, 0.0) + cost
+                    ledger["updated"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                    self._write_ledger(ledger)
                 self.calls_file.parent.mkdir(parents=True, exist_ok=True)
                 with open(self.calls_file, "a") as f:
                     f.write(json.dumps(entry) + "\n")
