@@ -232,3 +232,19 @@ def test_unusable_t2_rating_is_settled_and_rerate_asks_again(tmp_path, monkeypat
     assert set(seats) <= set(rec["final"]["t2_ratings"])
     assert not pilot.read_summary(root, "T5")["post_run_errors"]
     assert pilot.main(argv + ["--rerate"]) == 0 and len(rated) == len(seats)
+
+
+def test_t6_rerun_writes_its_own_review(tmp_path):
+    """T6 --rerun writes review_T6-rerun.md; T6-run01's review_T6.md is kept."""
+    root = tmp_path / "p"
+    root.mkdir()
+    (root / "approval.json").write_text(json.dumps({"turns": 8, "cuts": []}))
+    argv = ["T6", "--dry-run", "--output", str(root), "--force-order", "--sequential", "--allow-no-examples",
+            "--spend-file", str(tmp_path / "spend.json")]
+    assert pilot.main(argv) == 0
+    first = (root / "T6" / "review_T6.md").read_text()
+    assert pilot.main(argv + ["--rerun"]) == 0
+    assert (root / "T6" / "review_T6.md").read_text() == first
+    assert pilot.review_path(root, "T6", True).name == "review_T6-rerun.md"
+    assert "T6-run02" in pilot.review_path(root, "T6", True).read_text()
+    assert pilot.read_summary(root, "T6", rerun=True)["review"].endswith("review_T6-rerun.md")

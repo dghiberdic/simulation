@@ -179,6 +179,12 @@ def summary_path(root: Path, test: str, rerun: bool = False) -> Path:
     return root / test / (f"pilot_summary_{test}-rerun.json" if rerun else f"pilot_summary_{test}.json")
 
 
+def review_path(root: Path, test: str, rerun: bool = False) -> Path:
+    """The test's review file; the T6 re-run writes its own (review_T6-rerun.md), so
+    T6-run01's review is kept."""
+    return root / test / (f"review_{test}-rerun.md" if rerun else f"review_{test}.md")
+
+
 def read_summary(root: Path, test: str, rerun: bool = False) -> Optional[Dict[str, Any]]:
     s = read_json(summary_path(root, test, rerun))
     return s if isinstance(s, dict) else None
@@ -937,7 +943,8 @@ def _records_of(root: Path, tests: List[str], include_dry: bool) -> List[Dict[st
     return out
 
 
-def pilot_decisions(root: Path, test: str, dry_run: bool, data: Dict[str, Any]) -> Dict[str, str]:
+def pilot_decisions(root: Path, test: str, dry_run: bool, data: Dict[str, Any],
+                    rerun: bool = False) -> Dict[str, str]:
     """The decision lines a test speaks to, over the pooled pilot runs they read
     (T1: priced + T6; T4: T4 + T9; T3: every pilot run; T5: T5; T6: the coding
     sheet of the priced and T6 runs; T7: the priced run, plus T6; T9:
@@ -945,7 +952,7 @@ def pilot_decisions(root: Path, test: str, dry_run: bool, data: Dict[str, Any]) 
     review of the run (§7 slant read) and, after T4, the turns 1-2 hindcast (§9.2)."""
     order = list(data.get("order") or [])
     lines: Dict[str, str] = {}
-    review = str(root / test / f"review_{test}.md")
+    review = str(review_path(root, test, rerun))
     if test in ("priced", "T6"):
         t1 = SR.t1_decision(_records_of(root, ["priced", "T6"], dry_run))
         lines["T1"] = t1["text"]
@@ -1453,7 +1460,8 @@ def _write_summary(args, data: Dict[str, Any], root: Path, test: str, run_id: st
         errors.append(f"usage: {type(e).__name__}: {e}")
     for field, build in (
             ("spend_usd", lambda: round(get_tracker().persisted_total(), 4)),
-            ("decisions", lambda: pilot_decisions(root, test, args.dry_run, data) if record else {}),
+            ("decisions",
+             lambda: pilot_decisions(root, test, args.dry_run, data, bool(args.rerun)) if record else {}),
             ("plan", lambda: build_plan(data, root, approval=approval) if record else None)):
         try:
             summary[field] = build()
@@ -1463,7 +1471,7 @@ def _write_summary(args, data: Dict[str, Any], root: Path, test: str, run_id: st
     summary["run_cost_usd"] = (summary.get("usage") or {}).get("run_cost_usd")
     if record is not None and summary.get("decisions") is not None:
         try:
-            summary["review"] = str(SR.write_review(output_dir / f"review_{test}.md", [record],
+            summary["review"] = str(SR.write_review(review_path(root, test, bool(args.rerun)), [record],
                                                     decision_lines=summary["decisions"], title=f"pilot {test}"))
         except Exception as e:      # noqa: BLE001
             errors.append(f"review: {type(e).__name__}: {e}")

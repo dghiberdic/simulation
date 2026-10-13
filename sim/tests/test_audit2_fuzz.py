@@ -158,11 +158,10 @@ def test_reinvoked_test_writes_the_missing_summary(tmp_path, monkeypatch):
     assert summary["status"] == "completed"
 
 
-def test_kill_after_the_final_record_leaves_the_partial_log(tmp_path, monkeypatch):
-    """Documents the window (engine._save_final: write the final, then unlink the
-    partial): a kill between the two keeps <run_id>.partial.json beside a finished
-    record. Re-invoking the completed test leaves it; a later run of the same set-up
-    ignores it (core.resume.load_partial) and replaces it."""
+def test_kill_after_the_final_record_removes_the_stale_partial_on_reinvocation(tmp_path, monkeypatch):
+    """A kill between writing the final record and unlinking the partial log
+    (engine._save_final) keeps <run_id>.partial.json beside a finished record;
+    re-invoking the test removes it (core.resume.remove_stale_partial)."""
     import core.engine as engine_mod
     root = _pilot_root(tmp_path)
     orig = engine_mod.write_json_atomic
@@ -180,7 +179,7 @@ def test_kill_after_the_final_record_leaves_the_partial_log(tmp_path, monkeypatc
     monkeypatch.undo()
     assert (root / "T5" / "T5-run01.partial.json").exists()
     assert _pilot(root) == 0
-    assert (root / "T5" / "T5-run01.partial.json").exists()
+    assert not (root / "T5" / "T5-run01.partial.json").exists()
 
 
 def test_force_rerun_does_not_replay_a_stale_partial(tmp_path, monkeypatch):
