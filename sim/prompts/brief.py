@@ -15,14 +15,13 @@ There is one brief (A.1). Its "since 1 August 2026" is the run's start date
 from datetime import date
 from typing import Dict, Optional, Union
 
+from core.fmt import long_date
 from prompts.packets import DEFAULT_START_DATE
 
 
 def start_text(start_date: Union[str, date, None] = None) -> str:
     """The run's start date as the briefs write it: "1 August 2026"."""
-    d = start_date or DEFAULT_START_DATE
-    d = d if isinstance(d, date) else date.fromisoformat(str(d))
-    return f"{d.day} {d:%B %Y}"
+    return long_date(start_date or DEFAULT_START_DATE)
 
 # ---------------------------------------------------------------------------
 # A.1 Strategy brief (verbatim; {lab} filled per seat)

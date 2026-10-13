@@ -15,9 +15,10 @@ from prompts.brief import (
     CONDITION_TEXTS, KIN_INSERT, STRATEGY_BRIEF, build_system_prompt, operating_policy,
     strategy_brief,
 )
+from core.fmt import month_date
 from prompts.interview import QUESTION, cut_answer
 from prompts.packets import (
-    action_list, first_thursday, first_working_day, month_start, opening_items, s1_event_items,
+    action_list, first_thursday, first_working_day, opening_items, s1_event_items,
     s2_event_items, scenario_items,
 )
 from prompts.turn import (
@@ -256,12 +257,12 @@ def test_build_system_prompt_requires_disposition():
 # ---- A.3 -------------------------------------------------------------------
 
 def test_calendar_helpers():
-    assert month_start("2026-08-01", 4).isoformat() == "2026-11-01"
-    assert month_start("2026-08-01", 6).isoformat() == "2027-01-01"
-    assert first_working_day(month_start("2026-08-01", 1)).day == 3
-    assert first_thursday(month_start("2026-08-01", 1)).day == 6
-    assert first_working_day(month_start("2026-08-01", 2)).day == 1
-    assert first_thursday(month_start("2026-08-01", 2)).day == 3
+    assert month_date("2026-08-01", 4).isoformat() == "2026-11-01"
+    assert month_date("2026-08-01", 6).isoformat() == "2027-01-01"
+    assert first_working_day(month_date("2026-08-01", 1)).day == 3
+    assert first_thursday(month_date("2026-08-01", 1)).day == 6
+    assert first_working_day(month_date("2026-08-01", 2)).day == 1
+    assert first_thursday(month_date("2026-08-01", 2)).day == 3
     # 1 January (and 25-26 December) are not working days.
     from datetime import date as _d
     assert first_working_day(_d(2027, 1, 1)).isoformat() == "2027-01-04"      # a Friday: New Year's Day
@@ -321,7 +322,7 @@ def test_t5_event_turn_2_dates_september():
 
 
 def test_event_dates_follow_start_date():
-    items = s1_event_items(900, month_start("2027-01-01", 4))     # April 2027
+    items = s1_event_items(900, month_date("2027-01-01", 4))     # April 2027
     assert [it["date"] for it in items] == ["2027-04-01", "2027-04-01", "2027-04-01"]
     assert s2_event_items(900)[0]["date"] == "2026-11-02"
 
@@ -443,7 +444,7 @@ def _full_prompt(condition, a2a="merged", choose=False, scenario="S1", turn=1,
     event_turn = cfg.get("event_turn", 4)
     sys = build_system_prompt("Anthropic", "Claude's Constitution", "CHARTER BODY.", condition,
                               None if choose else disposition, choose_disposition=choose, kin=kin)
-    month = month_start("2026-08-01", turn)
+    month = month_date("2026-08-01", turn)
     items = scenario_items(scenario, turn, "Anthropic", 1225, 1163, a2a, event_turn=event_turn)
     turn_p = build_turn_prompt(
         turn_date=month.isoformat(), new_items=items, ledger=LEDGER, own=OWN, observed={},
@@ -631,9 +632,9 @@ def test_message_prompt_builds():
 # ---- number format, message aliases, records and reports -----------------
 
 def test_signed_never_minus_zero():
-    from prompts.turn import _signed
-    assert _signed(-0.04) == "+0.0" and _signed(0) == "+0.0" and _signed(-0.0) == "+0.0"
-    assert _signed(-0.06) == "-0.1" and _signed(2.04) == "+2.0"
+    from core.fmt import signed
+    assert signed(-0.04) == "+0.0" and signed(0) == "+0.0" and signed(-0.0) == "+0.0"
+    assert signed(-0.06) == "-0.1" and signed(2.04) == "+2.0"
 
 
 def test_message_aliases_normalised():
@@ -679,11 +680,12 @@ def test_no_report_wordings():
 
 def test_accused_as_written_key_precedence():
     """The accused key precedence for the echo of a refused report."""
-    from prompts.turn import accused_as_written
+    from core.whistleblow import accused_as_written
     assert accused_as_written({"target": "Meta", "accused": "Meta + xAI"}) == "Meta + xAI"
     assert accused_as_written({"lab": "Meta", "accused_lab": "xAI"}) == "xAI"
     assert accused_as_written({"evidence": "x"}) is None
     assert accused_as_written("OpenAI") == "OpenAI"
+    assert accused_as_written({"accused": "  ", "lab": "Meta"}) == "Meta"     # blank is absent
 
 
 def test_directives_heading_and_current_marker_rendered():

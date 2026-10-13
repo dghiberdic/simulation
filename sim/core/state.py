@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Dict, List, Optional
 
+from core.fmt import month_date
+
 # ---------------------------------------------------------------------------
 # Value axes (all 0–100, spec §3.2)
 # ---------------------------------------------------------------------------
@@ -35,12 +37,6 @@ def floor_tenth(x: float) -> float:
     """x rounded down to 0.1, so a shown figure never exceeds the true one by more than
     float noise (1e-9, the pre-check's tolerance)."""
     return math.floor(x * 10 + 1e-8) / 10
-
-
-def month_date(start: date, turn: int, day: int = 1) -> date:
-    """Calendar date of a turn: turn 1 is the start month."""
-    months = start.month - 1 + (turn - 1)
-    return date(start.year + months // 12, months % 12 + 1, day)
 
 
 # ---------------------------------------------------------------------------

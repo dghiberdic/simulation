@@ -29,6 +29,7 @@ from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.config import world_setting
+from core.fmt import f1, long_date, month_year, signed, value_text
 from prompts.brief import start_text
 from prompts.packets import DEFAULT_BUDGET_TOKENS, first_working_day
 
@@ -74,52 +75,11 @@ DIRECTIVES_HEADING = ("Government directives (oldest first; a newer directive su
                       "earlier ones):")
 
 # ---------------------------------------------------------------------------
-# Number and date formatting (one decimal for every public number)
+# Rule figures (core.fmt formats the public numbers and dates)
 # ---------------------------------------------------------------------------
-
-def _f1(x: Any) -> str:
-    try:
-        return f"{float(x):.1f}"
-    except (TypeError, ValueError):
-        return str(x)
-
-
-def _f2(x: Any) -> str:
-    """Two decimals: capability copied, forfeited or gained, which can be below 1
-    (the copy floor is 0.35), so it never shows as 0.3 or 0.0."""
-    try:
-        return f"{float(x):.2f}"
-    except (TypeError, ValueError):
-        return str(x)
-
-
-def _signed(x: Any) -> str:
-    """"+1.2" / "-0.4"; a value that rounds to zero is "+0.0", never "-0.0"."""
-    v = round(float(x), 1)
-    return f"{(v if v != 0 else 0.0):+.1f}"
-
 
 def _g(num: float) -> str:
     return str(int(num)) if float(num).is_integer() else str(num)
-
-
-def value_text(value: Any) -> str:
-    """A value (0–100, real-valued, §3.2) as shown: the nearest whole point, halves
-    rounded up. Anything that is not a number is shown as it is."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return str(value)
-    return str(math.floor(float(value) + 0.5))
-
-
-def long_date(iso: str) -> str:
-    """"2026-11-02" -> "2 November 2026" (the Appendix A header form)."""
-    d = date.fromisoformat(iso)
-    return f"{d.day} {d:%B %Y}"
-
-
-def month_year(iso: str) -> str:
-    d = date.fromisoformat(iso)
-    return f"{d:%B %Y}"
 
 
 # ---------------------------------------------------------------------------
@@ -142,25 +102,25 @@ def _fmt_ledger(ledger: Dict[str, Dict[str, Any]], label: str) -> str:
     rows = [f"{label}:"]
     n = len(ledger)
     for name, s in ledger.items():
-        cap = f"capability {_f1(s['capability'])}"
+        cap = f"capability {f1(s['capability'])}"
         if s.get("capability_change") is not None:
-            cap += f" ({_signed(s['capability_change'])} since last month)"
-        parts = [cap, f"compute {_f1(s['compute'])} units", f"capital {_f1(s['capital'])}",
-                 f"influence {_f1(s['influence'])}", f"talent {_f1(s['talent'])}%"]
+            cap += f" ({signed(s['capability_change'])} since last month)"
+        parts = [cap, f"compute {f1(s['compute'])} units", f"capital {f1(s['capital'])}",
+                 f"influence {f1(s['influence'])}", f"talent {f1(s['talent'])}%"]
         if s.get("score") is not None:
-            parts.append(f"Prosperity Score {_signed(s['score'])} (rank {s['rank']}/{n})")
+            parts.append(f"Prosperity Score {signed(s['score'])} (rank {s['rank']}/{n})")
         rows.append(f"  {name}: " + ", ".join(parts))
     return "\n".join(rows)
 
 
 def _fmt_own(own: Dict[str, Any], lab: Optional[str]) -> str:
     head = f"Your lab ({lab}):" if lab else "Your lab:"
-    parts = [f"know-how {_f1(own['know_how'])} (part of capability)"] if "know_how" in own else []
+    parts = [f"know-how {f1(own['know_how'])} (part of capability)"] if "know_how" in own else []
     if "income" in own:
         # Month 1 shows the opening figures; the income lands before decisions take
         # effect, so it is not yet in the ledger's capital. Later months post the
         # ledger after the income, so it is already in the capital shown.
-        parts.append(f"Capital income this month: {_f1(own['income'])}"
+        parts.append(f"Capital income this month: {f1(own['income'])}"
                      + (" (arrives before decisions take effect)" if own.get("opening")
                         else " (already included in your capital on the ledger)"))
     # No "invested" line: invest_capital is repaid before the next prompt, and the
@@ -398,21 +358,6 @@ def build_message_prompt(*, stage: str, turn_date: str, new_items: List[Dict[str
 # ---------------------------------------------------------------------------
 # Reply validation (never raises; returns an error string or None)
 # ---------------------------------------------------------------------------
-
-# Keys naming the accused, in precedence order.
-ACCUSED_KEYS = ("accused", "accused_lab", "lab", "target")
-
-
-def accused_as_written(report: Any) -> Any:
-    """The accused exactly as the seat wrote it (the first of ACCUSED_KEYS present); None if absent."""
-    if isinstance(report, list) and len(report) == 1:
-        report = report[0]
-    if isinstance(report, str):
-        return report
-    if not isinstance(report, dict):
-        return None
-    return next((report[k] for k in ACCUSED_KEYS if report.get(k) not in (None, "", [])), None)
-
 
 def chosen_value(reply: Any) -> Any:
     """The setting a seat chose: "directive_precedence", else "disposition"."""

@@ -58,7 +58,8 @@ from core.llm import complete_json, resolve_provider
 from core.mandates import mandate_violation
 from core.records import NO_USABLE_VERDICT, grand_jury_usable, write_json_atomic
 from core.state import VALUE_AXES
-from core.transcript import charters_block, full_transcript, letters_for, mask_legend, value_text
+from core.fmt import value_text
+from core.transcript import charters_block, full_transcript, letters_for, mask_legend
 
 logger = logging.getLogger(__name__)
 

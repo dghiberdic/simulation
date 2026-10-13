@@ -50,6 +50,7 @@ import re
 from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.fmt import month_label
 from core.state import LabState, LedgerEntry, WorldState
 
 logger = logging.getLogger(__name__)
@@ -81,12 +82,6 @@ _YEAR = re.compile(r"\b(20\d\d)\b")
 # been October", "may not", "may well").
 _MODAL_NEXT = re.compile(r"\s+(?:have|has|be|been|not|also|well|still|perhaps|possibly|"
                          r"likely|only|or|in\s+fact)\b")
-
-
-def month_label(turn: int, start: date) -> str:
-    """Turn → "October 2026" (turn 1 is the start month, August 2026)."""
-    index = start.month - 1 + turn - 1
-    return f"{_MONTHS[index % 12].capitalize()} {start.year + index // 12}"
 
 
 def _month_turn(year: int, month: int, start: date) -> int:
@@ -254,6 +249,13 @@ def _accused_value(data: Dict[str, Any]) -> Tuple[bool, Any]:
             if not _blank(data.get(key)):
                 return True, data[key]
     return False, None
+
+
+def accused_as_written(report: Any) -> Any:
+    """The accused exactly as the seat wrote it (the precedence of _accused_value),
+    for the echo of a refused report; None if absent."""
+    data = _as_dict(report)
+    return _accused_value(data)[1] if data else None
 
 
 def _is_no_report_text(text: str) -> bool:
@@ -559,7 +561,7 @@ def resolve(reports: Dict[str, Any], labs: List[LabState], world: WorldState,
         reporter_name, accused_name = lab.lab, by_key[accused].lab
         if entry is not None:
             outcome["entry_id"] = entry.id
-            month = month_label(entry.turn, world.start)
+            month = month_label(world.start, entry.turn)
 
         if status == "open":
             if self_report:
