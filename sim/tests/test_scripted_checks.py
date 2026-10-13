@@ -317,3 +317,26 @@ def test_sc15_action_costs():
     assert min_cost_violations() == []
     bad = min_cost_violations(load_world({"actions.min_action_cost": 0.1}))
     assert any("acquire_compute" in b for b in bad) and any("min_action_cost" in b for b in bad)
+
+
+def test_scripted_purchases_never_cost_more_than_the_capital():
+    """BUG-econ-1: greedy, income and the direct loop request units rounded down to 0.1,
+    so a request never costs more than the Capital it is drawn from."""
+    from checks.scripted_checks import _greedy_units
+    from core.config import build_labs_and_world, load_world
+    from core.economy import purchase_price
+    from core.policies import affordable_units, greedy, income
+
+    cfg = load_world()
+    labs, world = build_labs_and_world(cfg, dispositions={}, charters=False)
+    lab = labs[-1]
+    for capital in [1.049, 1.05, 3.0, 8.288, 8.35, 8.36, 9.9999, 10.5, 11.0, 50.0]:
+        units = affordable_units(capital, cfg)
+        assert purchase_price(units, cfg["compute"]) <= capital + 1e-9
+        assert purchase_price(units + 0.1, cfg["compute"]) > capital or units == 30
+        lab.capital, lab.income = capital, capital
+        for policy in (greedy, income):
+            for a in policy(lab, labs, world, cfg, "S1", None)["actions"]:
+                assert purchase_price(a["units"], cfg["compute"]) <= capital + 1e-9
+        assert purchase_price(_greedy_units(lab, cfg), cfg["compute"]) <= capital + 1e-9
+    assert affordable_units(8.288, cfg) == 23.6 and affordable_units(1000.0, cfg) == 30

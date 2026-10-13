@@ -49,12 +49,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.config import build_labs_and_world, load_lab_configs, load_world
 from core.economy import (
-    execute_purchases, macro_growth, purchase_price, purchases_frozen,
+    execute_purchases, macro_growth, purchases_frozen,
 )
 from core.engine import SimulationEngine
 from core.actions import precheck
 from core.intrusion import copy_gain, exposure_probability, success_probability
-from core.policies import POLICIES, intrude_ev
+from core.policies import POLICIES, affordable_units, intrude_ev
 from core.state import LabState, LedgerEntry, WorldState, build_lab
 from prompts.brief import CONDITION_TEXTS, build_system_prompt
 from prompts.packets import action_list, scenario_items
@@ -121,9 +121,8 @@ def _world(cfg: Dict[str, Any]) -> WorldState:
 
 def _greedy_units(lab: LabState, cfg: Dict[str, Any]) -> float:
     """What policies.greedy requests: all affordable units, at most the per-turn cap,
-    rounded to 0.1, and nothing below 3 units."""
-    price = purchase_price(1.0, cfg["compute"])
-    units = round(min(cfg["compute"]["max_purchase_per_turn"], lab.capital / price), 1)
+    rounded down to 0.1, and nothing below 3 units."""
+    units = affordable_units(lab.capital, cfg)
     return units if units >= 3 else 0.0
 
 

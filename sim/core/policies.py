@@ -20,6 +20,7 @@ by the number of committers), w_C/w_I the score weights and fee_inf the
 Influence fee over all targets. The Capital fee does not enter the score.
 """
 
+import math
 from typing import Any, Dict, List, Optional, Sequence
 
 from core.economy import purchase_price, purchases_frozen
@@ -39,13 +40,19 @@ def _elasticity(cfg: Dict[str, Any]) -> float:
     return cfg["economy"]["capability_compute_elasticity"]
 
 
+def affordable_units(capital: float, cfg: Dict[str, Any]) -> float:
+    """Compute units `capital` pays for, at most the per-turn cap, rounded down to 0.1
+    so the request never costs more than the Capital it is drawn from."""
+    units = min(cfg["compute"]["max_purchase_per_turn"],
+                max(0.0, capital) / purchase_price(1.0, cfg["compute"]))
+    return math.floor(units * 10 + 1e-9) / 10
+
+
 def _buy(lab: LabState, labs, world: WorldState, cfg: Dict[str, Any], fraction: float) -> List[Dict[str, Any]]:
     """acquire_compute up to a fraction of affordable units, within the per-turn cap."""
     if purchases_frozen(labs, world):
         return []
-    price = purchase_price(1.0, cfg["compute"])
-    affordable = lab.capital * fraction / price
-    units = round(min(cfg["compute"]["max_purchase_per_turn"], affordable), 1)
+    units = affordable_units(lab.capital * fraction, cfg)
     return [{"type": "acquire_compute", "units": units}] if units >= 3 else []
 
 
@@ -129,10 +136,9 @@ def greedy(lab, labs, world, cfg, scenario, rng):
 
 def income(lab, labs, world, cfg, scenario, rng):
     """Spend only this turn's income on compute (steady buyer)."""
-    price = purchase_price(1.0, cfg["compute"])
-    if purchases_frozen(labs, world) or lab.income < 3 * price:
+    units = affordable_units(min(lab.income, lab.capital), cfg)
+    if purchases_frozen(labs, world) or units < 3:
         return _reply([], "income buyer idle")
-    units = round(min(cfg["compute"]["max_purchase_per_turn"], lab.income / price), 1)
     return _reply([{"type": "acquire_compute", "units": units}], "income buyer")
 
 

@@ -254,20 +254,19 @@ def test_value_pull_moves_one_point_a_turn_and_lands_on_target():
 # Bugs
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, reason="BUG-econ-1: scripted greedy buyer rounds units up past "
-                                       "its Capital, so the pre-check rejects the whole purchase")
 def test_greedy_policy_request_is_affordable():
+    """BUG-econ-1: the greedy request is rounded down to 0.1, never past its Capital."""
     cfg = load_world()
     labs, world = build_labs_and_world(cfg, dispositions=DISP, charters=False)
     xai = next(l for l in labs if l.key == "xai")
     xai.capital = 8.288           # 23.68 units affordable; round(23.68, 1) = 23.7 costs 8.295
     acts = _buy(xai, labs, world, cfg, 1.0)
-    assert acts and price(acts[0]["units"]) <= xai.capital + 1e-9
+    assert acts == [{"type": "acquire_compute", "units": 23.6}]
+    assert price(acts[0]["units"]) <= xai.capital + 1e-9
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-econ-1: all-greedy engine run rejects xAI's turn-2 "
-                                       "purchase (needs 8.36, has 8.35)")
 def test_all_greedy_engine_run_has_no_rejected_purchases():
+    """BUG-econ-1: in an all-greedy run no greedy purchase is rejected for want of Capital."""
     cfg = load_world({"economy.know_how_shock_sd": 0.0})
     labs, world = build_labs_and_world(cfg, dispositions=DISP, charters=False)
     rec = SimulationEngine(labs, world, cfg, scenario="S1", turns=4, seed=1, policy=greedy,
