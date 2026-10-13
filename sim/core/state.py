@@ -73,9 +73,6 @@ class LedgerEntry:
             self.penalised.append(key)
             self.penalty_kind[key] = kind
 
-    def unpenalised(self) -> List[str]:
-        return [k for k in self.committers if k not in self.penalised]
-
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,

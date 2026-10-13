@@ -423,16 +423,6 @@ def accused_as_written(report: Any) -> Any:
     return next((report[k] for k in ACCUSED_KEYS if report.get(k) not in (None, "", [])), None)
 
 
-def has_report(report: Any) -> bool:
-    """False for the many ways models write "no report" (E5). The same test the
-    Allocator applies (E36: whistleblow.is_no_report): "None.", "N/A - no
-    evidence", "—" file nothing; a report with evidence but no accused is a
-    filing (refused: it names no lab)."""
-    from core.whistleblow import is_no_report      # local: prompts stay import-light
-
-    return not is_no_report(report)
-
-
 def chosen_value(reply: Any) -> Any:
     """The setting a seat chose: "directive_precedence", or the old key "disposition" (K4)."""
     if not isinstance(reply, dict):

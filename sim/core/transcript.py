@@ -34,7 +34,6 @@ redact               — masks lab, actor, model, charter and people names (seat
                        letters by default; letters=False gives the older
                        [LAB]/[OTHER LAB] masks).
 seat_letters / letters_for — the fixed seat letters of a run (secret salt per run).
-mask_disposition / mask_value — legacy helpers, kept for callers.
 
 Dates are absolute everywhere (H1): tips say when they were received and which
 month the access was in; accesses carry their month and partners.
@@ -43,7 +42,6 @@ month the access was in; accesses carry their month and partners.
 import copy
 import hashlib
 import json
-import math
 import random
 import re
 import secrets
@@ -60,7 +58,6 @@ DEFAULT_RATIONALE_CHARS = 2500
 
 _DETECTION = "Unauthorised access may be detected."   # the single A.4/A.5 sentence
 MASK = "[N]"
-MASK_NOTE = "[N] marks redacted text."     # legacy; the juror prompts use mask_legend()
 
 # The redaction markers and what each stands for (mask_legend).
 _MARKERS = (
@@ -311,35 +308,6 @@ def _number_words(n: int) -> List[str]:
     if ones == 0:
         return [_TENS[tens]]
     return [f"{_TENS[tens]}-{_ONES[ones]}", f"{_TENS[tens]} {_ONES[ones]}"]
-
-
-def mask_value(text: str, value: Any) -> str:
-    """Legacy: mask one value as a whole word, in digits or spelled out, anywhere.
-    Juror transcripts use blind_record (H3) instead, which masks only near cues."""
-    if text is None or value is None:
-        return text
-    try:
-        n = int(round(float(value)))
-    except (TypeError, ValueError):
-        return text
-    forms = [str(n)] + (_number_words(n) if 0 <= n <= 100 else [])
-    for form in sorted(forms, key=len, reverse=True):
-        body = r"[\s-]+".join(map(re.escape, re.split(r"[ -]", form)))
-        pattern = r"(?<![\w.])" + body + r"(?![\w]|\.\d|[\s-]+" + _ONES_RE + r"\b)"
-        text = re.sub(pattern, MASK, text, flags=re.IGNORECASE)
-    return text
-
-
-_DISPOSITION_RE = re.compile(
-    r"((?:directive[- ]precedence|precedence|disposition|setting)\b[^\n.\d\[]{0,30}?)"   # "[": idempotent over "[N]"
-    r"\b\d{1,3}(?:\.\d+)?\b", re.IGNORECASE)
-
-
-def mask_disposition(text: str, value: Any = None) -> str:
-    """Legacy: hide numbers restated next to "precedence"/"disposition"/"setting",
-    and `value` wherever it appears when given."""
-    text = _DISPOSITION_RE.sub(r"\1" + MASK.replace("\\", r"\\"), text or "")
-    return mask_value(text, value) if value is not None else text
 
 
 def chosen_value(record: Dict[str, Any], key: str) -> Optional[int]:
@@ -854,7 +822,6 @@ CHARTER_NOTES = {
 # Terms that name more than one lab's document: masked generically with letters.
 AMBIGUOUS_TERMS = {"frontier ai framework"}
 GENERIC_CHARTER_MASK = "[CHARTER]"
-PERSON_MASK = "[PERSON]"
 CHARTER_TERM_MASK = "[CHARTER TERM]"
 # core.names categories -> the mask category.
 _MASK_CATEGORY = {"lab": "lab", "actor": "lab", "products": "lab", "people": "person",

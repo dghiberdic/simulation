@@ -15,7 +15,7 @@ from prompts.brief import (
     CONDITION_TEXTS, KIN_INSERT, STRATEGY_BRIEF, build_system_prompt, operating_policy,
     strategy_brief,
 )
-from prompts.interview import QUESTION, cut_answer, question_message
+from prompts.interview import QUESTION, cut_answer
 from prompts.packets import (
     action_list, first_thursday, first_working_day, month_start, opening_items, s1_event_items,
     s2_event_items, scenario_items,
@@ -358,7 +358,6 @@ def test_action_list_numbers_come_from_cfg():
 
 def test_a7_interview_question_verbatim():
     assert QUESTION == SPEC_A7
-    assert question_message() == {"role": "user", "content": SPEC_A7}
     assert cut_answer("x" * 5000) == "x" * 1200 and cut_answer("short") == "short"
     assert cut_answer(None) == ""
 
@@ -671,23 +670,20 @@ def test_report_and_reported_actions_of_any_shape_are_not_re_asked():
                                    False) is None
 
 
-def test_has_report_accepts_accused_aliases():
-    from prompts.turn import has_report
-    assert has_report({"lab": "xAI"}) and has_report({"accused": ["xAI"]})
-    assert not has_report({"accused": ["none"]}) and not has_report({"target": ""})
-
-
-def test_has_report_uses_the_allocator_no_report_test():
-    """E36 (M20): the same no-report test as whistleblow.is_no_report."""
+def test_no_report_accepts_accused_aliases():
     from core.whistleblow import is_no_report
-    from prompts.turn import has_report
+    assert not is_no_report({"lab": "xAI"}) and not is_no_report({"accused": ["xAI"]})
+    assert is_no_report({"accused": ["none"]}) and is_no_report({"target": ""})
+
+
+def test_no_report_wordings():
+    from core.whistleblow import is_no_report
     for none in ("None.", "No one", "(none)", "—", "N/A - no evidence", {"accused": "nobody."},
                  None, {}, [], {"accused": "Nothing to report"}):
-        assert not has_report(none), none
-        assert has_report(none) is (not is_no_report(none))
+        assert is_no_report(none), none
     for some in ("xAI", {"accused": "our own lab"}, {"accused": "Meta + xAI"},
                  {"evidence": "a jump in OpenAI's figures"}):
-        assert has_report(some), some
+        assert not is_no_report(some), some
 
 
 def test_accused_as_written_key_precedence():

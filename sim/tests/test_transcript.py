@@ -10,7 +10,7 @@ import pytest
 
 from core.jury import _grand_user
 from core.transcript import (blind_record, chosen_value, full_transcript,
-                             mask_disposition, mask_setting_mentions, mask_value, redact,
+                             mask_setting_mentions, redact,
                              seat_transcript)
 import prompts.brief as brief_mod
 from core.transcript import _brief_text
@@ -438,12 +438,6 @@ def test_redact_masks_chosen_value_digits_and_words():
     assert "75" not in redact_old("I said 75 is mine.", rec, seat_key="gdm")
     # H3: a bare number far from any cue stays (masking it would mark the value).
     assert redact_old("I said 75 earlier.", rec, seat_key="gdm") == "I said 75 earlier."
-
-
-def test_mask_value_is_whole_word_only():
-    assert mask_value("50 units, 150 units, 50.5, 5", 50) == "[N] units, 150 units, 50.5, 5"
-    assert mask_value("seventy-five, seventy", 70) == "seventy-five, [N]"
-    assert mask_disposition(mask_disposition("precedence: 80/100")) == "precedence: [N]/100"
 
 
 def test_chosen_value_lookup():

@@ -213,14 +213,6 @@ def find_part(ledger: List[LedgerEntry], accused: str, turn: Optional[int],
     return None, ""
 
 
-def find_entry(ledger: List[LedgerEntry], accused: str, turn: Optional[int],
-               also_ok: Optional[List[str]] = None,
-               before: Optional[int] = None) -> Optional[LedgerEntry]:
-    """The unpenalised part a report against `accused` matches (find_part), or None."""
-    entry, status = find_part(ledger, accused, turn, also_ok, before)
-    return entry if status == "open" else None
-
-
 def partner_self_report(entry: Optional[LedgerEntry], reporter: str, accused: str,
                         also_ok: Optional[List[str]] = None) -> bool:
     """A report naming a partner also reports the reporter's own part of that entry
@@ -237,7 +229,6 @@ def partner_self_report(entry: Optional[LedgerEntry], reporter: str, accused: st
 # Blank values count as absent; "lab"/"target" are read only when neither
 # "accused" nor "accused_lab" is given, so {"accused_lab": "Meta",
 # "target": "Google DeepMind"} accuses Meta.
-_ACCUSED_KEYS = ("accused", "accused_lab", "lab", "target")
 _PRIMARY_KEYS = ("accused", "accused_lab")
 
 # "No report" (M20): once cleaned, the value names no lab, holds no self word
@@ -290,8 +281,7 @@ def is_no_report(value: Any) -> bool:
     e.g. "None.", "No report this month", "N/A - no evidence", "—".
     A dict is judged by its accused (precedence accused, accused_lab, lab,
     target); a dict with no accused but some evidence is a report (refused with
-    "the report names no lab"), not a no-report. Shared with
-    prompts.turn.has_report.
+    "the report names no lab"), not a no-report.
     """
     if value is None or value is False:
         return True

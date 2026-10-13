@@ -276,7 +276,6 @@ FALLBACK_INPUTS: Dict[str, float] = {
 # Separate message rounds scale with the seats' own per-turn spend when only a
 # merged run has been measured (0.61 / 0.45 in the estimates).
 A2A_TO_ACTOR_RATIO = FALLBACK_INPUTS["a2a_per_turn"] / FALLBACK_INPUTS["actor_later_turn"]
-SEAT_PURPOSES = ("actor", "a2a", "interview")
 
 
 def measure_runs(calls: List[Dict[str, Any]], records: List[Dict[str, Any]]) -> Dict[str, Any]:

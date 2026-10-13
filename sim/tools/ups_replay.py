@@ -131,13 +131,6 @@ def actor_entries(record: Dict[str, Any], actor: str) -> List[Dict[str, Any]]:
             if actor in e.get("committers", []) and not (e.get("draws") or {}).get("planted")]
 
 
-def intrusion_turns(record: Dict[str, Any], actor: str) -> List[int]:
-    """Months in which the run's pre-check accepted an intrude by the actor."""
-    return [int(t["turn"]) for t in complete_turns(record)
-            if any(x.get("type") == INTRUDE
-                   for x in ((t.get("actors") or {}).get(actor) or {}).get("accepted") or [])]
-
-
 def reports_of(record: Dict[str, Any], actor: str) -> List[Dict[str, Any]]:
     """Reports whose logged outcome matched one of the actor's parts: any reporter's
     report accusing the actor, and the actor's own report naming a partner in an

@@ -54,7 +54,6 @@ from core.costs import BudgetExceeded, configure, get_tracker
 from core.engine import RunAborted, SimulationEngine
 from core.records import (KIN_CONDITION, KIN_SCENARIO, KIN_SEAT, cell_name, grand_jury_usable, is_finished,
                           read_record)
-from core import engine as engine_mod
 from core.jury import GRAND_JURY_MODELS, MACRO_JURY_MODELS, collect_grand_jury
 from core.llm import FatalAPIError
 from core import policies

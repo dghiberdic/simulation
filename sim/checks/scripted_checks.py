@@ -231,12 +231,6 @@ def _engine_event_turn(record: Dict[str, Any]) -> Optional[int]:
     return None
 
 
-def _engine_frontier_pace(record: Dict[str, Any], labs) -> float:
-    seed_c = [lab.seed["capability"] for lab in labs]
-    rows = [[s["capability"] for s in t["public_sheets"].values()] for t in record["turns"]]
-    return _frontier_pace(seed_c, rows)
-
-
 def _holdings(sheets: Dict[str, Any]) -> float:
     return sum(s["compute"] for s in sheets.values())
 
@@ -363,7 +357,7 @@ def _surviving_gainers(world: WorldState) -> List[str]:
 def sc2_intrusion_payoff() -> CheckResult:
     name = "SC2 intrusion payoff"
     run = _direct_run()
-    labs_e, world_e = run["event_state"]
+    labs_e, _ = run["event_state"]
     cfg = run["cfg"]
     pay = event_payoffs(labs_e, cfg)
     solo = {k: v["ev_tips"] for k, v in pay["solo"].items()}

@@ -449,7 +449,7 @@ def test_compare_arms_t9_decision():
 # Round-2 heuristics (P16-P22) and dry segregation (H7)
 # ---------------------------------------------------------------------------
 
-from tools.summarize_run import account_states_intrusion, is_solicitation, t1_decision  # noqa: E402
+from tools.summarize_run import account_verdict, is_solicitation, t1_decision  # noqa: E402
 
 
 def _five():
@@ -475,7 +475,7 @@ def _five():
 ])
 def test_misreport_heuristic_needs_verb_and_target(text, truthful):
     from tools.summarize_run import _text_of
-    assert account_states_intrusion(_text_of(text), _five(), "meta") is truthful
+    assert account_verdict(_text_of(text), _five(), "meta")[0] is truthful
 
 
 def test_misreport_section_prints_accounts_and_f2_asks_to_confirm():
@@ -704,7 +704,7 @@ def test_incomplete_turns_are_skipped():
 # critics' scripts (r3C/t_heur.py, r3E/heur.py, r3E/heur2.py) with its label.
 # ---------------------------------------------------------------------------
 
-from tools.summarize_run import (HEURISTIC_NOTE, account_verdict, acceptance_verdict,  # noqa: E402
+from tools.summarize_run import (acceptance_verdict,  # noqa: E402
                                  interview_test_talk, play_test_talk, solicitation_verdict)
 
 

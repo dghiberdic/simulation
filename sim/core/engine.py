@@ -71,7 +71,7 @@ from core.jury import GRAND_JURY_MODELS, GrandJury, MacroJury, aggregate_grand
 from core.llm import FatalAPIError, complete_json, continue_call
 from core.mandates import mandate_violation
 from core.records import write_json_atomic
-from core.resume import LoggedFailure, LoggedRun, ResumeMismatch, load_partial, set_aside, setup_diffs
+from core.resume import LoggedFailure, LoggedRun, load_partial, set_aside, setup_diffs
 from core.rng import KeyedRNG
 from core import scoring
 from core.scoring import prosperity_score, ranked_scores, ups_index
