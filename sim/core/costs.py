@@ -289,7 +289,7 @@ FALLBACK_INPUTS: Dict[str, float] = {
     "actor_later_turn": 0.45,       # all five seats, merged messages
     "a2a_per_turn": 0.61,           # the separate two-round message pre-step, all seats
     "interview_per_turn": 0.20,     # five cached interview continuations
-    "macro_per_review": 0.30,       # three MacroJury calls
+    "macro_per_review": 0.30,       # three MacroJury calls and the mandate screen
     "grand_jury": 1.35,             # Kimi K3, one post-run batch (§7)
     "disposition_rating": 0.30,     # the T2 rater, five seat-runs
 }

@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterable, List
 
 from core import llm
 from core.config import load_lab_configs
+from core.jury import MANDATE_SCREEN_MODEL
 
 
 def placeholder_labs() -> List[str]:
@@ -20,10 +21,14 @@ def model_problems(labs, jurors: Dict[str, List[str]], scripted: Iterable[str] =
                    uses_macro: bool = True, uses_grand: bool = True) -> List[str]:
     """Missing keys / base URLs for every model this run will call: the seats not in
     `scripted`, the disposition juror (jurors["disposition"], if any), and the Grand
-    Jury and MacroJury when the run uses them."""
+    Jury and MacroJury when the run uses them, and the mandate screen model that a
+    real MacroJury calls (§7; a board of stubs uses the stub screen)."""
     scripted = set(scripted)
     models: List[Any] = [lab.model for lab in labs if lab.key not in scripted]
     models += list(jurors.get("disposition") or []) + (list(jurors["grand"]) if uses_grand else [])
-    models += list(jurors["macro"]) if uses_macro else []
+    macro = list(jurors["macro"]) if uses_macro else []
+    models += macro
+    if any(not str(m).startswith("stub:") for m in macro):
+        models.append(MANDATE_SCREEN_MODEL)
     providers = {lab.model: lab.provider for lab in labs if getattr(lab, "provider", None)}
     return llm.preflight(dict.fromkeys(models), providers)

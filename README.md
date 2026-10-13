@@ -199,6 +199,14 @@ reading). A test refuses to run before the earlier ones are done
 (`--force-order` overrides). T9's line names `review_T9-compare.md`, which
 only `tools/compare_arms.py` writes (the command is in the line).
 
+A mandate the MacroJury would issue passes the keyword filter
+(`core/mandates.py`) and then a language-model screen (`mandate_screen_model`
+in `config/states/usa.json`, deepseek-v4-pro, temperature 0, billed as a
+`macro_jury` call). A refused, unusable or failed screen drops it (fail
+closed, logged), and the next legal proposal is screened while a majority
+still stands. Dry runs use the offline `stub:mandate-screen`. The pilot still
+reads every issued mandate.
+
 A finished run is never paid for again. Re-invoking its test (or
 `--post-run-only`) does only what the run still misses: a Grand Jury verdict
 that was pending or interrupted, T2 ratings, ratings pooled but not saved in
@@ -386,6 +394,14 @@ reports per view (the Grand Jury record's ledger, charter block and seat text;
 the T2 seat texts) how often a seat is identified from public information and
 what the mask leaves; the §2 figure pools main model runs, other kinds
 (pilot, kin, scripted, dry) are reported apart.
+The text-view rates are a floor: only the names in `core/names.py` and the
+leak terms count (read through look-alikes, spacing, invisible characters and
+digit-for-letter forms such as `Op3nAI` or `LIama`), plus word pairs found in
+only one charter. `setting_leak_candidates` lists the model-written sentences
+that still contain a setting, policy, precedence, directive or charter word
+together with a number after the mask, for a reader to check. Setting
+paraphrases with none of those words in the sentence ("seventy parts
+obedience") are not masked.
 
 ---
 
@@ -580,8 +596,9 @@ Dry runs use `data/pilot/dry/` (ratings in `disposition_ratings.dry.json`) and
   `exposed`, `penalised`, `penalty_kind` (`exposed`, `named_on_failure`,
   `upheld`, `self_report` per committer), `copied` and `draws`.
 - `a2a`: every message (sender, recipients, stage, turn, visible turn and stage, tokens, truncated or dropped and why).
-- `macro_jury`: each review's values, previous values, mandate and any dropped
-  mandate (reused by the replay).
+- `macro_jury`: each review's values, previous values, mandate, any dropped
+  mandate and the mandate screen's answers in `mandate_screen` (reused by the
+  replay).
 - `final`: `scores`, `prosperity`, `ups_index`, `capability_hhi`,
   `integrity_inputs`, `dispositions`, `t2_ratings` (pilot), `grand_jury`
   (juror, provider, served model, temperature, `rubric` "scored" or "no
