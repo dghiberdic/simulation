@@ -182,3 +182,16 @@ def test_rescore_targets_the_latest_t6_run(tmp_path, monkeypatch):
     assert pilot.main(["T6", "--rescore-grand-jury", "--dry-run", "--output", str(tmp_path),
                        "--spend-file", str(tmp_path / "spend.json")]) == 0
     assert seen == ["T6-run02"]
+
+
+def test_force_moves_the_partial_log_aside_with_the_final(tmp_path):
+    """claim_run_id(force=True): a partial log left beside the finished final (a kill
+    between the final write and the partial unlink) goes aside with it, so the new
+    run never replays the old one."""
+    path = _t5(tmp_path, dry=False)
+    partial = path.with_name("T5-run01.partial.json")
+    partial.write_text(path.read_text())
+    assert pilot.claim_run_id(path.parent, "T5-run01", T5_SETUP, None, force=True) == "T5-run01"
+    assert not path.exists() and not partial.exists()
+    assert len(list(path.parent.glob("T5-run01.json.replaced-*"))) == 1
+    assert len(list(path.parent.glob("T5-run01.partial.json.replaced-*"))) == 1

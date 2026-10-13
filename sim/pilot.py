@@ -951,7 +951,10 @@ def pilot_decisions(root: Path, test: str, dry_run: bool, data: Dict[str, Any]) 
     if test == "T9" or (test == "T4" and (root / "T9").is_dir()):
         sep, mer = _records_of(root, ["T4"], dry_run), _records_of(root, ["T9"], dry_run)
         if sep and mer:
-            lines["T9"] = compare_arms(sep, mer)["text"].removeprefix("T9: ")
+            review_t9 = (f"{root / 'T9' / 'review_T9-compare.md'} (written by python tools/compare_arms.py "
+                         f"--separate {root / 'T4'} --merged {root / 'T9'}"
+                         + (" --include-dry" if dry_run else "") + ")")
+            lines["T9"] = compare_arms(sep, mer, review=review_t9)["text"].removeprefix("T9: ")
     return lines
 
 
@@ -1300,7 +1303,7 @@ def run_test(args, data: Dict[str, Any], root: Path, test: str) -> int:
         post = getattr(e, "post_run", None) or post
         if record is None:
             fin = read_json(output_dir / f"{run_id}.json")
-            record = fin if isinstance(fin, dict) and fin.get("final") else None
+            record = fin if is_finished(fin) else None
     except (RunAborted, FatalAPIError) as e:
         status, aborted = "aborted", _failure(run_id, e, output_dir)
     except Exception as e:          # any crash keeps the paid data and the summary
