@@ -128,11 +128,12 @@ def _greedy_units(lab: LabState, cfg: Dict[str, Any]) -> float:
 
 def _direct_run(overrides: Optional[Dict[str, Any]] = None, *, policy: str = "greedy",
                 event: bool = True, turns: Optional[int] = None, talent_swap: bool = False,
-                shock: bool = False) -> Dict[str, Any]:
+                shock: bool = False, buyers: Optional[Tuple[str, ...]] = None) -> Dict[str, Any]:
     """
     §5.2 order per turn: macro growth (step 1), the scenario event on
     cfg["event_turn"] (ceiling = factor × holdings, intrusion open), then
-    purchases for `policy` ("greedy" or "idle") unless frozen.
+    purchases for `policy` ("greedy" or "idle") unless frozen. `buyers` limits
+    greedy buying to those seats (the others idle); None means every seat.
 
     Returns {"cfg", "labs", "world", "seed_c": {key: C₀}, "rows": [per-turn dict],
              "event_state": (labs, world) deep-copied at the event decision point or None}.
@@ -163,7 +164,8 @@ def _direct_run(overrides: Optional[Dict[str, Any]] = None, *, policy: str = "gr
         granted: Dict[str, float] = {}
         headroom = max(0.0, world.holdings_limit() - sum(x.compute for x in labs))
         if policy == "greedy" and not purchases_frozen(labs, world):
-            requested = {x.key: _greedy_units(x, cfg) for x in labs}
+            requested = {x.key: _greedy_units(x, cfg) for x in labs
+                         if buyers is None or x.key in buyers}
             out = execute_purchases(labs, world, requested, cfg)
             granted = out["granted"]
         binds = sum(requested.values()) > headroom + EPS
@@ -824,24 +826,37 @@ def sc11_calibration_sweep() -> CheckResult:
 # SC12 — every seat can pay the intrusion fee at the event after buying compute
 # ---------------------------------------------------------------------------
 
+def fee_margins(buyers: Optional[Tuple[str, ...]] = None,
+                overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, float]]:
+    """At the event decision point after greedy buying by `buyers` (None: every seat;
+    the others idle), each seat's Capital and Influence above one target's fee:
+    {key: {"capital", "influence"}} (negative: the seat cannot pay)."""
+    run = _direct_run(overrides, buyers=buyers)
+    icfg = run["cfg"]["intrusion"]
+    labs_e, _ = run["event_state"]
+    return {x.key: {"capital": x.capital - icfg["fee_capital_per_target"],
+                    "influence": x.influence - icfg["fee_influence_per_target"]} for x in labs_e}
+
+
 def sc12_fee_payable_at_event() -> CheckResult:
     """Greedy buyers spend all affordable Capital on compute every turn before the
     event; on the event turn (after that turn's income) every seat must still hold
-    at least one target's fee: fee_capital_per_target Capital and
-    fee_influence_per_target Influence."""
+    at least one target's fee (fee_capital_per_target Capital and
+    fee_influence_per_target Influence). Checked when all five buy and when each
+    seat buys alone (the others idle, so no pro rata grant refunds part of its
+    purchases); the margins reported are each seat's Capital above the fee."""
     name = "SC12 fee payable at event"
-    run = _direct_run()
-    cfg = run["cfg"]
-    labs_e, _ = run["event_state"]
-    payable = _fee_payable(labs_e, cfg)
+    cfg = load_world()
     icfg = cfg["intrusion"]
-    capital = {x.key: round(x.capital, 2) for x in labs_e}
-    poorest = min(labs_e, key=lambda x: x.capital)
-    passed = all(payable.values())
-    detail = (f"Capital at event t{cfg['event_turn']} after greedy buying={capital}; fee "
-              f"{icfg['fee_capital_per_target']:g} Capital + {icfg['fee_influence_per_target']:g} Inf; "
-              f"poorest {poorest.key} {poorest.capital:.2f} (margin "
-              f"{poorest.capital - icfg['fee_capital_per_target']:+.2f}); all payable={passed}")
+    together = fee_margins()
+    alone = {k: fee_margins(buyers=(k,))[k] for k in SEATS}
+    paths = [together[k] for k in SEATS] + [alone[k] for k in SEATS]
+    passed = all(m["capital"] >= -EPS and m["influence"] >= -EPS for m in paths)
+    detail = (f"fee {icfg['fee_capital_per_target']:g} Capital + "
+              f"{icfg['fee_influence_per_target']:g} Inf at event t{cfg['event_turn']}; Capital "
+              f"margin all greedy {_fmt({k: v['capital'] for k, v in together.items()})}; greedy "
+              f"alone {_fmt({k: v['capital'] for k, v in alone.items()})}; min Influence margin "
+              f"{min(m['influence'] for m in paths):+.2f}; all payable={passed}")
     return name, passed, detail
 
 

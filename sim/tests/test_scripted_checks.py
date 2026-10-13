@@ -97,7 +97,7 @@ def test_sc12_xai_can_pay_fee_at_event_after_greedy_buying():
     labs, world = _direct_run()["event_state"]
     assert world.turn == 4 and world.intrusion_open
     xai = {x.key: x for x in labs}["xai"]
-    assert 3.0 <= xai.capital < 6.0          # 4.61: all but ~1.6 spent on compute
+    assert 3.0 <= xai.capital < 6.0          # 4.63: all but ~1.6 spent on compute
     assert min(labs, key=lambda x: x.capital).key == "xai"
 
 
@@ -107,7 +107,27 @@ def test_sc12_fails_when_fee_unaffordable(monkeypatch):
     monkeypatch.setattr(sc, "load_world",
                         lambda o=None: real(dict(o or {}, **{"intrusion.fee_capital_per_target": 6.0})))
     name, passed, detail = sc.sc12_fee_payable_at_event()
-    assert passed is False and "poorest xai" in detail
+    assert passed is False and "xai: -1.3" in detail
+
+
+def test_sc12_covers_each_seat_buying_alone(monkeypatch):
+    """BUG-econ-2: a seat buying alone gets no pro rata refund, so it reaches the event
+    poorer than when all five buy. With a 2-Capital fee every seat can pay when all
+    buy, but xAI buying alone (1.96 Capital) cannot, and SC12 fails."""
+    import pytest
+    import checks.scripted_checks as sc
+    together, alone = sc.fee_margins(), sc.fee_margins(buyers=("xai",))
+    assert alone["xai"]["capital"] == pytest.approx(0.96, abs=0.01)
+    assert together["xai"]["capital"] == pytest.approx(3.63, abs=0.01)
+    name, passed, detail = sc.sc12_fee_payable_at_event()
+    assert passed and "greedy alone {anthropic: +9.74, openai: +42.87, gdm: +30.81, " \
+                      "meta: +6.74, xai: +0.96}" in detail
+    real = sc.load_world
+    monkeypatch.setattr(sc, "load_world",
+                        lambda o=None: real(dict(o or {}, **{"intrusion.fee_capital_per_target": 2.0})))
+    assert min(m["capital"] for m in sc.fee_margins().values()) > 0
+    name, passed, detail = sc.sc12_fee_payable_at_event()
+    assert passed is False and "xai: -0.04" in detail
 
 
 def test_sc13_sensitivities_and_pace_13():
