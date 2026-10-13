@@ -16,15 +16,22 @@ which lab sits behind each seat letter of a run, in four views:
                        actions, accounts, reports, statements)
   t2.text              each model seat's T2 record (core.transcript.disposition_transcript)
 
-The text views are scored by the lab vocabulary that survives redaction: every
-name of core.names (lab, actor, products, people, charter titles, charter terms;
-weight 3) and the word pairs found only in one lab's charter (at least three
-times; weight 1). Within a view the seats are assigned to labs jointly (the
+The text views are scored by the lab vocabulary that survives redaction, read
+on the normalised text (core.mandates.normalise_spans: spaced-out letters,
+look-alikes): every name of core.names (lab, actor, products, places, people,
+charter titles, charter terms; ORDINARY_WORDS only capitalised, as the mask
+reads them) and LEAK_TERMS, identifiers the mask leaves on purpose because they
+are shared or generic (cloud partners, legal forms; weight 3), and the word
+pairs found only in one lab's charter (at least three times; weight 1). The
+names the mask removes give a floor; LEAK_TERMS and obfuscations the mask
+misses are what a reader could still use. Within a view the seats are assigned to labs jointly (the
 best permutation). A seat counts as identified when its assignment is right and
 rests on evidence (a positive score for the assigned lab); with no evidence a
 guess is right one time in five at most, and it is not counted.
 
-Output per run and pooled: seats, identified, rate (identified ÷ seats).
+Output per run and pooled per view: seats, identified, rate (identified ÷
+seats). The §2 figure ("pooled") pools main model runs only; kin, pilot,
+scripted --policy, dry and untagged runs are pooled apart, one block per kind.
 
 CLI:
   python tools/identifiability.py <log.json|dir> [...] [--include-dry] [--json]
@@ -46,10 +53,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.config import load_charter, load_lab_configs                        # noqa: E402
 from core.costs import scripted_seats                                          # noqa: E402
 from core.exits import EXIT_OK, EXIT_REFUSED                                   # noqa: E402
+from core.mandates import normalise_spans                                      # noqa: E402
 from core.names import CATEGORIES, LAB_NAMES                                   # noqa: E402
-from core.transcript import charters_block, disposition_transcript, full_transcript  # noqa: E402
+from core.records import is_dry, is_main_run, is_pilot, is_scripted_run       # noqa: E402
+from core.transcript import (charters_block, disposition_transcript, full_transcript,  # noqa: E402
+                             term_regex)
 
 VIEWS = ("grand_jury.ledger", "grand_jury.charters", "grand_jury.text", "t2.text")
+KINDS = ("main", "kin", "pilot", "policy", "dry", "untagged")
+HEADLINE_KIND = "main"
+# Identifiers the mask leaves (shared with other labs' partners, or generic), that
+# still point to one lab in this panel.
+LEAK_TERMS: Dict[str, Tuple[str, ...]] = {
+    "anthropic": ("PBC", "Benefit Trust", "Amazon", "AWS", "Bedrock", "Trainium"),
+    "openai": ("Microsoft", "Azure"),
+    "gdm": ("Gmail", "Isomorphic", "King's Cross"),
+    "meta": ("Scale AI",),
+    "xai": ("Starbase",),
+}
 LEDGER_FIELDS = ("capability", "compute", "capital", "influence", "talent")
 NAME_WEIGHT = 3
 PAIR_MIN_COUNT = 3
@@ -108,21 +129,26 @@ def charter_pairs() -> Dict[str, frozenset]:
 
 @lru_cache(maxsize=None)
 def _name_regex(key: str) -> Optional[re.Pattern]:
-    terms = [t for c in CATEGORIES for t in LAB_NAMES.get(key, {}).get(c, ())]
+    """The lab's names (core.names, every category) and LEAK_TERMS, matched as the
+    mask matches them (core.transcript.term_regex: ORDINARY_WORDS capitalised)."""
+    terms = {re.sub(r"\s+", " ", t.strip()).lower()
+             for t in [t for c in CATEGORIES for t in LAB_NAMES.get(key, {}).get(c, ())]
+             + list(LEAK_TERMS.get(key, ()))}
     if not terms:
         return None
-    alts = "|".join(r"[\s-]*".join(map(re.escape, t.split())) for t in
-                    sorted(terms, key=len, reverse=True))
-    return re.compile(r"(?<![\w])(?:" + alts + r")(?![\w])", re.IGNORECASE)
+    alts = "|".join(term_regex(t) for t in sorted(terms, key=len, reverse=True))
+    return re.compile(r"(?<![\w])(?:" + alts + r")(?![\w])")
 
 
 def text_scores(text: str, keys: Sequence[str]) -> Dict[str, float]:
-    """{lab key: evidence in `text`}: surviving names ×NAME_WEIGHT + charter word pairs."""
+    """{lab key: evidence in `text`}: surviving names and LEAK_TERMS ×NAME_WEIGHT,
+    on the normalised text, + charter word pairs."""
     pairs = _pairs(text)
+    shadow = normalise_spans(text)[0]
     out = {}
     for key in keys:
         rx = _name_regex(key)
-        names = len(rx.findall(text)) if rx else 0
+        names = len(rx.findall(shadow)) if rx else 0
         out[key] = NAME_WEIGHT * names + sum(pairs[p] for p in charter_pairs().get(key, ()) if p in pairs)
     return out
 
@@ -232,20 +258,51 @@ def pooled(per_run: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     return out
 
 
+def run_group(record: Dict[str, Any]) -> str:
+    """The run's kind for pooling (KINDS): "dry" (stub models), "policy" (scripted),
+    "pilot", "kin" (the §6.5 cell), "main" (a main model run, core.records.is_main_run)
+    or "untagged" (a log that says neither)."""
+    if is_dry(record):
+        return "dry"
+    if is_scripted_run(record):
+        return "policy"
+    if is_pilot(record):
+        return "pilot"
+    if not is_main_run(record):
+        return "untagged"
+    return "kin" if (record.get("config") or {}).get("kin") else "main"
+
+
 def identifiability(records: Sequence[Tuple[str, Dict[str, Any]]]) -> Dict[str, Any]:
+    """{"runs": {run id: per-view result}, "kinds": {run id: kind}, "pooled": the
+    §2 figure (main runs only), "by_kind": {kind: pooled}} (kinds with runs only)."""
     from core.records import run_id_of
-    per_run = {}
+    per_run, kinds = {}, {}
     for path, rec in records:
-        per_run[run_id_of(rec) or str(path)] = run_identifiability(rec)
-    return {"runs": per_run, "pooled": pooled(per_run)}
+        rid = run_id_of(rec) or str(path)
+        per_run[rid] = run_identifiability(rec)
+        kinds[rid] = run_group(rec)
+    by_kind = {kind: pooled({r: v for r, v in per_run.items() if kinds[r] == kind})
+               for kind in KINDS if kind in kinds.values()}
+    return {"runs": per_run, "kinds": kinds,
+            "pooled": pooled({r: v for r, v in per_run.items() if kinds[r] == HEADLINE_KIND}),
+            "by_kind": by_kind}
+
+
+def _table(title: str, rows: Dict[str, Any]) -> List[str]:
+    lines = [title, f"{'view':<22}{'runs':>6}{'seats':>7}{'identified':>12}{'rate':>8}"]
+    for view, p in rows.items():
+        rate = "-" if p["rate"] is None else f"{p['rate']:.2f}"
+        lines.append(f"{view:<22}{p['runs']:>6}{p['seats']:>7}{p['identified']:>12}{rate:>8}")
+    return lines
 
 
 def format_report(rep: Dict[str, Any]) -> str:
-    lines = ["Residual identifiability (spec §2): seats matched to labs from public information",
-             f"{'view':<22}{'runs':>6}{'seats':>7}{'identified':>12}{'rate':>8}"]
-    for view, p in rep["pooled"].items():
-        rate = "-" if p["rate"] is None else f"{p['rate']:.2f}"
-        lines.append(f"{view:<22}{p['runs']:>6}{p['seats']:>7}{p['identified']:>12}{rate:>8}")
+    lines = _table("Residual identifiability (spec §2): seats matched to labs from public information; "
+                   "main runs", rep["pooled"])
+    for kind, rows in rep["by_kind"].items():
+        if kind != HEADLINE_KIND:
+            lines += [""] + _table(f"{kind} runs (reported apart, not in the main figure)", rows)
     lines.append("A seat counts when matched correctly; text views need evidence (guessing: at most 0.2).")
     return "\n".join(lines)
 

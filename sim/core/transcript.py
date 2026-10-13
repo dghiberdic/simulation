@@ -929,7 +929,7 @@ def _mask_terms(record: Dict[str, Any], seat_key: Optional[str], letters: Dict[s
     return terms
 
 
-def _term_regex(term: str) -> str:
+def term_regex(term: str) -> str:
     """Whole words joined by space, hyphen or nothing ("Deep Mind", "Open-AI");
     VERSIONED names with their version ("grok 4.7"); ORDINARY_WORDS only
     capitalised, in capitals, or lower-case directly before a version;
@@ -948,7 +948,7 @@ def _term_regex(term: str) -> str:
 
 def _names_pattern(terms: Dict[str, Tuple[str, str]]) -> Tuple[re.Pattern, List[str]]:
     ordered = sorted(terms, key=len, reverse=True)                 # longest first
-    alts = "|".join(f"(?P<g{i}>{_term_regex(t)})" for i, t in enumerate(ordered))
+    alts = "|".join(f"(?P<g{i}>{term_regex(t)})" for i, t in enumerate(ordered))
     # Hyphen prefixes mask ("ex-OpenAI"); plural and possessive suffixes stay.
     return re.compile(r"(?<![\w])(?:" + alts + r")(?P<suf>'s|’s|s|es)?(?![\w])"), ordered
 
@@ -1002,7 +1002,10 @@ def redact(text: str, record: Dict[str, Any], seat_key: Optional[str] = None,
     terms and slogans, as whole words (longest first; case-insensitive;
     multi-word names across space or hyphen; plural/possessive suffixes and
     hyphen prefixes handled; "US Constitution", "meta-analysis", "to grok", "I
-    muse" kept). The table is core.names.
+    muse" kept). The table is core.names. Names are read on the text normalised
+    as the mandate filter reads it (core.mandates.normalise_spans: spaced-out or
+    hyphenated letters, look-alike letters, invisible characters, a zero for o),
+    and the original span is masked.
 
     Every lab's names become its seat letter ("Seat C"; `letters`, a {lab key:
     letter} map, else seat_letters(record)), its charter "[Seat C charter]",

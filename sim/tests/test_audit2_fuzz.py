@@ -282,16 +282,34 @@ def test_transcripts_mask_plain_lab_names_control():
     assert "As Anthropic" not in str(full_transcript(rec))
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG-fuzz-8: identifiability reports 0 identified while every seat's text carries an "
-    "identifying name that survived masking (the tool only scores the names the mask removes)"))
+FUZZ_LEAKS = {"anthropic": "Our Model Context Protocol and Golden Gate work set us apart.",
+              "openai": "Ilya's old team and our Whisper and Atlas products set us apart.",
+              "gdm": "Mountain View, NotebookLM and Vertex AI set us apart.",
+              "meta": "PyTorch, FAIR and Menlo Park set us apart.",
+              "xai": "Macrohard, SuperGrok and Optimus set us apart."}
+
+
+def test_transcripts_mask_the_fuzz_identifiers():
+    """§2: the products, places and people the fuzz audit injected are masked in both views."""
+    rec = _record_with(FUZZ_LEAKS)
+    words = ("Model Context Protocol", "Golden Gate", "Ilya", "Whisper", "Atlas", "Mountain View",
+             "NotebookLM", "Vertex AI", "PyTorch", "FAIR", "Menlo Park", "Macrohard", "SuperGrok",
+             "Optimus")
+    gj = str(full_transcript(rec))
+    t2 = " ".join(str(disposition_transcript(rec, k)) for k in FUZZ_LEAKS)
+    assert [w for w in words if w in gj or w in t2] == []
+
+
 def test_identifiability_counts_surviving_identifying_text():
-    texts = {"anthropic": "Our Model Context Protocol and Golden Gate work set us apart.",
-             "openai": "Ilya's old team and our Whisper and Atlas products set us apart.",
-             "gdm": "Mountain View, NotebookLM and Vertex AI set us apart.",
-             "meta": "PyTorch, FAIR and Menlo Park set us apart.",
-             "xai": "Macrohard, SuperGrok and Optimus set us apart."}
+    """Identifiers the mask leaves (LEAK_TERMS) or misses still count as evidence."""
+    texts = {"anthropic": "Our PBC structure and the Benefit Trust set us apart.",
+             "openai": "Our Microsoft Azure partnership sets us apart.",
+             "gdm": "Isomorphic and Gmail set us apart.",
+             "meta": "Our Scale AI ties set us apart.",
+             "xai": "Starbase sets us apart."}
     rec = _record_with(texts)
     gj = str(full_transcript(rec))
-    assert all(w in gj for w in ("PyTorch", "Mountain View", "Macrohard", "Whisper", "Golden Gate"))
-    assert ID.run_identifiability(rec)["grand_jury.text"]["identified"] > 0
+    assert all(w in gj for w in ("Benefit Trust", "Azure", "Isomorphic", "Scale AI", "Starbase"))
+    out = ID.run_identifiability(rec)
+    assert out["grand_jury.text"]["identified"] == 5
+    assert out["t2.text"]["identified"] == 5
