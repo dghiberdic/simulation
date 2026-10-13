@@ -173,14 +173,23 @@ def test_identical_duplicate_seat_keys_are_accepted():
 
 # ---------------------------------------------------------------- juror families
 
-@pytest.mark.xfail(strict=True, reason="BUG-jury-2: --model lets a seat be played by a juror's "
-                   "family (meta=kimi-k3) with no refusal; lab.family stays 'muse' (§7)")
-def test_seat_model_from_a_juror_family_is_refused():
+@pytest.mark.parametrize("model", ["kimi-k3", "deepseek-v4-pro", "qwen-3.8-max"])
+def test_seat_model_from_a_juror_family_is_refused(model):
     from main import apply_model_overrides
     cfg = load_world(None)
     labs, _ = build_labs_and_world(cfg, dispositions={k: 50 for k in KEYS}, charters=False)
-    why = apply_model_overrides(labs, ["meta=kimi-k3"])
-    assert why, "§7: no juror shares a family with any seat"
+    why = apply_model_overrides(labs, [f"meta={model}"])
+    assert "juror family" in why, "§7: no juror shares a family with any seat"
+    assert labs[3].model == "muse-spark-1.3"
+
+
+def test_seat_family_follows_the_model():
+    from main import apply_model_overrides
+    cfg = load_world(None)
+    labs, _ = build_labs_and_world(cfg, dispositions={k: 50 for k in KEYS}, charters=False)
+    assert apply_model_overrides(labs, ["meta=claude-opus-5-5"]) == ""
+    meta = next(lab for lab in labs if lab.key == "meta")
+    assert meta.model == "claude-opus-5-5" and meta.family == "claude"
 
 
 def test_juror_families_differ_from_seat_families():
