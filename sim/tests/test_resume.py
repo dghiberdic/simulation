@@ -330,9 +330,10 @@ def test_resumed_run_keeps_the_partial_logs_letter_salt(harness):
     assert got["resumed"][-1]["replayed_turns"] == 2
 
 
-def test_a_partial_beside_the_finished_record_of_its_run_is_ignored(tmp_path):
+def test_a_partial_beside_the_finished_record_of_its_run_is_removed(tmp_path):
     """A stop between writing the final record and removing the partial log leaves
-    both; the log is stale and never replayed."""
+    both; the log is stale: never replayed, and removed. A partial log of another
+    set-up is kept."""
     from core.records import write_json_atomic
     from core.resume import load_partial, partial_path
 
@@ -343,5 +344,20 @@ def test_a_partial_beside_the_finished_record_of_its_run_is_ignored(tmp_path):
     assert load_partial(tmp_path, "r") == partial
     write_json_atomic(tmp_path / "r.json", final)
     assert load_partial(tmp_path, "r") is None
+    assert not partial_path(tmp_path, "r").exists()
+    write_json_atomic(partial_path(tmp_path, "r"), partial)
     write_json_atomic(tmp_path / "r.json", dict(final, config={"seed": 2}))
     assert load_partial(tmp_path, "r") == partial
+
+
+def test_main_reinvocation_removes_a_stale_partial(tmp_path):
+    """main.py on a finished run of the same set-up removes the partial log a stop left
+    beside it, and runs nothing."""
+    import main as main_mod
+    argv = ["--dry-run", "--turns", "1", "--output", str(tmp_path), "--run-id", "m", "--no-macro-jury",
+            "--no-grand-jury"]
+    assert main_mod.main(argv) == 0
+    partial = tmp_path / "m.partial.json"
+    partial.write_text((tmp_path / "m.json").read_text())
+    assert main_mod.main(argv) == 0
+    assert not partial.exists()

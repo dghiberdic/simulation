@@ -195,3 +195,40 @@ def test_force_moves_the_partial_log_aside_with_the_final(tmp_path):
     assert not path.exists() and not partial.exists()
     assert len(list(path.parent.glob("T5-run01.json.replaced-*"))) == 1
     assert len(list(path.parent.glob("T5-run01.partial.json.replaced-*"))) == 1
+
+
+def test_unusable_t2_rating_is_settled_and_rerate_asks_again(tmp_path, monkeypatch):
+    """A T2 rating unusable after the juror's retries and fallback is settled: the test
+    completes, re-invocations ask nothing, the summary lists it, and --rerate asks the
+    juror again for those seats only."""
+    from core import stubs
+    calls = []
+    monkeypatch.setattr(stubs, "disposition_reply", lambda system, user: (calls.append(1), "no")[1])
+    root = tmp_path / "p"
+    root.mkdir()
+    (root / "approval.json").write_text(json.dumps({"turns": 8, "cuts": []}))
+    argv = ["T5", "--dry-run", "--output", str(root), "--force-order", "--sequential",
+            "--spend-file", str(tmp_path / "spend.json")]
+    assert pilot.main(argv) == 0
+    seats = pilot.settled_unusable(pilot.ratings_path(root, True), "T5", "T5-run01")
+    assert seats and calls
+    n = len(calls)
+    for extra in (["--post-run-only"], ["--skip-completed"]):
+        assert pilot.main(argv + extra) == 0
+    assert len(calls) == n
+    pilot.summary_path(root, "T5").unlink()
+    assert pilot.main(argv) == 0 and len(calls) == n
+    s = pilot.read_summary(root, "T5")
+    assert s["status"] == "completed"
+    assert all(any(e.startswith(f"T2 rating {k}:") and "--rerate" in e for e in s["post_run_errors"])
+               for k in seats)
+    rated = []
+    monkeypatch.setattr(stubs, "disposition_reply",
+                        lambda system, user: (rated.append(1), json.dumps({"disposition": 40, "reason": "r"}))[1])
+    assert pilot.main(argv + ["--rerate"]) == 0
+    assert len(rated) == len(seats)
+    assert pilot.settled_unusable(pilot.ratings_path(root, True), "T5", "T5-run01") == []
+    rec = json.loads((root / "T5" / "T5-run01.json").read_text())
+    assert set(seats) <= set(rec["final"]["t2_ratings"])
+    assert not pilot.read_summary(root, "T5")["post_run_errors"]
+    assert pilot.main(argv + ["--rerate"]) == 0 and len(rated) == len(seats)

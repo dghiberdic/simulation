@@ -31,12 +31,15 @@ of an uninterrupted run given the same replies.
 
 import copy
 import json
+import logging
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from core.llm import parse_json_detail
 from core.records import is_finished, read_json
+
+logger = logging.getLogger(__name__)
 
 # Config keys that may differ between the partial log and the resuming run.
 _FREE_CONFIG_KEYS = ("run_meta",)
@@ -101,20 +104,35 @@ def partial_path(output_dir: Path, run_id: str) -> Path:
     return Path(output_dir) / f"{run_id}.partial.json"
 
 
-def load_partial(output_dir: Optional[Path], run_id: str) -> Optional[Dict[str, Any]]:
-    """The partial log of run_id, or None: missing, unreadable, not a run record, or
-    left over beside the finished record of the same run (a stop between writing the
-    final record and removing the log; the next save replaces it)."""
-    if output_dir is None:
-        return None
+def _read_partial(output_dir: Path, run_id: str) -> Optional[Dict[str, Any]]:
     rec = read_json(partial_path(output_dir, run_id))
     if not isinstance(rec, dict) or not isinstance(rec.get("turns"), list) \
             or not isinstance(rec.get("config"), dict):
         return None
-    final = read_json(Path(output_dir) / f"{run_id}.json")
-    if is_finished(final) and not setup_diffs(rec, final):
-        return None
     return rec
+
+
+def remove_stale_partial(output_dir: Optional[Path], run_id: str) -> bool:
+    """Remove <run_id>.partial.json when it sits beside the finished record of the same
+    run (a stop between writing the final record and removing the log): the record
+    holds everything it does. A partial log of another set-up is kept."""
+    if output_dir is None:
+        return False
+    rec = _read_partial(Path(output_dir), run_id)
+    final = read_json(Path(output_dir) / f"{run_id}.json")
+    if rec is None or not is_finished(final) or setup_diffs(rec, final):
+        return False
+    partial_path(output_dir, run_id).unlink(missing_ok=True)
+    logger.info(f"[resume] {run_id}: removed the partial log left beside its finished record")
+    return True
+
+
+def load_partial(output_dir: Optional[Path], run_id: str) -> Optional[Dict[str, Any]]:
+    """The partial log of run_id, or None: missing, unreadable, not a run record, or
+    left over beside the finished record of the same run (then removed)."""
+    if output_dir is None or remove_stale_partial(output_dir, run_id):
+        return None
+    return _read_partial(Path(output_dir), run_id)
 
 
 def setup_diffs(partial: Dict[str, Any], record: Dict[str, Any]) -> List[str]:

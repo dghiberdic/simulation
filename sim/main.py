@@ -72,6 +72,7 @@ from core.preflight import model_problems, placeholder_labs
 from core.records import (KIN_CONDITION, KIN_SCENARIO, KIN_SEAT, PARTIAL_SUFFIX, cell_name,
                           grand_jury_settled, grand_jury_usable, is_dry, is_finished, is_scripted_run,
                           read_record)
+from core.resume import remove_stale_partial
 from core.stubs import install_stubs
 
 logger = logging.getLogger(__name__)
@@ -376,7 +377,10 @@ def finished_record(output_dir: Path, run_id: str, expect: Dict[str, Any], dry_r
     had = cfg.get("policy") or (cfg.get("run_meta") or {}).get("policy") if is_scripted_run(rec) else None
     if had != policy:
         diffs.append(f"policy {had!r} != {policy!r}")
-    return (None, "; ".join(diffs)) if diffs else (rec, None)
+    if diffs:
+        return None, "; ".join(diffs)
+    remove_stale_partial(output_dir, run_id)
+    return rec, None
 
 
 def real_log(output_dir: Path, run_id: str) -> Optional[Path]:

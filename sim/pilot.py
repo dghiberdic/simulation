@@ -55,7 +55,10 @@ Commands:
   test (or --post-run-only) does only what it still misses (the Grand Jury, T2
   ratings, ratings pooled but not saved in the record, the summary, the priced
   run's hard stop) and then marks the test completed; this holds for a run kept
-  as <run_id>-vN too. After the re-run, `T6` and `T6 --post-run-only` mean the
+  as <run_id>-vN too. A T2 rating that stays unusable after the juror's retries
+  and fallback is settled, as an uninterrupted run ends: recorded as unusable
+  (the summary's post-run errors), never re-asked on its own;
+  `python pilot.py <test> --rerate` asks the juror again for those seats only. After the re-run, `T6` and `T6 --post-run-only` mean the
   re-run (it replaces T6-run01; T2 and T8 read it). A run stopped mid-way
   resumes from its partial log (core.resume): logged turns are replayed with no
   call. The T6 re-run writes its own summary (pilot_summary_T6-rerun.json), so a
@@ -65,7 +68,7 @@ Commands:
   options: --dry-run (stub models and jurors, $0, logs under data/pilot/dry/),
            --output DIR (pilot root), --spend-file, --budget (guard override:
            --budget, else the approval's, else pilot.json's $48), --skip-completed,
-           --force, --post-run-only, --force-order, --allow-placeholder-values,
+           --force, --post-run-only, --rerate, --force-order, --allow-placeholder-values,
            --allow-no-examples, --sequential.
 
 Exit codes (core.exits): 0 done (including the hard stop and a skipped
@@ -100,6 +103,7 @@ from core.policies import POLICIES
 from core.preflight import model_problems, placeholder_labs
 from core.records import (DRY_SUBDIR, PARTIAL_SUFFIX, finished_records, grand_jury_settled,
                           grand_jury_usable, is_dry, is_finished, read_json, write_json_atomic)
+from core.resume import remove_stale_partial
 from core.stubs import install_stubs
 from core.transcript import disposition_transcript, seat_letters
 from tools import summarize_run as SR
@@ -447,6 +451,7 @@ T7_NOTE = ("T7 (run length, the team decides now, for every later run except T5)
 # ---------------------------------------------------------------------------
 
 RATING_FIELDS = ("ratings", "chosen", "failures")
+SETTLED_NOTE = " (no usable rating after the juror's retries and fallback: settled, not re-asked; --rerate asks again)"
 
 
 def new_rating_rows() -> Dict[str, Any]:
@@ -471,8 +476,11 @@ def rate_dispositions(record: Dict[str, Any], jurors: List[str], run_id: str, te
     T2 (§2, §9.2): the juror rates each model seat-run once from its own
     redacted record (seat letters, masked names and chosen number). `rows` is
     filled in place, so a budget stop keeps what was rated; a failing call is
-    recorded in rows["failures"] and the next seat is asked. `only` limits the
-    seats (--post-run-only).
+    recorded in rows["failures"] and the next seat is asked. A seat with no
+    usable rating after the juror's whole call chain (retries and fallback) is
+    settled, as an uninterrupted run ends: its last failure row says
+    "settled": true and it is never asked again on its own (--rerate asks
+    again). `only` limits the seats (--post-run-only).
     """
     rows = rows if rows is not None else new_rating_rows()
     tag = {"run_id": run_id, "test": test, "dry_run": dry_run}
@@ -493,11 +501,13 @@ def rate_dispositions(record: Dict[str, Any], jurors: List[str], run_id: str, te
         except Exception as e:      # noqa: BLE001 — one seat's failure never loses the others
             logger.error(f"[T2] {run_id} {seat.key}: {type(e).__name__}: {e}")
             rating, failed = None, [{"juror": jurors[0] if jurors else None,
-                                     "error": f"{type(e).__name__}: {e}"}]
+                                     "error": f"{type(e).__name__}: {e}", "settled": False}]
         if rating:
             rows["ratings"].setdefault(seat.key, []).append(dict(rating, letter=letters.get(seat.key), **tag))
-        for f in failed:
+        for i, f in enumerate(failed):
             f = {k: v for k, v in f.items() if k != "result"}
+            if not rating and i == len(failed) - 1:
+                f["settled"] = f.get("settled", True)
             rows["failures"].setdefault(seat.key, []).append(dict(f, **tag))
     return rows
 
@@ -544,10 +554,28 @@ def pooled_ratings(path: Optional[Path], test: str, run_id: str) -> Dict[str, Li
     return out
 
 
-def unrated_seats(path: Optional[Path], record: Dict[str, Any], test: str, run_id: str) -> List[str]:
-    """Model seats of this run with no rating in the pooled file."""
+def settled_unusable(path: Optional[Path], test: str, run_id: str) -> List[str]:
+    """Seats of this run whose T2 rating stayed unusable after the juror's whole call
+    chain (a settled failure in the pooled file, no rating)."""
+    pooled = read_json(Path(path)) if path else None
+    pooled = pooled if isinstance(pooled, dict) else {}
     rated = pooled_ratings(path, test, run_id)
-    return [s.key for s in model_seats(record) if s.key not in rated]
+    out = []
+    for seat, items in (pooled.get("failures") or {}).items():
+        mine = [r for r in items or [] if isinstance(r, dict) and r.get("run_id") == run_id
+                and r.get("test") == test]
+        if seat not in rated and any(r.get("settled") for r in mine):
+            out.append(seat)
+    return sorted(out)
+
+
+def unrated_seats(path: Optional[Path], record: Dict[str, Any], test: str, run_id: str,
+                  rerate: bool = False) -> List[str]:
+    """Model seats of this run with no rating in the pooled file, leaving out the
+    settled unusable ones unless `rerate` (--rerate asks them again)."""
+    rated = pooled_ratings(path, test, run_id)
+    settled = set() if rerate else set(settled_unusable(path, test, run_id))
+    return [s.key for s in model_seats(record) if s.key not in rated and s.key not in settled]
 
 
 def ratings_not_in_record(path: Optional[Path], record: Dict[str, Any], test: str,
@@ -810,6 +838,7 @@ def completed_record(output_dir: Path, run_id: str, expect: Optional[Dict[str, A
         return None
     if stale_conflict(output_dir, run_id, expect):
         return None
+    remove_stale_partial(output_dir, run_id)
     return rec
 
 
@@ -818,13 +847,16 @@ def completed_record(output_dir: Path, run_id: str, expect: Optional[Dict[str, A
 # ---------------------------------------------------------------------------
 
 def missing_post_run(record: Dict[str, Any], run_id: str, test: str, ratings_file: Path,
-                     preset: Dict[str, Any]) -> List[str]:
+                     preset: Dict[str, Any], rerate: bool = False) -> List[str]:
+    """What the finished run still misses. A settled stage (a Grand Jury verdict or a
+    T2 rating unusable after the whole call chain) is done; `rerate` counts the
+    settled unusable T2 ratings as missing (--rerate)."""
     out = []
     if preset.get("grand_jury") and not grand_jury_settled(record):
         gj = (record.get("final") or {}).get("grand_jury")
         out.append(f"Grand Jury verdict ({(gj or {}).get('error') or 'none'})")
     if preset.get("disposition_rating", True):
-        seats = unrated_seats(ratings_file, record, test, run_id)
+        seats = unrated_seats(ratings_file, record, test, run_id, rerate)
         if seats:
             out.append(f"T2 ratings ({', '.join(seats)})")
         unsaved = ratings_not_in_record(ratings_file, record, test, run_id)
@@ -835,10 +867,11 @@ def missing_post_run(record: Dict[str, Any], run_id: str, test: str, ratings_fil
 
 def run_post_stages(record: Dict[str, Any], run_id: str, test: str, output_dir: Path, ratings_file: Path,
                     jurors: Dict[str, List[str]], dry_run: bool, preset: Dict[str, Any],
-                    only_missing: bool = False) -> Dict[str, Any]:
+                    only_missing: bool = False, rerate: bool = False) -> Dict[str, Any]:
     """
     The post-run stages of one finished run: the Grand Jury re-ask
-    (only_missing, T6) and the T2 rating. A failing stage is recorded and the
+    (only_missing, T6) and the T2 rating (only_missing: the seats not yet rated;
+    rerate: the settled unusable ones too). A failing stage is recorded and the
     run still counts; BudgetExceeded propagates after what was rated is pooled
     and saved, with this dict as e.post_run.
     """
@@ -854,7 +887,7 @@ def run_post_stages(record: Dict[str, Any], run_id: str, test: str, output_dir: 
                 post["errors"].append(f"Grand Jury: {type(e).__name__}: {e}")
         stage = "T2 rating"
         if preset.get("disposition_rating", True) and model_seats(record):
-            only = unrated_seats(ratings_file, record, test, run_id) if only_missing else None
+            only = unrated_seats(ratings_file, record, test, run_id, rerate) if only_missing else None
             if only is None or only:
                 rows = new_rating_rows()
                 try:
@@ -873,7 +906,8 @@ def run_post_stages(record: Dict[str, Any], run_id: str, test: str, output_dir: 
                 post["rated"] = sum(len(v) for v in rows["ratings"].values())
                 for seat, fails in rows["failures"].items():
                     if seat not in rows["ratings"]:
-                        post["errors"].append(f"T2 rating {seat}: {fails[-1].get('error')}")
+                        post["errors"].append(f"T2 rating {seat}: {fails[-1].get('error')}"
+                                              + (SETTLED_NOTE if fails[-1].get("settled") else ""))
                 if only_missing:
                     post["done"].append(f"T2 ratings: {post['rated']} seat(s) rated")
             unsaved = ratings_not_in_record(ratings_file, record, test, run_id) if only_missing else {}
@@ -985,6 +1019,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--post-run-only", action="store_true",
                    help="run nothing new: complete a finished run (missing T2 ratings, the T6 Grand Jury, the "
                         "summary)")
+    p.add_argument("--rerate", action="store_true",
+                   help="ask the T2 juror again for the seats of the test's finished run whose rating stayed "
+                        "unusable after the juror's retries and fallback (settled; never re-asked otherwise); "
+                        "the seats are not re-run")
     p.add_argument("--force-order", action="store_true", help="run a test before the earlier ones are done")
     p.add_argument("--allow-placeholder-values", action="store_true",
                    help="allow real runs while charter values are still placeholders")
@@ -1217,15 +1255,16 @@ def run_test(args, data: Dict[str, Any], root: Path, test: str) -> int:
 
     # A finished run of this set-up is never paid for again: without --force, only
     # what it still misses (post-run stages, the summary, the hard stop) is done.
-    finished = None if args.force and not args.post_run_only else \
+    finished = None if args.force and not (args.post_run_only or args.rerate) else \
         completed_record(output_dir, run_id, expect, args.dry_run)
-    if args.post_run_only or (finished is not None and not run_complete(
-            root, test, run_id, finished, preset, args.dry_run, args.rerun)):
-        return _post_run_only(args, data, root, preset, test, run_id, finished, output_dir, ratings_file)
-    if args.skip_completed and test_done(root, test) and not args.rerun:
+    if args.skip_completed and not (args.post_run_only or args.rerate) and not args.rerun \
+            and test_done(root, test):
         print(f"{test}: {(read_summary(root, test) or {}).get('run_id') or base_run_id(test)} already "
               "completed (skipped)")
         return EXIT_OK
+    if args.post_run_only or args.rerate or (finished is not None and not run_complete(
+            root, test, run_id, finished, preset, args.dry_run, args.rerun)):
+        return _post_run_only(args, data, root, preset, test, run_id, finished, output_dir, ratings_file)
     if args.skip_completed and args.rerun and rerun_done(root, data, args.dry_run):
         print(f"T6: {run_id} (the one re-run) already completed (skipped)")
         return EXIT_OK
@@ -1485,14 +1524,18 @@ def _post_run_only(args, data, root: Path, preset, test: str, run_id: str, recor
     """What a finished run still misses (--post-run-only, or a re-invoked test whose run
     finished): its post-run stages, then its summary (and after the priced run the
     hard stop). Once nothing is missing, the test's summary says completed (so the
-    plan and `all` never run it again)."""
+    plan and `all` never run it again). A settled unusable T2 rating is done (listed
+    in the summary's post-run errors); --rerate asks it again."""
+    rerate = bool(getattr(args, "rerate", False))
     budget = _configure(args, data)
     if record is None:
         print(f"{test}: {run_id} has no finished {'dry' if args.dry_run else 'real'} record of this set-up; "
               "nothing collected")
         return EXIT_REFUSED
-    missing = missing_post_run(record, run_id, test, ratings_file, preset)
+    missing = missing_post_run(record, run_id, test, ratings_file, preset, rerate)
     post: Dict[str, Any] = {"errors": [], "done": [], "rated": 0, "post_run_only": True}
+    if rerate and not missing:
+        print(f"{test}: {run_id} has no unusable T2 rating to ask again")
     if missing:
         print(f"{test}: {run_id} is finished (not run again); collecting: {'; '.join(missing)}")
         seats = [SimpleNamespace(key=k, model=v.get("model")) for k, v in (record.get("labs") or {}).items()]
@@ -1506,7 +1549,7 @@ def _post_run_only(args, data, root: Path, preset, test: str, run_id: str, recor
                 return EXIT_REFUSED
         try:
             post.update(run_post_stages(record, run_id, test, output_dir, ratings_file, jurors, args.dry_run,
-                                        preset, only_missing=True))
+                                        preset, only_missing=True, rerate=rerate))
         except BudgetExceeded as e:
             print(f"HALTED on the budget guard: {e}")
             return EXIT_BUDGET
@@ -1516,9 +1559,13 @@ def _post_run_only(args, data, root: Path, preset, test: str, run_id: str, recor
         if still:
             print(f"  still missing: {'; '.join(still)}")
             return EXIT_REFUSED
-    if run_complete(root, test, run_id, record, preset, args.dry_run, bool(args.rerun)):
+    if run_complete(root, test, run_id, record, preset, args.dry_run, bool(args.rerun)) and not (rerate and missing):
         print(f"{test}: {run_id} complete")
         return EXIT_OK
+    if preset.get("disposition_rating", True):
+        settled = set(settled_unusable(ratings_file, test, run_id)) & {s.key for s in model_seats(record)}
+        post["errors"] += [f"T2 rating {seat}: no usable rating{SETTLED_NOTE}" for seat in sorted(settled)
+                           if not any(e.startswith(f"T2 rating {seat}:") for e in post["errors"])]
     return _write_summary(args, data, root, test, run_id, preset, budget, record, None, "completed", None, post)
 
 

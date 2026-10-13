@@ -71,8 +71,6 @@ def test_uninterrupted_test_with_an_unusable_t2_rating_completes(tmp_path, _t2_j
     assert _t2_juror_refuses
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-last-1: an unusable T2 rating is re-asked (paid) on every "
-                                       "re-invocation, and --skip-completed exits 2")
 def test_skip_completed_never_reasks_an_unusable_t2_rating(tmp_path, _t2_juror_refuses):
     """README: "--skip-completed (skip it, exit 0)"; "A finished run is never paid for
     again". Spec §9.2 T2: "The juror rates every seat-run blind, once"."""
@@ -83,8 +81,6 @@ def test_skip_completed_never_reasks_an_unusable_t2_rating(tmp_path, _t2_juror_r
     assert len(_t2_juror_refuses) == before
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-last-1: after a stop before the summary, a test whose T2 "
-                                       "rating stayed unusable can never be completed without --force")
 def test_stop_before_summary_with_unusable_t2_rating_completes(tmp_path, _t2_juror_refuses):
     """A kill after the run and its T2 attempt but before the summary: re-invoking the
     test must end as the uninterrupted run did (completed), README "run the same
@@ -358,8 +354,6 @@ def test_readme_names_the_campaign_dry_run_with_its_command():
     assert "`campaign.py --dry-run`" not in text
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-last-7: a stop between writing the final record and removing "
-                                       "the partial log leaves the partial beside the record for good")
 def test_stale_partial_beside_a_finished_record_is_removed_on_reinvocation(tmp_path):
     root = tmp_path / "p"
     root.mkdir()
