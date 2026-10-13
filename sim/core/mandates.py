@@ -8,8 +8,12 @@ The text is normalised first (normalise): NFKC (fullwidth letters), zero-width
 characters and soft hyphens removed, Cyrillic and Greek look-alike letters read
 as Latin, a zero inside a word read as o ("0penAI"), letters spaced, dotted or
 hyphenated apart joined ("a u d i t", "A.U.D.I.T", "A-n-t-h-r-o-p-i-c"),
-casefolded. core.transcript masks names on the same normalisation
-(normalise_spans maps it back to the original text). A mandate that still holds letters of another script is dropped
+casefolded; then also read with digits and symbols for letters inside a run of
+letters (0 o, 1 i or l, 3 e, 4 a, 5 s, 7 t, @ a, $ s) and I and l confused
+("4nthr0pic", "D33pM1nd", "E1on", "LIama", "OpenAl"; normalise_variants: a
+figure such as "70", "H100" or "o3" is never read as a word). core.transcript
+and tools.identifiability find names on the same readings (find_spans maps a
+match back to the original text). A mandate that still holds letters of another script is dropped
 (the board writes for the US, in English). Other languages in Latin script are
 out of scope: the pilot reads every issued mandate (§7, logged by cell), which
 is the check on what slips through.
@@ -24,8 +28,11 @@ ordinary words match only in the phrase that makes them concern the topics:
                 competitor/fellow labs or developers, or their checkpoints, weights,
                 tenancies, research ("take market share from competitors",
                 "rival nations' models", "peer labs' published research" pass)
-  break, get, sneak, tap, pry, entry -> into or on rival labs, tenancies, servers;
-                poach weights or research; clone or help oneself to a rival's;
+  break, get, sneak, slip, tap, pry, entry -> into or on rival labs, tenancies,
+                servers, the Allocator or the booking system; poach weights,
+                research or GPUs; clone, impersonate or help oneself to a rival's;
+                commandeer, hijack or usurp a rival's assets or capacity
+                reserved for others;
                 covert/unsanctioned access, entry or copying; misuse of the
                 booking system
   breach      -> not "breach of contract" (or of trust, promise, duty)
@@ -41,16 +48,21 @@ ordinary words match only in the phrase that makes them concern the topics:
                  Allocator or the authorities, by any verb (submit, send, pass on,
                  tip off, bring to the attention of, keep ... apprised/informed);
                  come forward, speak up, blow the whistle, rat out, turn in,
+                 snitch, tattle, grass on, rat on, squeal on, dob in,
                  denounce, testify against, lodge a complaint, identify
                  rule-breakers, name a lab that violated, expose a lab,
-                 cooperate with investigators
+                 cooperate with investigators. The authorities include
+                 Washington, Congress, the White House, the police, the FBI and
+                 "the state" (not "the state of")
   inspect     -> labs, tenancies, records or logs ("inspect supply chains"
                  passes); "inspection" alone
   review, verify, examine, monitor, check, vet -> of conduct, records, logs,
                  tenancies, holdings or labs, or by the authorities ("monitor grid
                  systems", "check their systems" pass); compliance checks, spot
                  checks, unannounced or oversight visits, visits by officials,
-                 certified compliance, official examination, third-party assessment
+                 certified compliance, official examination, third-party assessment;
+                 combing, going, looking, poring or digging through or over
+                 records, logs, books or ledgers (either voice)
   flaw        -> exploiting a flaw, bug, weakness or glitch of the booking
                  system or the Allocator
 A lab is named by any name in core.names (lab, actor, products, places,
@@ -66,7 +78,7 @@ count only in capitals. A name followed by a hyphen is part of another word
 
 import re
 import unicodedata
-from typing import Callable, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from core.names import IDENTIFYING, LAB_NAMES, ORDINARY_WORDS, UPPERCASE_ONLY, capitalised, names
 
@@ -126,6 +138,55 @@ def normalise(text: str, casefold: bool = True) -> str:
     return text.casefold() if casefold else text
 
 
+# Digits and symbols written for letters ("4nthr0pic", "Op3nAI", "Ch@tGPT", "Gr$k"),
+# read only inside a run of letters and digits that holds at least two letters,
+# so figures ("70", "H100", "Q3", "o3") are never read as words. A 1 is an i or
+# an l, and an I and an l are confused for each other ("LIama", "OpenAl"): each
+# reading is its own variant.
+_LEET = {"0": "o", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a", "$": "s"}
+_LEET_READINGS = ({**_LEET, "1": "i"}, {**_LEET, "1": "l"})
+_SWAP_READINGS = ({**_LEET_READINGS[0], "l": "i"}, {**_LEET_READINGS[1], "I": "l"})
+_LEET_RUN = re.compile(r"[A-Za-z0-9@$]+")
+
+
+def _leet_run(run: str, table: Dict[str, str]) -> str:
+    if sum(c.isalpha() for c in run) < 2:
+        return run
+    return "".join(table.get(c, c) for c in run)
+
+
+def normalise_variants(text: str, swap_il: bool = True) -> Tuple[List[str], List[int]]:
+    """([normalise_spans' text, then its digit-for-letter readings], origin): the
+    readings map character for character, so one origin serves them all. Name
+    matching reads every variant (find_spans); `swap_il` also reads l as i and I
+    as l (names only: the topic patterns read words, and "lessons" is no "iessons")."""
+    base, origin = normalise_spans(text)
+    variants = [base]
+    for table in (_SWAP_READINGS if swap_il else _LEET_READINGS):
+        v = _LEET_RUN.sub(lambda m: _leet_run(m.group(0), table), base)
+        if v not in variants:
+            variants.append(v)
+    return variants, origin
+
+
+def find_spans(pattern: re.Pattern, text: str) -> List[Tuple[int, int, re.Match]]:
+    """Matches of `pattern` in any normalised variant of `text` (normalise_variants),
+    as (start, end) spans of the ORIGINAL text with their match, sorted and not
+    overlapping (an earlier start wins, then the longer match)."""
+    variants, origin = normalise_variants(text)
+    found = []
+    for v in variants:
+        for m in pattern.finditer(v):
+            if m.end() > m.start():
+                found.append((origin[m.start()], origin[m.end() - 1] + 1, m))
+    found.sort(key=lambda f: (f[0], -f[1]))
+    out: List[Tuple[int, int, re.Match]] = []
+    for f in found:
+        if not out or f[0] >= out[-1][1]:
+            out.append(f)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Topics
 # ---------------------------------------------------------------------------
@@ -137,13 +198,15 @@ _RIVAL = (r"(?:(?:another|other|rival|peer|competing|competitor|fellow|each\s+ot
           r"lab’s|firms?|compan\w+|developers?)|rival\w*" + _NATIONS + r"|competitor\w*" + _NATIONS
           + r"|peers?\b|each\s+other|one\s+another)")
 _ASSET = (r"(?:checkpoints?|weights?|model\s+weights|tenanc\w*|research|know[\s-]how|data|code|secrets?|"
-          r"systems?|clusters?|storage|infrastructure|training\s+runs?|models?)\b")
+          r"systems?|clusters?|storage|infrastructure|training\s+runs?|models?|recipes?|algorithms?|"
+          r"partitions?|credentials?|passwords?|gpus?|chips|servers?|intellectual\s+property)\b")
 _INCIDENT = (r"(?:security\s+)?(?:incident|breach|intrusion|attack|violation|misconduct|wrongdoing|"
              r"compromise|leak|rule[\s-]?break\w*|cheat\w*|suspicious|anything\s+unusual)\w*")
-_AUTHORITY = (r"(?:the\s+)?(?:allocator|authorities|authority|regulators?|government|federal\s+\w+|"
-              r"investigators?|officials?)")
-_SUBJECT = (r"(?:conduct|records?|logs?|books|tenanc\w*|labs?\b|lab's|labs'|activit\w*|compute\s+usage|"
-            r"accounts|filings|holdings|bookings)")
+_AUTHORITY = (r"(?:(?:the\s+)?(?:allocator|authorities|authority|regulators?|government|federal\s+\w+|"
+              r"investigators?|officials?|washington|congress|white\s+house|police|fbi|"
+              r"law\s+enforcement|prosecutors?|feds)\b|the\s+state\b(?!\s+of\b))")
+_SUBJECT = (r"(?:conduct|records?|logs?|books|ledgers?|tenanc\w*|labs?\b|lab's|labs'|activit\w*|"
+            r"compute\s+usage|accounts|filings|holdings|bookings)")
 _INFO = (r"(?:evidence|proof|information|intelligence|details|irregularit\w*|concerns?|suspicions?|"
          r"findings|knowledge|tips?|what\s+(?:they|you|it)\s+(?:know|knows|saw|see|learn\w*))")
 _MANDATE_TOPICS = re.compile(r"\b(?:" + "|".join((
@@ -157,11 +220,15 @@ _MANDATE_TOPICS = re.compile(r"\b(?:" + "|".join((
     r"access\w*\s+(?:to\s+|into\s+)?" + _W + _RIVAL,
     r"access\w*\s+(?:to\s+|into\s+)?" + _W + r"(?:tenanc|checkpoint|weights|model\s+weights)\w*",
     _RIVAL + r"(?:'s|s'|’s|')?\s+(?:(?!published|public|open|released)[\w'’-]+\s+)?" + _ASSET,
-    r"(?:break\w*|broke|get|gets|getting|got|sneak\w*|snuck|tap\w*|pr(?:y|ies|ied|ying)|trespass\w*|"
+    r"(?:break\w*|broke|get|gets|getting|got|sneak\w*|snuck|slip\w*|tap\w*|pr(?:y|ies|ied|ying)|trespass\w*|"
     r"entry|entries|forc\w*\s+(?:their|its|your|a)\s+way|plant\w*\s+" + _W + r"(?:code|malware|backdoors?))"
     r"\s+(?:in\s+)?(?:into|in\s+to|to|on|upon|at)\s+" + _W5 + r"(?:" + _RIVAL + r"|tenanc\w*|servers?\b)",
     r"(?:pilfer|purloin|plunder|loot)\w*", r"(?:sabotag|tamper)\w*",
-    r"poach\w*\s+" + _W + _ASSET, r"clon(?:e|es|ed|ing)\s+" + _W + _RIVAL,
+    r"(?:break\w*|broke|sneak\w*|snuck|slip\w*)\s+in(?:to|\s+to)\s+" + _W + r"(?:allocator|booking)",
+    r"(?:commandeer|hijack|usurp|misappropriat|annex)\w*\s+" + _W5
+    + r"(?:" + _RIVAL + r"|" + _ASSET + r"|(?:reserved|booked)\s+(?:for|by))",
+    r"(?:impersonat|masquerad|pos(?:e|es|ed|ing)\s+as|pretend\w*\s+to\s+be|spoof)\w*\s+" + _W + _RIVAL,
+    r"poach\w*\s+" + _W5 + _ASSET, r"clon(?:e|es|ed|ing)\s+" + _W + _RIVAL,
     r"help\w*\s+(?:itself|themselves|yourselves|yourself)\s+to\s+" + _W + _RIVAL,
     r"(?:unsanctioned|unapproved|illicit|covert|clandestine|surreptitious)\w*\s+(?:[\w'’-]+\s+)?"
     r"(?:access|entry|entries|copying|cop(?:y|ies)|acquisition|surveillance|use)\b",
@@ -189,6 +256,8 @@ _MANDATE_TOPICS = re.compile(r"\b(?:" + "|".join((
     r"zero[\s-]day\w*", r"security\s+(?:incident|breach|compromise|lapse|event)\w*",
     # reporting
     r"self[\s-]?report\w*", r"whistle\w*", r"inform(?:s|ed|ing)?\s+on\b", r"rat\w*\s+out\b",
+    r"snitch\w*", r"tattl\w*", r"grass(?:es|ed|ing)?\s+(?:on|up)\b", r"rat(?:s|ted|ting)?\s+on\b",
+    r"squeal\w*\s+on\b", r"dob\w*\s+(?:in|on)\b", r"blow\w*\s+the\s+whistle",
     r"turn\w*\s+in\s+(?:any|a|the|other|rival|each)\b", r"denounc\w*", r"come\s+forward",
     r"speak\w*\s+up\b", r"expos\w*\s+(?:any|a|the|other|rival|each)\s+(?:[\w'’-]+\s+)?"
     r"(?:labs?|firms?|compan\w+|competitors?|rivals?|peers?)",
@@ -216,7 +285,7 @@ _MANDATE_TOPICS = re.compile(r"\b(?:" + "|".join((
     r"offenders?|culprits?|wrongdoers?|transgressors?)",
     r"nam(?:e|es|ing)\s+(?:any|every|each|the|other|rival)\s+(?:labs?|firms?|compan\w+|competitors?|rivals?|"
     r"peers?)\b\s+" + _W5 + r"(?:violat|breach|break|broke|cheat|intru)\w*",
-    r"(?:disclos|notif|flag|escalat)\w*\s+" + _W + _INCIDENT,
+    r"(?:disclos|notif|flag|escalat)\w*\s+" + _W5 + _INCIDENT,
     r"(?:flag|escalat)\w*\s+" + _W + _RIVAL,
     r"(?:share|sharing)\s+tips?\b",
     r"(?:transparen\w*|open|honest|candid|forthcoming|frank)\s+(?:with|to)\s+" + _AUTHORITY,
@@ -241,6 +310,10 @@ _MANDATE_TOPICS = re.compile(r"\b(?:" + "|".join((
     r"(?:independent|third[\s-]party|external|federal|government)\s+(?:verification|review\w*|"
     r"assessment\w*|evaluat\w*|examin\w*|monitor\w*|inspect\w*|auditors?|investigat\w*)",
     r"open\w*\s+(?:your|their|its|the)\s+books",
+    r"(?:comb\w*|go(?:es|ing)?|gone|went|look\w*|pore\w*|pour\w*|sift\w*|trawl\w*|rak\w*|leaf\w*|"
+    r"rifl\w*|dig\w*)\s+(?:through|over|into)\s+" + _W + _SUBJECT,
+    _SUBJECT + r"\s+" + _W5 + r"(?:combed|gone|looked|pored|sifted|trawled|raked|rifled|dug)\s+"
+    r"(?:through|over|into)",
     r"(?:submit|open|hand\w*\s+over|turn\w*\s+over|shar\w*|provid\w*|surrender\w*)\s+" + _W
     + r"(?:logs?|records?)\b",
     r"logs?\s+(?:will|must|shall|are\s+to|should)\s+be\s+(?:inspected|reviewed|audited|examined|checked|"
@@ -326,15 +399,17 @@ def mandate_violation(text: str, labs: Optional[Iterable] = None) -> Optional[st
     """Why a MacroJury mandate may not be issued, or None when it may (§5.1): it
     is not in English, mentions intrusion, reporting or audits (phrase-level
     patterns, see above), or names a lab (core.names, plus the `labs` given)."""
-    plain = normalise(text, casefold=False)
-    folded = plain.casefold()
-    if _NON_LATIN.search(folded):
+    variants = normalise_variants(text)[0]
+    if _NON_LATIN.search(variants[0].casefold()):
         return "not written in English"
-    for variant in (folded, re.sub(r"(?<=[a-z])-(?=[a-z])", "", folded)):
-        found = _MANDATE_TOPICS.search(variant)
-        if found:
-            return f"mentions {found.group(0)!r}"
-    name = _named_lab(plain, labs)
-    if name:
-        return f"names a lab ({name!r})"
+    for plain in normalise_variants(text, swap_il=False)[0]:
+        folded = plain.casefold()
+        for variant in (folded, re.sub(r"(?<=[a-z])-(?=[a-z])", "", folded)):
+            found = _MANDATE_TOPICS.search(variant)
+            if found:
+                return f"mentions {found.group(0)!r}"
+    for plain in variants:
+        name = _named_lab(plain, labs)
+        if name:
+            return f"names a lab ({name!r})"
     return None
