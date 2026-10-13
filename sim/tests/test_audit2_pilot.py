@@ -529,7 +529,7 @@ def test_final_record_is_on_disk_before_the_grand_jury(tmp_path, monkeypatch):
         seen["finished"] = any((r.get("final") or {}).get("scores") for _p, r in rec)
 
     monkeypatch.setattr(SimulationEngine, "_grand_jury", gj)
-    SimulationEngine(labs, world, cfg, scenario="S1", condition="A", fog="F3", turns=2, seed=0,
+    SimulationEngine(labs, world, cfg, scenario="S1", condition="A", turns=2, seed=0,
                      run_grand_jury=True, grand_jurors=["stub:x"], macro_jurors=[], run_id="gj-run01",
                      output_dir=tmp_path, dry_run=True).run()
     assert seen["finished"] is True

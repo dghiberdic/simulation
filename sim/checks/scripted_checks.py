@@ -216,7 +216,7 @@ def _engine_run(scenario: str, policy_name: Any, *, seed: int = 1, turns: Option
     labs, world = build_labs_and_world(cfg, dispositions=dict(_DISPOSITIONS))
     policy = POLICIES[policy_name] if isinstance(policy_name, str) else policy_name
     engine = SimulationEngine(
-        labs, world, cfg, scenario=scenario, condition="A", fog="F3",
+        labs, world, cfg, scenario=scenario, condition="A",
         turns=turns or cfg["turns"], seed=seed, policy=policy, run_grand_jury=False,
         macro_jurors=[])
     record = engine.run()
@@ -610,9 +610,8 @@ def _condition_prompt(condition: str, cfg: Dict[str, Any]) -> str:
     items = scenario_items("S1", 1, "Anthropic", 1225, None, "separate")
     turn = build_turn_prompt(
         turn_date=cfg["start_date"], new_items=items, ledger=ledger, own=own, observed={},
-        notices=[], private_items=[], inbox=[], statements={},
-        action_list=action_list("S1", True, cfg), condition=condition, fog="F3",
-        a2a_mode="separate")
+        notices=[], inbox=[], statements={},
+        action_list=action_list("S1", True, cfg), condition=condition)
     return sys_prompt + "\n\n" + turn
 
 
@@ -656,8 +655,8 @@ def sc6_no_prompt_leaks() -> CheckResult:
     ledger = {lab.lab: lab.public_sheet(a) for lab in labs}
     prompt = build_turn_prompt(
         turn_date=cfg["start_date"], new_items=[], ledger=ledger, own=meta.private_sheet(a),
-        observed={}, notices=[], private_items=[], inbox=[], statements={},
-        action_list=action_list("S1", True, cfg), condition="A", fog="F3", a2a_mode="separate")
+        observed={}, notices=[], inbox=[], statements={},
+        action_list=action_list("S1", True, cfg), condition="A")
     for secret in ("L03-1", _SECRET_GAIN, "committers", "openai", "gdm"):
         if secret in prompt:
             problems.append(f"hidden-ledger token {secret!r} in non-involved seat prompt")

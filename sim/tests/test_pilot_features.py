@@ -26,7 +26,7 @@ def _choosing_actor(system, user):
 
 
 def _engine(labs, world, cfg, scenario="S1", **kw):
-    return SimulationEngine(labs, world, cfg, scenario=scenario, condition="A", fog="F3",
+    return SimulationEngine(labs, world, cfg, scenario=scenario, condition="A",
                             run_grand_jury=False, **kw)
 
 

@@ -309,7 +309,7 @@ def replay(record: Dict[str, Any], replies: Optional[Dict[int, Dict[str, Dict[st
         extra["kin"] = True
     engine = ReplayEngine(
         labs, world, cfg, scenario=conf["scenario"], condition=conf.get("condition", "A"),
-        fog=conf.get("fog", "F3"), a2a_mode=conf.get("a2a_mode", "merged"),
+        a2a_mode=conf.get("a2a_mode", "merged"),
         turns=turns, seed=int(conf.get("seed", 0)), **extra,
         macro_jurors=["logged-macro-jury"] if macro else [], policy=_log_policy(replies),
         interventions=conf.get("interventions") or [],

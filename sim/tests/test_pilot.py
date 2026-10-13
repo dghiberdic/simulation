@@ -69,7 +69,7 @@ def test_pilot_config_presets_order_and_budget():
     assert data["t7_turns"] == [8, 12]
     for name in data["order"]:
         p = pilot.resolve_preset(data, name)
-        assert p["fog"] == "F3" and p["condition"] == "A" and p["choose_disposition"] is True
+        assert p["condition"] == "A" and p["choose_disposition"] is True
         assert p["disposition_rating"] is True, f"{name}: T2 rating on every pilot run"
         assert p["grand_jury"] is (name == "T6"), "the rubric runs on the T6 run only (T8)"
         for seat, policy in (p.get("scripted_seats") or {}).items():

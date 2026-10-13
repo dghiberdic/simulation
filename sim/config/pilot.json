@@ -13,7 +13,6 @@
   "defaults": {
     "scenario": "S1",
     "condition": "A",
-    "fog": "F3",
     "a2a": "merged",
     "turns": 8,
     "runs": 1,

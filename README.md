@@ -550,11 +550,13 @@ sim/
   config/   world.json  pilot.json  prices.json  jury_examples.json
             labs/*.json  charters/*.md  states/usa.json  [dispositions.json]
   core/     engine, economy, actions, intrusion, whistleblow, a2a, fog, scoring,
-            state, rng, jury, transcript, llm, costs, policies, config
+            state, rng, jury, transcript, llm, costs, policies, config, records,
+            resume, names, mandates, stubs, preflight
   prompts/  brief (A.1, A.2, §6.4, kin), packets (A.3–A.5), turn (packet, A.8),
             interview (A.7)
   tools/    summarize_run, disposition, jury_check, jury_analysis,
-            compare_arms, ups_replay, contrasts, export_transcripts
+            compare_arms, ups_replay, contrasts, export_transcripts,
+            identifiability
   checks/   scripted_checks.py
   tests/
 ```

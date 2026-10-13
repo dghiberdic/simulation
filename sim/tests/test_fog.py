@@ -1,9 +1,7 @@
 """Fog of war: every run is F3 (spec §5.4); other labs see only reported actions."""
 
-import pytest
-
 from core.config import load_lab_configs, load_world
-from core.fog import FOG_LEVELS, check_fog, describe_action, observed_actions
+from core.fog import describe_action, observed_actions
 from core.state import build_lab
 
 CFG = load_world()
@@ -41,21 +39,9 @@ def test_describe_action_names_from_dicts_and_strings():
                            as_dicts) == "diminish_competitor zzz by 2 points"
 
 
-def test_only_f3_exists():
-    """Updated for v5: F0–F2 are removed; asking for them raises."""
-    assert FOG_LEVELS == ("F3",)
-    assert check_fog("F3") == "F3"
-    for fog in ("F0", "F1", "F2", "F9"):
-        with pytest.raises(ValueError):
-            observed_actions("meta", TURN, fog)
-        with pytest.raises(ValueError):
-            check_fog(fog)
-
-
 def test_f3_view_shows_reported_actions_only():
-    f3 = observed_actions("meta", TURN, "F3")
+    f3 = observed_actions("meta", TURN)
     assert "meta" not in f3
     assert f3["openai"] == ["Bought 20 units of compute", "Hosted a safety summit"]
     assert f3["anthropic"] == ["Lobbied the state"]
     assert all("intrude" not in s for s in f3["openai"])
-    assert observed_actions("meta", TURN) == f3          # F3 is the default

@@ -117,7 +117,7 @@ def _engine(out, scenario="S2", a2a="separate", turns=6, **kw):
         lab.model = f"stub:rs_{lab.key}"
     swap_capability(labs, "openai", "gdm", cfg["economy"]["capability_compute_elasticity"])
     eng = SimulationEngine(
-        labs, world, cfg, scenario=scenario, condition="A", fog="F3", a2a_mode=a2a, turns=turns, seed=3,
+        labs, world, cfg, scenario=scenario, condition="A", a2a_mode=a2a, turns=turns, seed=3,
         grand_jurors=["stub:rs_grand"], macro_jurors=["stub:rs_kimi", "stub:rs_deepseek", "stub:rs_qwen"],
         seat_policies={"xai": POLICIES["t5_scripted"]}, choose_disposition=True, run_grand_jury=True,
         run_id=RUN_ID, output_dir=out, run_meta={"test": "resume", "run_id": RUN_ID}, rotation="openai:gdm",

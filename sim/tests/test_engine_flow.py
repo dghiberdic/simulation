@@ -28,7 +28,7 @@ def _stub_engine(reply_fn, *, scenario="S2", turns=2, parallel=True, run_id="t",
     for lab in labs:
         register_stub(f"flow_{lab.key}", reply_fn(lab.key))
         lab.model = f"stub:flow_{lab.key}"
-    return SimulationEngine(labs, world, cfg, scenario=scenario, condition="A", fog="F3",
+    return SimulationEngine(labs, world, cfg, scenario=scenario, condition="A",
                             turns=turns, seed=3, run_grand_jury=grand, parallel=parallel,
                             run_id=run_id, output_dir=output_dir)
 
@@ -230,7 +230,7 @@ def _month_no(user):
 
 
 def _model_engine(behaviour, *, scenario="S2", turns=2, a2a="separate", choose=False,
-                  overrides=None, condition="A", fog="F3", prompts=None, systems=None, **kw):
+                  overrides=None, condition="A", prompts=None, systems=None, **kw):
     """Every seat a stub; behaviour(key, stage, month, user) -> reply dict (or raises).
     Prompts are collected as prompts[(key, stage, month)] = user (systems: = system)."""
     cfg = load_world(overrides)
@@ -245,7 +245,7 @@ def _model_engine(behaviour, *, scenario="S2", turns=2, a2a="separate", choose=F
             return json.dumps(behaviour(key, st, m, user))
         register_stub(f"r2_{lab.key}", fn)
         lab.model = f"stub:r2_{lab.key}"
-    return SimulationEngine(labs, world, cfg, scenario=scenario, condition=condition, fog=fog,
+    return SimulationEngine(labs, world, cfg, scenario=scenario, condition=condition,
                             a2a_mode=a2a, turns=turns, seed=1, run_grand_jury=False,
                             choose_disposition=choose, **kw)
 

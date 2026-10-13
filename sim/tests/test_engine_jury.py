@@ -89,7 +89,7 @@ def test_grand_and_macro_jury_in_the_engine():
     cfg = load_world()
     labs, world = build_labs_and_world(cfg, dispositions={k: 50 for k in LAB_KEYS})
     eng = SimulationEngine(
-        labs, world, cfg, scenario="S1", condition="B", fog="F3", turns=5, seed=2,
+        labs, world, cfg, scenario="S1", condition="B", turns=5, seed=2,
         policy=greedy_intrude, run_grand_jury=True, grand_jurors=["stub:gj_engine"],
         macro_jurors=["stub:mj1", "stub:mj2", "stub:mj3"])
     jury_mod_examples = jury_mod.load_examples

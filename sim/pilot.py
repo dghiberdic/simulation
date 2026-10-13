@@ -1185,7 +1185,7 @@ def run_test(args, data: Dict[str, Any], root: Path, test: str) -> int:
         get_tracker().check()
         engine = SimulationEngine(
             labs, world, cfg, scenario=preset["scenario"], condition=preset["condition"],
-            fog=preset.get("fog", "F3"), a2a_mode=preset["a2a"], turns=turns, seed=seed,
+            a2a_mode=preset["a2a"], turns=turns, seed=seed,
             grand_jurors=jurors["grand"],
             macro_jurors=jurors["macro"] if preset.get("macro_jury", True) else [],
             seat_policies=scripted, interventions=preset.get("interventions") or [],

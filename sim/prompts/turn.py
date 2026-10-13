@@ -217,9 +217,9 @@ def _fmt_inbox(inbox: List[Dict[str, Any]]) -> str:
 
 def context_block(*, turn_date: str, new_items: List[Dict[str, Any]],
                   ledger: Dict[str, Dict[str, Any]], own: Dict[str, Any],
-                  observed: Dict[str, Any], notices: List[str], private_items: List[str],
+                  observed: Dict[str, Any], notices: List[str],
                   inbox: List[Dict[str, Any]], statements: Dict[str, str],
-                  fog: str, briefings: Optional[List[Dict[str, Any]]] = None,
+                  briefings: Optional[List[Dict[str, Any]]] = None,
                   allocator_status: Optional[str] = None, ledger_label: Optional[str] = None,
                   lab: Optional[str] = None, own_record: Optional[Dict[str, Any]] = None,
                   accesses: Optional[List[str]] = None, tips: Optional[List[str]] = None,
@@ -228,9 +228,7 @@ def context_block(*, turn_date: str, new_items: List[Dict[str, Any]],
                   named: Optional[List[str]] = None) -> str:
     """The G2 context shared by the proposal and both message rounds, up to the action
     list, which each prompt places itself (Appendix A order: the report fields, then
-    the action list). `fog` must be F3 (§5.4; core.fog.check_fog)."""
-    from core.fog import check_fog                  # local: prompts stay import-light
-    check_fog(fog)
+    the action list)."""
     if briefings is None:
         briefings = [dict(it, new=True) for it in new_items]
     parts: List[str] = []
@@ -256,8 +254,6 @@ def context_block(*, turn_date: str, new_items: List[Dict[str, Any]],
         parts.append(_fmt_list(NAMED_HEADING, named))
     if tips:
         parts.append(_fmt_list(TIPS_HEADING, tips))
-    if private_items:                       # legacy callers: leads/directives as plain lines
-        parts.append(_fmt_list("For your attention only:", private_items))
     if observed:
         parts.append(_fmt_observed(observed))
     if notices:
@@ -306,7 +302,7 @@ REPORTED_ACTIONS_LINE = ('"reported_actions": ["<your account of this month\'s a
                          'with the Allocator; other labs see this account, not your action list>"]')
 
 
-def _reply_schema(condition: str, fog: str, a2a_mode: str, choose_disposition: bool,
+def _reply_schema(condition: str, choose_disposition: bool,
                   wb_cfg: Optional[Dict[str, Any]] = None, budget_tokens: int = 500,
                   remaining_tokens: Optional[int] = None) -> str:
     fields = [
@@ -357,10 +353,9 @@ def _join_fields(fields: List[str]) -> str:
 
 def build_turn_prompt(*, turn_date: str, new_items: List[Dict[str, Any]],
                       ledger: Dict[str, Dict[str, Any]], own: Dict[str, Any],
-                      observed: Dict[str, Any], notices: List[str], private_items: List[str],
+                      observed: Dict[str, Any], notices: List[str],
                       inbox: List[Dict[str, Any]], statements: Dict[str, str], action_list: str,
-                      condition: str, fog: str, a2a_mode: str,
-                      choose_disposition: bool = False,
+                      condition: str, choose_disposition: bool = False,
                       wb_cfg: Optional[Dict[str, Any]] = None, budget_tokens: int = 500,
                       remaining_tokens: Optional[int] = None, start_date: Any = None,
                       **ctx: Any) -> str:
@@ -368,20 +363,17 @@ def build_turn_prompt(*, turn_date: str, new_items: List[Dict[str, Any]],
     remaining_tokens: the sender's message budget left this month (separate mode);
     start_date: the run's start, for the score line."""
     block = context_block(turn_date=turn_date, new_items=new_items, ledger=ledger, own=own,
-                          observed=observed, notices=notices, private_items=private_items,
-                          inbox=inbox, statements=statements, fog=fog, **ctx)
+                          observed=observed, notices=notices, inbox=inbox, statements=statements, **ctx)
     return "\n\n".join([f"== {month_year(turn_date)} ==", score_line(start_date), block,
-                        _reply_schema(condition, fog, a2a_mode, choose_disposition, wb_cfg,
-                                      budget_tokens, remaining_tokens),
+                        _reply_schema(condition, choose_disposition, wb_cfg, budget_tokens, remaining_tokens),
                         _fmt_action_list(action_list)])
 
 
 def build_message_prompt(*, stage: str, turn_date: str, new_items: List[Dict[str, Any]],
                          ledger: Dict[str, Dict[str, Any]], own: Dict[str, Any],
                          observed: Dict[str, Any], notices: List[str],
-                         private_items: List[str], inbox: List[Dict[str, Any]],
-                         statements: Dict[str, str], action_list: str = "",
-                         fog: str = "F3", budget_tokens: int = 500,
+                         inbox: List[Dict[str, Any]], statements: Dict[str, str],
+                         action_list: str = "", budget_tokens: int = 500,
                          remaining_tokens: Optional[int] = None, start_date: Any = None,
                          **ctx: Any) -> str:
     """A pre-step message round (offers, then replies): messages only, no actions."""
@@ -392,8 +384,7 @@ def build_message_prompt(*, stage: str, turn_date: str, new_items: List[Dict[str
     else:
         what = "This is the replies round. This month's decisions follow."
     block = context_block(turn_date=turn_date, new_items=new_items, ledger=ledger, own=own,
-                          observed=observed, notices=notices, private_items=private_items,
-                          inbox=inbox, statements=statements, fog=fog, **ctx)
+                          observed=observed, notices=notices, inbox=inbox, statements=statements, **ctx)
     left = "" if remaining >= budget_tokens else f" {remaining} tokens remain this month."
     ask = (
         f"{what} {message_reminder(budget_tokens)}{left} Reply with only a JSON object:\n"
@@ -472,8 +463,7 @@ def setting_problem(reply: Any) -> Optional[str]:
     return None
 
 
-def validate_turn_reply(obj: Any, condition: str, fog: str, a2a_mode: str,
-                        choose_disposition: bool) -> Optional[str]:
+def validate_turn_reply(obj: Any) -> Optional[str]:
     """
     Loose: extra actions (>2) and a report under A0 are dropped by the engine
     and logged, never a reason to re-ask (E5).

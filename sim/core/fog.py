@@ -5,7 +5,7 @@ Fog of war over last turn's actions (spec §5.4).
 Every run uses F3: each lab files true actions (executed, on the hidden ledger)
 and reported actions (a monthly account filed with the Allocator); other labs
 see only the reported actions, which need not match what was executed. The
-round-1 levels F0–F2 are removed; asking for them raises ValueError.
+record's config.fog says "F3".
 
 Public resource and capability totals are shown elsewhere; intrusion fees sit
 inside reported operating costs, so nothing here reveals them.
@@ -13,8 +13,7 @@ inside reported operating costs, so nothing here reveals them.
 
 from typing import Any, Dict, Optional
 
-FOG_LEVELS = ("F3",)
-DEFAULT_FOG = "F3"
+FOG = "F3"
 
 
 # ---------------------------------------------------------------------------
@@ -61,15 +60,7 @@ def describe_action(action: Dict[str, Any], labs_by_key: Optional[Dict[str, Any]
 # Views
 # ---------------------------------------------------------------------------
 
-def check_fog(fog: str) -> str:
-    """The fog level, which must be F3 (spec §5.4)."""
-    if fog not in FOG_LEVELS:
-        raise ValueError(f"fog level {fog!r} is not available: every run uses F3")
-    return fog
-
-
-def observed_actions(observer: str, turn_actions: Dict[str, Dict[str, Any]], fog: str = DEFAULT_FOG,
-                     labs_by_key: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def observed_actions(observer: str, turn_actions: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     """
     What `observer` sees of every other lab's actions last turn: their reported
     actions (F3).
@@ -77,6 +68,5 @@ def observed_actions(observer: str, turn_actions: Dict[str, Dict[str, Any]], fog
     turn_actions: {key: {"true": [normalised actions], "reported": [str]}}
     Returns {key: [str]}.
     """
-    check_fog(fog)
     return {key: [str(r) for r in (record.get("reported") or [])]
             for key, record in turn_actions.items() if key != observer}

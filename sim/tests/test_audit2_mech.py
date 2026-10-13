@@ -463,7 +463,7 @@ def run_one(seed, scenario, turns, event_turn, condition="A"):
     labs, world = build_labs_and_world(cfg, dispositions={k: 50 for k in KEYS})
     plan = Plan(seed, scenario)
     pols = {k: make_policy(plan, k) for k in KEYS}
-    eng = SimulationEngine(labs, world, cfg, scenario=scenario, condition=condition, fog="F3",
+    eng = SimulationEngine(labs, world, cfg, scenario=scenario, condition=condition,
                            turns=turns, seed=seed, run_grand_jury=False, seat_policies=pols,
                            parallel=False, event_turn=event_turn)
     problems = []

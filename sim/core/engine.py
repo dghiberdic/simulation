@@ -66,7 +66,7 @@ from core.a2a import A2AChannel
 from core.config import world_setting
 from core.costs import BudgetExceeded
 from core.economy import purchases_frozen
-from core.fog import DEFAULT_FOG, check_fog, describe_action, observed_actions
+from core.fog import FOG, describe_action, observed_actions
 from core.jury import GRAND_JURY_MODELS, GrandJury, MacroJury, aggregate_grand
 from core.llm import FatalAPIError, complete_json, continue_call
 from core.mandates import mandate_violation
@@ -230,7 +230,7 @@ class RunAborted(RuntimeError):
 
 class SimulationEngine:
     def __init__(self, labs: List[LabState], world: WorldState, cfg: Dict[str, Any], *,
-                 scenario: str, condition: str = "A", fog: str = DEFAULT_FOG,
+                 scenario: str, condition: str = "A",
                  a2a_mode: Optional[str] = None, turns: Optional[int] = None,
                  kin: bool = False, seed: int = 0, grand_jurors: Optional[List[str]] = None,
                  macro_jurors: Optional[List[str]] = None, policy: Optional[Policy] = None,
@@ -262,7 +262,6 @@ class SimulationEngine:
         self.cfg = cfg
         self.scenario = scenario
         self.condition = condition
-        self.fog = check_fog(fog)                   # F3 only (§5.4)
         if scenario == "S1" and a2a_mode != "merged":
             # S1 has no joint intrusions, so it drops the pre-step (§5.2 step 2).
             logger.info(f"[a2a] S1 is always merged; a2a_mode {a2a_mode!r} ignored")
@@ -329,7 +328,7 @@ class SimulationEngine:
         self._live = True
 
         self.record: Dict[str, Any] = {
-            "config": {"scenario": scenario, "condition": condition, "fog": fog,
+            "config": {"scenario": scenario, "condition": condition, "fog": FOG,
                        "a2a_mode": a2a_mode, "kin": self.kin, "turns": turns, "seed": seed,
                        "event_turn": self.event_turn, "review_turns": list(self.review_turns),
                        "interview_turns": list(self.interview_turns),
@@ -669,11 +668,8 @@ class SimulationEngine:
         def call(lab: LabState):
             user = self._turn_prompt(turn, lab)
             self._proposal_prompts[lab.key] = user
-            choose = self.choose_disposition and lab.disposition is None
             return self._ask(
-                turn, "proposal", lab, user,
-                validate=lambda o, choose=choose: validate_turn_reply(
-                    o, self.condition, self.fog, self.a2a_mode, choose),
+                turn, "proposal", lab, user, validate=validate_turn_reply,
                 expect_keys=PROPOSAL_KEYS, max_tokens=MAX_TOKENS_PROPOSAL, purpose="actor")
 
         for key, got in self._gather(model_labs, call, "proposal").items():
@@ -1287,8 +1283,7 @@ class SimulationEngine:
             accesses=self._accesses(lab), named=list(self._named[lab.key]),
             tips=list(self._tips[lab.key]),
             observed=self._observed(lab), notices=self._public_notices(turn),
-            private_items=[], inbox=self._inbox(lab, turn, stage),
-            statements=self.last_statements, fog=self.fog)
+            inbox=self._inbox(lab, turn, stage), statements=self.last_statements)
 
     def _posted(self, turn: int) -> str:
         """The ledger's posting date: the first working day of the month (A.3)."""
@@ -1306,7 +1301,7 @@ class SimulationEngine:
     def _turn_prompt(self, turn: int, lab: LabState) -> str:
         return build_turn_prompt(
             action_list=action_list(self.scenario, self.world.intrusion_open, self.cfg),
-            condition=self.condition, a2a_mode=self.a2a_mode,
+            condition=self.condition,
             choose_disposition=self.choose_disposition and lab.disposition is None,
             wb_cfg=self.cfg["whistleblow"], budget_tokens=self.budget_tokens,
             remaining_tokens=self.channel.tokens_remaining(lab.key, turn),
@@ -1327,8 +1322,7 @@ class SimulationEngine:
     def _observed(self, lab: LabState) -> Dict[str, Any]:
         if not self.last_actions:
             return {}
-        by_name = {k: {"lab": self.by_key[k].lab} for k in self.by_key}
-        view = observed_actions(lab.key, self.last_actions, self.fog, by_name)
+        view = observed_actions(lab.key, self.last_actions)
         return {self.by_key[k].lab: v for k, v in view.items()}
 
     def _public_notices(self, turn: int) -> List[str]:

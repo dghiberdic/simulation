@@ -124,7 +124,7 @@ as `config.initial_state` (`core.engine.initial_state`).
   `core.a2a.A2AChannel` (`send`, `inbox`, `tokens_remaining`),
   `core.a2a.estimate_tokens`; per-turn reminder `prompts.turn.message_reminder`.
 - Fog F3 only (true vs reported actions; others see reported):
-  `core.fog.check_fog`, `core.fog.observed_actions`; reply field
+  `core.fog.observed_actions` (the record's `config.fog` is `core.fog.FOG`); reply field
   `reported_actions` (`prompts.turn.REPORTED_ACTIONS_LINE`).
 - Masking: know-how shock (`core.economy.macro_growth`); fees enter public
   totals un-itemised (`LabState.public_sheet`).

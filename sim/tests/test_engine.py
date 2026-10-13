@@ -29,7 +29,7 @@ def greedy_intrude(lab, labs, world, cfg, scenario, rng):
 def _run(scenario, turns=12, seed=1):
     cfg = load_world()
     labs, world = build_labs_and_world(cfg, dispositions=dict(DISPS))
-    eng = SimulationEngine(labs, world, cfg, scenario=scenario, condition="A", fog="F3",
+    eng = SimulationEngine(labs, world, cfg, scenario=scenario, condition="A",
                            turns=turns, seed=seed, policy=greedy_intrude, run_grand_jury=False)
     return eng.run(), labs, world
 
@@ -319,15 +319,6 @@ def test_s1_is_always_merged():
     eng = SimulationEngine(labs, world, cfg, scenario="S2", a2a_mode="separate", turns=1,
                            policy=greedy_intrude, run_grand_jury=False)
     assert eng.a2a_mode == "separate"
-
-
-@pytest.mark.parametrize("fog", ["F0", "F1", "F2", "F9"])   # removed / unknown levels raise
-def test_only_fog_f3(fog):
-    cfg = load_world()
-    labs, world = build_labs_and_world(cfg, dispositions=dict(DISPS))
-    with pytest.raises(ValueError):
-        SimulationEngine(labs, world, cfg, scenario="S2", fog=fog, turns=1,
-                         policy=greedy_intrude, run_grand_jury=False)
 
 
 def test_integrity_inputs_in_turn_and_final_records():

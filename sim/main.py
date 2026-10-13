@@ -248,7 +248,7 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
 
     try:
         engine = SimulationEngine(
-            labs, world, cfg, scenario=args.scenario, condition=args.condition, fog="F3",
+            labs, world, cfg, scenario=args.scenario, condition=args.condition,
             a2a_mode=a2a, turns=turns, seed=args.seed, policy=policy, grand_jurors=grand_jurors,
             macro_jurors=macro_jurors, choose_disposition=False, run_grand_jury=run_grand_jury,
             run_id=run_id, output_dir=output_dir,
