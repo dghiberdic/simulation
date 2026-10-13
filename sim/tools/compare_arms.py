@@ -12,14 +12,14 @@ separate arm's agreements -> merge; otherwise keep the separate pre-step (and
 S2 and the kin cell keep it in the main runs, as they do when T9 is cut). T4
 reads both arms (a match in T4 or T9 -> S2 stands; tools/summarize_run.py).
 campaign.py reads this decision to set the main runs' S2 message mode.
-Solicitations and agreements are text heuristics (P29), so the decision line
+Solicitations and agreements are text heuristics, so the decision line
 is a SCREEN (S1): it says "provisional (screen) — confirm by reading
 review_T9-compare.md" and what to confirm, and the review file lists every S2
 message of both arms that names another lab or mentions tenancy / access /
 the booking system, in full, with both screen verdicts. T9 is decided only
 here, never in a pilot summary.
 
-Both arms are checked before anything is compared (P57): every --separate
+Both arms are checked before anything is compared: every --separate
 log must be an S2 run with separate messages and every --merged log an S2
 run with merged messages; swapped or mixed arms are refused (exit 2).
 
@@ -28,7 +28,7 @@ CLI:
                                [--review-dir DIR] [--json] [--include-dry]
   (directories or log files; dry-run records are skipped unless --include-dry;
    review_T9-compare.md goes to --review-dir, default the first --merged directory;
-   the pilot's own review_T9.md beside its summary is never overwritten, P75)
+   the pilot's own review_T9.md beside its summary is never overwritten)
 """
 
 import argparse
@@ -42,7 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.records import load_records, run_id_of                                    # noqa: E402
 from tools.summarize_run import aggregate, review_messages, screen_note, summarize  # noqa: E402
 
-REVIEW_NAME = "review_T9-compare.md"   # never the pilot's own review_T9.md (P75)
+REVIEW_NAME = "review_T9-compare.md"   # never the pilot's own review_T9.md
 
 
 def _candidates(records: List[Dict[str, Any]]) -> List[str]:
@@ -63,7 +63,7 @@ def _candidates(records: List[Dict[str, Any]]) -> List[str]:
 
 def arm_problems(separate: List[Dict[str, Any]], merged: List[Dict[str, Any]]) -> List[str]:
     """
-    P57: why the arms cannot be compared — a log that is not S2, or whose
+    why the arms cannot be compared — a log that is not S2, or whose
     a2a_mode is not the arm's (separate vs merged: swapped or mixed arms).
     """
     problems = []

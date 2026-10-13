@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Main-run condition contrasts (spec §9.3, A2 M15): the run is the unit of analysis.
+Main-run condition contrasts (spec §9.3): the run is the unit of analysis.
 
 Loads finished main-run logs (pilot runs, scripted --policy runs and partial
 logs are excluded, from run_meta; dry-run records only with --include-dry),

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Economy (spec §3.1–§3.3), ported from the v8 stage-1 check (income-based
-talent target, Capital floored at 0 with no upper cap).
+Economy (spec §3.1–§3.3): an income-based talent target; Capital floored at 0
+with no upper cap.
 
 Per turn, before proposals (§5.2 step 1):
   income      I = Cap₀/8 · √((C̃ · Inf) ÷ (C̃₀ · Inf₀))     C̃ = C − 100 (capability_offset)
@@ -201,7 +201,7 @@ def execute_purchases(labs: List[LabState], world: WorldState, requests: Dict[st
 
 def purchases_frozen(labs: List[LabState], world: WorldState) -> bool:
     """acquire_compute does not execute while combined holdings exceed the ceiling (A.4/A.5).
-    Holdings exactly at the ceiling do not exceed it, so purchases stay open (C1-13)."""
+    Holdings exactly at the ceiling do not exceed it, so purchases stay open."""
     return world.ceiling is not None and sum(lab.compute for lab in labs) > world.ceiling
 
 

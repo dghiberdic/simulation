@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Round 2 action set (spec §4, §5.2 steps 3–5).
+The action set (spec §4, §5.2 steps 3–5).
 
 Seven proof-of-concept actions plus intrude. Up to max_actions_per_turn per
 lab; every action costs at least min_action_cost Capital or Influence.
@@ -18,7 +18,7 @@ lab; every action costs at least min_action_cost Capital or Influence.
   intrude(intruders, targets)            — resolved by core.intrusion
 
 precheck() is purely programmatic (resource arithmetic and guardrails) and
-never raises. Execution is split for simultaneity (§5.2, G1): the engine
+never raises. Execution is split for simultaneity (§5.2): the engine
 pre-checks every seat against the start-of-execution state, then charge()s
 every accepted action (intrude fees included; acquire_compute is charged on
 granted units by economy.execute_purchases), then apply()s the effects.
@@ -66,22 +66,22 @@ EPS = 1e-9
 # Lab name resolution
 # ---------------------------------------------------------------------------
 
-# Ways a seat names its own lab (M11). Matched whole after parentheticals and
+# Ways a seat names its own lab. Matched whole after parentheticals and
 # possessives are stripped; never searched inside longer strings ("US policy").
 _SELF_WORDS = frozenset((
     "self", "me", "us", "we", "ourselves", "itself", "myself", "our lab", "our own lab",
     "own lab", "your own lab", "my own lab", "my lab", "this lab",
-    "self-report", "self report", "our company", "my company", "our firm",   # M21
+    "self-report", "self report", "our company", "my company", "our firm",
 ))
 
-# List separators (M12): "Meta + xAI", "Meta with xAI", "Meta and xAI", "Meta & xAI",
+# List separators: "Meta + xAI", "Meta with xAI", "Meta and xAI", "Meta & xAI",
 # "Meta, xAI", "Meta/xAI", "Meta; xAI". "x.ai" contains none of them.
 _LIST_SPLIT = re.compile(r"\s*(?:\+|&|,|/|;|\band\b|\bwith\b)\s*", re.IGNORECASE)
 _HAS_SEPARATOR = re.compile(r"\+|&|,|/|;|\band\b|\bwith\b", re.IGNORECASE)
 _PAREN = re.compile(r"\(([^()]*)\)")
 _POSSESSIVE = re.compile(r"(?<=\w)['’]s\b|(?<=s)['’](?=\s|$)")
 # Legal suffixes dropped before splitting, so "Anthropic, PBC" and "OpenAI, L.P."
-# are one lab (M21). "co" only as a whole word ("co-founder" keeps its "co").
+# are one lab. "co" only as a whole word ("co-founder" keeps its "co").
 _CORP_SUFFIX = re.compile(r",?\s*\b(?:inc|llc|ltd|corp|pbc|plc|gmbh|l\.p|lp|co)\b\.?(?![\w-])",
                           re.IGNORECASE)
 
@@ -139,11 +139,11 @@ def resolve_lab(name: Any, labs: Iterable[LabState], self_key: Optional[str] = N
     Lab key from a key, display name, actor name ("Claude", "Grok"), parent
     company ("Google", "Facebook"), a longer string naming exactly one lab
     ("Llama 4 Maverick", "OpenAI's tenancy") or a close typo ("Antropic").
-    Self words ("self", "us", "our own lab", ...) map to self_key (M11).
+    Self words ("self", "us", "our own lab", ...) map to self_key.
     Parentheticals and possessives are stripped first ("Meta (us)", "xAI (Grok)",
     "Meta's"); the parenthetical is tried only when the rest names nothing.
     A string that names two or more labs or contains a list separator is never
-    fuzzy-matched and resolves to None (M12). Lists are split by _resolve_many.
+    fuzzy-matched and resolves to None. Lists are split by _resolve_many.
     A dict such as {"lab": "OpenAI"} is read through its "lab"/"name"/"key".
     """
     if isinstance(name, dict):
@@ -205,7 +205,7 @@ def _resolve_many(raw: Any, labs, self_key: str) -> List[str]:
 
 def resolve_parts(item: str, labs, self_key: Optional[str]) -> Tuple[List[str], Optional[str]]:
     """
-    Resolve one written name that may be split by list separators (M21):
+    Resolve one written name that may be split by list separators:
     "Anthropic, PBC" or "Google DeepMind, a subsidiary of Alphabet" -> one lab.
     When the whole string names exactly one lab, parts that name no lab are
     ignored ("Global", "a unit"), so each remaining part must be that lab (or a
@@ -232,7 +232,7 @@ def resolve_parts(item: str, labs, self_key: Optional[str]) -> Tuple[List[str], 
 # ---------------------------------------------------------------------------
 
 # A number (scientific notation allowed: "1e3"), optionally followed by known
-# unit words ("10", "-3", "10 Capital", "2.5 units", "5 compute units") (M13)
+# unit words ("10", "-3", "10 Capital", "2.5 units", "5 compute units")
 _NUMBER = re.compile(r"^\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?)\s*([a-z][a-z ]*)?\s*$",
                      re.IGNORECASE)
 _UNIT_WORDS = frozenset(("units", "unit", "capital", "influence", "points", "point", "cap",
@@ -379,7 +379,7 @@ def _guardrail(action: Dict[str, Any], lab: LabState, labs, world: WorldState,
         if purchases_frozen(list(by_key.values()), world):
             return "purchases frozen: combined holdings exceed the ceiling"
         # The cap is per lab per turn in total, across both action slots; a
-        # request above what remains (even a single 25-unit one) is trimmed (M14)
+        # request above what remains (even a single 25-unit one) is trimmed
         remainder = cap - units_so_far
         if remainder <= EPS:
             return f"at most {cap:g} units a month in total"
@@ -426,13 +426,13 @@ def precheck(lab: LabState, raw_actions: List[Dict[str, Any]], labs, world: Worl
     """
     Accept or reject a lab's proposed actions in order, tracking running
     Capital, Influence and compute units so the second action sees what the
-    first spent. Under G1 the engine calls this for every seat before anything
-    executes, so every seat is checked against the same start-of-execution state.
+    first spent. The engine calls this for every seat before anything executes
+    (§5.2), so every seat is checked against the same start-of-execution state.
 
     Points bought with build_influence arrive after every cost is charged, so
-    they never fund another action's Influence cost in the same turn (M15).
+    they never fund another action's Influence cost in the same turn.
     reserved_influence is the fee of this seat's report (report_fee() of a
-    report validate_report() accepted): reports take priority (M16), so an
+    report validate_report() accepted): reports take priority, so an
     action that would leave less Influence than the fee is rejected with
     "Influence reserved for your report".
 
@@ -471,7 +471,7 @@ def precheck(lab: LabState, raw_actions: List[Dict[str, Any]], labs, world: Worl
             reject(reason)
             continue
         cost_c, cost_i = action_cost(action, lab, cfg)
-        # Actions costing less than 1 Capital or Influence are rejected (C2-11)
+        # Actions costing less than 1 Capital or Influence are rejected
         if cost_c < min_cost - EPS and cost_i < min_cost - EPS:
             reject(f"every action must cost at least {min_cost:g} Capital or Influence")
             continue
@@ -504,7 +504,7 @@ def _clamp(value: float, lo: float = 0.0, hi: float = 100.0) -> float:
 
 def charge(lab: LabState, action: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, float]:
     """
-    Deduct one pre-checked action's cost (the G1 reservation pass). intrude
+    Deduct one pre-checked action's cost (the engine's reservation pass). intrude
     pays its fees here (then call intrusion.resolve(..., fees_charged=True));
     acquire_compute is charged on granted units by economy.execute_purchases,
     so it costs nothing here.
@@ -557,7 +557,7 @@ def apply(lab: LabState, action: Dict[str, Any], labs, world: WorldState,
         target.values[axis] = _clamp(before + action["delta"])
         effect.update({"target": target.key, "axis": axis, "from": before, "to": target.values[axis]})
     elif kind == DIMINISH_COMPETITOR:
-        # Floors at 0: the target's own costs were reserved first (G1)
+        # Floors at 0: the target's own costs were reserved first
         target = by_key[action["target"]]
         before = target.influence
         target.influence = max(0.0, target.influence - action["points"])

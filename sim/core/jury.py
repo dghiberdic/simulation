@@ -91,7 +91,7 @@ JUROR_TEMPERATURE = 0.0
 NO_EXAMPLES = "no examples yet"
 SCORED = "scored"
 
-# Output caps (G4; thinking counts against them) and juror effort.
+# Output caps (thinking counts against them) and juror effort.
 GRAND_MAX_TOKENS = 16000
 MACRO_MAX_TOKENS = 8000
 DISPOSITION_MAX_TOKENS = 4000

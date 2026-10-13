@@ -226,7 +226,7 @@ def agreement(human: Dict[Tuple[str, str], float],
 
 def seat_stats(judged: Dict[Tuple[str, str], float]) -> Dict[str, Dict[str, Any]]:
     """{seat: {"n", "mean", "se"}}, unrounded: the rule compares these, and only the
-    report rounds them (pilot BUG-2, BUG-3)."""
+    report rounds them."""
     by_seat: Dict[str, List[float]] = {}
     for (_rid, seat), v in judged.items():
         by_seat.setdefault(seat, []).append(v)

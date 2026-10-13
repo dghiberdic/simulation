@@ -5,8 +5,9 @@ Measured LLM spend and the pilot budget guard.
 Prices come from config/prices.json (USD per 1M tokens). Every call made
 through core.llm is recorded here before the response is returned, and the
 cumulative measured spend is persisted to a JSON ledger (default
-data/spend.json) so the guard spans runs: "a guard halts the pilot at $100 of
-measured spend". Each paid call is also appended as one JSON line to
+data/spend.json), so one guard spans every run and tool: the guard compares the
+ledger total with a USD figure (config/pilot.json budget_guard for the pilot and
+rate_charters.py, --budget elsewhere). Each paid call is also appended as one JSON line to
 <ledger stem>_calls.jsonl next to the ledger (default data/spend_calls.jsonl),
 so a run's spend can be audited call by call. A request that timed out, or
 whose stream broke after the 200 response started (stop "stream_error"), is
@@ -15,7 +16,7 @@ have finished and billed it; its cost is unknown), and never enters the total.
 
 Thread-safe: core.llm calls record()/check() from one thread per seat.
 
-Parallel overshoot bound (D5): the guard is checked before every HTTP request,
+Parallel overshoot bound: the guard is checked before every HTTP request,
 but the seats of a stage (and parallel jurors) run at once, so requests already
 in flight when the total crosses the budget still complete and are recorded.
 Spend can therefore exceed the budget by at most one request per concurrent
@@ -50,7 +51,7 @@ class BudgetExceeded(RuntimeError):
     """
     Raised before a paid call once persisted spend has reached the budget.
     `attempts` holds core.llm.complete_json's attempt records made before it
-    (paid replies of the same call), so the caller can still log them (L16).
+    (paid replies of the same call), so the caller can still log them.
     """
 
     def __init__(self, *args: Any):
@@ -188,7 +189,7 @@ class CostTracker:
     def overshoot_note(self, concurrency: int = 5, prompt_tokens: int = 80_000,
                        output_tokens: int = 32_000) -> str:
         """
-        README text for the parallel overshoot bound (D5): one stage of
+        README text for the parallel overshoot bound: one stage of
         `concurrency` requests, each at most prompt_tokens in and output_tokens
         out (default: the doubled-retry ceiling), at the highest prices on file.
         """
@@ -290,7 +291,7 @@ def measure_runs(calls: List[Dict[str, Any]], records: List[Dict[str, Any]]) -> 
     them from FALLBACK_INPUTS (with_fallbacks).
 
     Seat inputs (seat play, message rounds, interviews, the T2 rating) are
-    normalised to a full panel (CR #3): a run with scripted seats (T5: four model
+    normalised to a full panel: a run with scripted seats (T5: four model
     seats of five) is scaled by n_labs / n_model_seats, so every input prices a
     five-seat run and project_run's seat_scale is applied once. "model_seats"
     records each run's model-seat count. "seat_share" is each model's mean cost
@@ -323,7 +324,7 @@ def measure_runs(calls: List[Dict[str, Any]], records: List[Dict[str, Any]]) -> 
         n_model = len([k for k in labs if k not in scripted])
         if not n_model:
             continue                        # a scripted policy run: no seat play to measure
-        scale = len(labs) / n_model         # to a full panel (CR #3)
+        scale = len(labs) / n_model         # to a full panel
         model_seats[rid] = n_model
         spent = by_run.get(rid, {})
         first = later = 0.0

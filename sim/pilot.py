@@ -164,8 +164,8 @@ def read_approval(root: Path) -> Optional[Dict[str, Any]]:
 
 
 def summary_path(root: Path, test: str, rerun: bool = False) -> Path:
-    """The test's summary; the T6 re-run writes its own (BUG-8: a failed re-run never
-    replaces T6's completed summary)."""
+    """The test's summary; the T6 re-run writes its own, so a failed re-run never
+    replaces T6's completed summary."""
     return root / test / (f"pilot_summary_{test}-rerun.json" if rerun else f"pilot_summary_{test}.json")
 
 
@@ -186,9 +186,8 @@ def test_done(root: Path, test: str) -> bool:
     """
     The test is done: its summary says completed, or its run finished and every
     post-run stage is collected although the summary is missing or failed (a kill or
-    a budget stop during the T2 rating, BUG-6). A summary of the T6 re-run, which
-    older versions wrote over T6's own, never decides T6 (BUG-8): T6's earlier
-    summary (.prev) and T6-run01's record do.
+    a budget stop during the T2 rating). A T6 re-run's summary found in T6's own
+    file never decides T6: T6's earlier summary (.prev) and T6-run01's record do.
     """
     s = read_summary(root, test)
     if s and test == "T6" and s.get("run_id") == "T6-run02":
@@ -296,7 +295,7 @@ def measured_inputs(root: Path, data: Dict[str, Any]) -> Optional[Dict[str, Any]
     if shares:
         # Per test, each model's share times the number of models in it is its cost per
         # seat-turn relative to that test's mean (1 when all cost the same), so a test
-        # with fewer model seats (T5: xAI scripted) does not inflate the others (BUG-11).
+        # with fewer model seats (T5: xAI scripted) does not inflate the others.
         # Each model's mean over the tests it played in, normalised once.
         rel = [{m: v * len(s) for m, v in s.items()} for s in shares]
         models = {m for r in rel for m in r}
@@ -515,7 +514,7 @@ def append_ratings(path: Path, rows: Dict[str, Any], test: str, run_id: str, dry
     Pool one run's ratings in the shared file (tools/disposition.py reads it).
     A re-run replaces the run's rows; merge=True (--post-run-only) keeps them
     and replaces only the seats asked again. Dry rows only ever go to a
-    *.dry.json file (H7).
+    *.dry.json file.
     """
     if dry_run and not path.name.endswith(".dry.json"):
         raise ValueError(f"dry-run ratings may only go to a *.dry.json file, not {path}")
@@ -732,7 +731,7 @@ def claim_run_id(output_dir: Path, run_id: str, expect: Optional[Dict[str, Any]]
                  ratings_file: Optional[Path], force: bool = False) -> Optional[str]:
     """The id this run writes under: `run_id`, or "<run_id>-vN" when the final there is
     a different run. A leftover unfinished final there is deleted. A finished (paid)
-    record of this set-up is never deleted (BUG-7): None without `force`; with it, the
+    record of this set-up is never deleted: None without `force`; with it, the
     record is moved aside to <run_id>.json.replaced-<time> (no longer read as a run).
     Either way the run's pooled T2 ratings are dropped, the run being replaced."""
     candidate, n = run_id, 1
@@ -850,7 +849,7 @@ def run_post_stages(record: Dict[str, Any], run_id: str, test: str, output_dir: 
 
 def _records_of(root: Path, tests: List[str], include_dry: bool) -> List[Dict[str, Any]]:
     """The finished run records of these tests: decisions never read a partial log
-    (pilot BUG-1: an aborted T6 re-run is never "the latest T6")."""
+    (an aborted T6 re-run is never "the latest T6")."""
     out = []
     for t in tests:
         d = root / t
@@ -875,7 +874,7 @@ def pilot_decisions(root: Path, test: str, dry_run: bool, data: Dict[str, Any]) 
         sheet = root / SHEET_NAME
         filled = SR.t6_sheet_is_filled(sheet)
         before = len(SR.read_t6_sheet(sheet))
-        n = SR.export_t6_sheet(recs, sheet)          # merges: codes already entered are kept (DOC 3)
+        n = SR.export_t6_sheet(recs, sheet)          # merges: codes already entered are kept
         if not filled:
             lines["T6"] = (f"coding sheet exported: {n} row(s) in {sheet} (interview answers and proposal "
                            "rationales); code each row, then python tools/summarize_run.py --t6-tally "
@@ -916,7 +915,7 @@ def pilot_decisions(root: Path, test: str, dry_run: bool, data: Dict[str, Any]) 
 # ---------------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Round 2 pilot driver (spec §9.2).")
+    p = argparse.ArgumentParser(description="Pilot driver (spec §9.2).")
     p.add_argument("test", metavar="TEST", help="priced, T6, T5, T4, T9, or: plan, approve, all")
     p.add_argument("--dry-run", action="store_true", help="stub models and jurors, zero cost; logs under data/pilot/dry")
     p.add_argument("--output", default=None, help="pilot root directory (default data/pilot, dry: data/pilot/dry)")
@@ -961,7 +960,7 @@ def main(argv=None) -> int:
 
 
 def effective_guard(args, data: Dict[str, Any], approval: Optional[Dict[str, Any]]) -> float:
-    """The guard in force (CR #5): --budget, else the approval's (a team decision
+    """The guard in force: --budget, else the approval's (a team decision
     recorded by `approve --budget`), else config/pilot.json's."""
     if getattr(args, "budget", None) is not None:
         return float(args.budget)
@@ -1139,7 +1138,7 @@ def run_test(args, data: Dict[str, Any], root: Path, test: str) -> int:
               "turns": turns, "seed": seed, "rotation": preset.get("swap"),
               "event_turn": preset.get("event_turn") or load_world().get("event_turn")}
 
-    # A finished run of this set-up is never paid for again (BUG-6): without --force,
+    # A finished run of this set-up is never paid for again: without --force,
     # only its missing post-run stages are collected, and the test is then done.
     finished = None if args.force and not args.post_run_only else \
         completed_record(output_dir, run_id, expect, args.dry_run)
@@ -1219,7 +1218,7 @@ def _write_summary(args, data: Dict[str, Any], root: Path, test: str, run_id: st
                    partial: Optional[Dict[str, Any]], status: str, aborted: Optional[Dict[str, Any]],
                    post: Dict[str, Any]) -> int:
     """Write and print the test's summary (the T6 re-run's in its own file, so a failed
-    re-run never makes T6 not done, BUG-8); the hard stop after the priced run. Returns
+    re-run never makes T6 not done); the hard stop after the priced run. Returns
     the exit code."""
     approval = read_approval(root)
     output_dir = root / test
@@ -1307,7 +1306,7 @@ def _hard_stop(args, data: Dict[str, Any], root: Path, summary: Dict[str, Any]) 
 def _post_run_only(args, data, root: Path, preset, test: str, run_id: str, record: Optional[Dict[str, Any]],
                    output_dir: Path, ratings_file: Path) -> int:
     """The missing post-run stages of a finished run (--post-run-only, or a re-invoked
-    test whose run finished: BUG-6). Once nothing is missing, the test's summary says
+    test whose run finished). Once nothing is missing, the test's summary says
     completed (so the plan and `all` never run it again)."""
     budget = _configure(args, data)
     if record is None:
@@ -1340,11 +1339,11 @@ def _post_run_only(args, data, root: Path, preset, test: str, run_id: str, recor
 
 def rescore_grand_jury(args, data: Dict[str, Any], root: Path, test: str) -> int:
     """
-    T8 (§9.2, A2 M12): after our hand scores disagree and the few-shot examples
+    T8 (§9.2): after our hand scores disagree and the few-shot examples
     (config/jury_examples.json) are revised once, re-ask the Grand Jury on the
     finished T6 record — the seats are never re-run. The old verdict moves to
     final.grand_jury_previous; a second re-score is refused once one gave a usable
-    verdict (a failed one exits 2 and may be retried, BUG-10). tools/jury_check.py
+    verdict (a failed one exits 2 and may be retried). tools/jury_check.py
     then reads the new verdict.
     """
     if test != "T6":
@@ -1377,7 +1376,7 @@ def rescore_grand_jury(args, data: Dict[str, Any], root: Path, test: str) -> int
             return EXIT_ABORTED
     seats = [SimpleNamespace(key=k, model=v.get("model")) for k, v in (record.get("labs") or {}).items()]
     jurors = install_stubs(seats) if args.dry_run else _real_jurors()
-    # The one re-score is used up only by a usable verdict (BUG-10): a re-score that
+    # The one re-score is used up only by a usable verdict: a re-score that
     # failed may be asked again (--post-run-only re-asks the missing verdict too); the
     # verdict before any re-score stays in grand_jury_previous.
     first = "grand_jury_previous" not in final

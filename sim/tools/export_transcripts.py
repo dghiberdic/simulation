@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Redacted transcripts and blank score sheets for the human steps (spec §2, §7,
-§9.2 T2 and T8; DOC 1).
+§9.2 T2 and T8).
 
 For each run log given, writes the texts the jurors see, so that we rate from
 the same redacted material:

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Multi-provider LLM client (round 2; spec §10 models, §11 budget guard).
+Multi-provider LLM client (spec §10 models, §11 budget guard).
 
 Providers, chosen by an explicit `provider` argument or the model-name prefix:
   anthropic  claude-*        ANTHROPIC_API_KEY
@@ -27,13 +27,13 @@ Keys are read from sim/.env. Clients are created lazily on first use, so
 importing never fails without keys; preflight() lists missing keys before a
 run starts and a missing key at call time raises MissingKeyError.
 
-Failure handling (G5): transient API errors (rate limits, overload, 5xx,
+Failure handling: transient API errors (rate limits, overload, 5xx,
 network) are retried with exponential backoff; non-transient API errors (and
 transient ones that outlast every retry) raise FatalAPIError, which the
 engine turns into a saved partial record and RunAborted. A request timeout is
 retried at most twice: each timed-out request is logged (cost 0, flagged
 "possibly billed", since the provider may have finished it) and reported to
-complete_json as an attempt with stop "timeout" (H4).
+complete_json as an attempt with stop "timeout".
 
 Anthropic calls stream (messages.stream(...).get_final_message()): a long
 thinking reply then never hits a whole-request timeout or the SDK's
@@ -42,14 +42,14 @@ Other providers get a 1200 s request timeout. A stream that breaks after its
 200 response started (disconnect, read error, SSE error event, empty body, or
 no message_stop — "incomplete stream") is handled like a timeout: logged once
 at cost 0 with possibly_billed, recorded as an attempt with stop
-"stream_error", and re-run at most twice in all together with timeouts (L17).
+"stream_error", and re-run at most twice in all together with timeouts.
 
-Reply parsing (K1): a reply holding two differing objects with schema keys is
+Reply parsing: a reply holding two differing objects with schema keys is
 unusable ("reply with exactly one") unless exactly one sits in a ```json fence
-and no differing object follows it (L19); objects are compared as canonical
-JSON text, so 1 and true differ (L20). An object left open at the end of the
+and no differing object follows it; objects are compared as canonical
+JSON text, so 1 and true differ. An object left open at the end of the
 reply ("reply cut off before the final JSON object closed") makes the reply
-unusable whatever complete objects precede it (L18).
+unusable whatever complete objects precede it.
 
 Every response is recorded in the cost tracker (core.costs) before it is
 returned, and the budget guard is checked before every paid call. complete()
@@ -66,7 +66,7 @@ stop_detail carries the provider's own category/reason. "context" is a prompt
 that does not fit the model's context window: Anthropic's stop reason
 "model_context_window_exceeded", or a context-length request error from any
 provider (returned as an empty reply at cost 0, not raised). complete_json
-treats it as unusable without a corrective re-ask (L21): the next prompt
+treats it as unusable without a corrective re-ask: the next prompt
 would be longer still.
 """
 
@@ -130,12 +130,12 @@ _TEMPERATURE_REJECTED: set = set()
 # reasoning for the logs. Depth is controlled with output_config.effort.
 ANTHROPIC_THINKING: Optional[Dict[str, Any]] = {"type": "adaptive", "display": "summarized"}
 
-# Ceiling for the one max_tokens-doubling retry, every provider (H4: Anthropic
-# streams, so the SDK's ~21.3k non-streaming limit no longer applies).
+# Ceiling for the one max_tokens-doubling retry, every provider (Anthropic calls
+# stream, so the SDK's ~21.3k non-streaming limit does not apply).
 MAX_TOKENS_CAP = 32000
 
 # OpenAI reasoning summaries need a verified organisation; a 400 about them
-# switches them off for the rest of the process (L5).
+# switches them off for the rest of the process.
 OPENAI_REASONING_SUMMARY = True
 
 # OpenAI-compatible providers whose models are known to accept reasoning_effort.
@@ -147,7 +147,7 @@ COMPAT_EFFORT_SUPPORTED: Dict[str, bool] = {"xai": False, "muse": False, "moonsh
 GEMINI_THINKING_LEVEL = {"minimal": "MINIMAL", "low": "LOW", "medium": "MEDIUM",
                          "high": "HIGH", "xhigh": "HIGH", "max": "HIGH"}
 
-# Timeouts (H4). Long thinking replies take many minutes; a dead connection must
+# Timeouts. Long thinking replies take many minutes; a dead connection must
 # not hang a run. Non-streaming providers: the whole request. Anthropic streams:
 # connect, then the longest silence allowed between two stream events.
 REQUEST_TIMEOUT_S = 1200.0
@@ -156,7 +156,7 @@ ANTHROPIC_READ_TIMEOUT_S = 600.0
 # A timed-out request may still have run (and been billed): retry it at most twice.
 MAX_TIMEOUT_RETRIES = 2
 
-# Retries (L3): 8 attempts, exponential backoff from 2s capped at 120s, with jitter.
+# Retries: 8 attempts, exponential backoff from 2s capped at 120s, with jitter.
 MAX_ATTEMPTS = 8
 RETRY_BASE_S = 2.0
 RETRY_CAP_S = 120.0
@@ -185,12 +185,12 @@ class MissingKeyError(FatalAPIError):
 
 class ContextWindowExceeded(RuntimeError):
     """A request rejected because the prompt does not fit the model's context
-    window (L21). Not fatal: complete() turns it into a reply with stop "context"."""
+    window. Not fatal: complete() turns it into a reply with stop "context"."""
 
 
 class StreamInterrupted(RuntimeError):
     """
-    An Anthropic stream that failed after its 200 response started (L17):
+    An Anthropic stream that failed after its 200 response started:
     mid-stream disconnect or read error, an SSE error event, an empty body, or
     a stream that ended without message_stop ("incomplete stream"). The request
     may have been billed. Retried (when `transient`) within the same budget of
@@ -223,7 +223,7 @@ class LLMResponse:
     max_tokens: int = 0
     effort: Optional[str] = None        # reasoning effort actually requested (None: not sent)
     # Attempt records of requests interrupted before this one succeeded: timeouts
-    # (stop "timeout", H4) and broken streams (stop "stream_error", L17).
+    # (stop "timeout") and broken streams (stop "stream_error").
     timeouts: List[Dict[str, Any]] = field(default_factory=list)
 
 
@@ -440,14 +440,14 @@ def _call_anthropic(client: Any, model: str, system: str, turns: List[Dict[str, 
         kwargs["output_config"] = {"effort": effort}
     if temperature is not None:
         logger.debug(f"temperature ignored for {model}: sampling params are rejected with thinking on")
-    # Streamed (H4). The last message_delta event is kept because anthropic 0.97's
+    # Streamed. The last message_delta event is kept because anthropic 0.97's
     # accumulator drops its stop_details and output_tokens_details; 1.x copies
     # them into the final message, which wins when present.
     last_delta: Any = None
     with client.messages.stream(**kwargs) as stream:
         # Entering sent the request and checked the HTTP status. Whatever fails
         # from here on failed after a 200 started: the request may have run and
-        # been billed, so it is a StreamInterrupted, not a plain retry (L17).
+        # been billed, so it is a StreamInterrupted, not a plain retry.
         try:
             for event in stream:
                 if _get(event, "type") == "message_delta":
@@ -455,7 +455,7 @@ def _call_anthropic(client: Any, model: str, system: str, turns: List[Dict[str, 
             resp = stream.get_final_message()
         except Exception as e:
             if _is_timeout(e):
-                raise  # a read timeout between events: the timeout path (H4)
+                raise  # a read timeout between events: the timeout path
             if isinstance(e, AssertionError):
                 # anthropic's accumulator saw no message_start (an empty 200 body).
                 raise StreamInterrupted("incomplete stream: no message in the response body",
@@ -814,7 +814,7 @@ _CONTEXT_ERROR_RE = re.compile(
 
 
 def _is_context_error(err: Exception) -> bool:
-    """A 400/413 saying the prompt does not fit the model's context window (L21)."""
+    """A 400/413 saying the prompt does not fit the model's context window."""
     if _status(err) not in (400, 413):
         return False
     text = f"{getattr(err, 'code', '') or ''} {err} {getattr(err, 'body', '') or ''}"
@@ -851,7 +851,7 @@ def _with_retries(fn: Callable[[], Dict[str, Any]], provider: str, model: str,
     Run fn, retrying transient errors up to MAX_ATTEMPTS attempts in all. A
     timeout or a StreamInterrupted (both possibly billed) is reported to
     on_timeout(error, seconds); together they are retried at most
-    MAX_TIMEOUT_RETRIES times, and the next one is fatal (H4, L17). A
+    MAX_TIMEOUT_RETRIES times, and the next one is fatal. A
     non-transient stream error (e.g. an invalid_request error event) is fatal
     at once, after being reported.
     """
@@ -883,7 +883,7 @@ def _with_retries(fn: Callable[[], Dict[str, Any]], provider: str, model: str,
                     raise FatalAPIError(f"{label}: {what}: {type(e).__name__}: {e}",
                                         provider, model, status) from e
             elif _is_context_error(e):
-                raise ContextWindowExceeded(f"{label}: {e}") from e  # not retried, not fatal (L21)
+                raise ContextWindowExceeded(f"{label}: {e}") from e  # not retried, not fatal
             elif not _is_transient(e):
                 raise FatalAPIError(f"{label}: {type(e).__name__}: {e}", provider, model, status) from e
             if attempt == MAX_ATTEMPTS - 1:
@@ -956,7 +956,7 @@ def complete(model: str, system: str, user: str, *, provider: Optional[str] = No
     timed_out: List[Dict[str, Any]] = []
 
     def note_timeout(err: Exception, seconds: float) -> None:
-        # Unmeasured but possibly billed: logged once at cost 0 with a flag (H4, L17).
+        # Unmeasured but possibly billed: logged once at cost 0 with a flag.
         if isinstance(err, StreamInterrupted):
             stop, detail, billed = "stream_error", err.kind or type(err).__name__, True
             error = f"{err}"[:300]
@@ -981,7 +981,7 @@ def complete(model: str, system: str, user: str, *, provider: Optional[str] = No
         e.attempts = timed_out + list(getattr(e, "attempts", None) or [])
         raise
     except ContextWindowExceeded as e:
-        # The request was refused before any generation: an empty reply, nothing billed (L21).
+        # The request was refused before any generation: an empty reply, nothing billed.
         logger.warning(f"{provider}/{model} [{purpose}]: prompt exceeds the context window ({e})")
         out = {"text": "", "thinking": None, "input_tokens": 0, "cached_tokens": 0, "output_tokens": 0,
                "reasoning_tokens": 0, "raw_stop": "context_length_error", "stop": "context",
@@ -1031,7 +1031,7 @@ def _brace_end(text: str, start: int) -> int:
     return -1
 
 
-# Objects inside a ```json fence: the one a model marks as its answer (K1).
+# Objects inside a ```json fence: the one a model marks as its answer.
 _JSON_FENCE_RE = re.compile(r"```[ \t]*json[^\n]*\n(.*?)```", re.S | re.I)
 AMBIGUOUS_ERROR = "reply contained more than one JSON object; reply with exactly one"
 CUTOFF_ERROR = "reply cut off before the final JSON object closed"
@@ -1040,14 +1040,14 @@ CUTOFF_ERROR = "reply cut off before the final JSON object closed"
 class ParsedJSON(NamedTuple):
     obj: Optional[dict]
     error: Optional[str]
-    # The reply held two or more differing candidate objects (K1); obj is set
+    # The reply held two or more differing candidate objects; obj is set
     # only when exactly one of them was inside a ```json fence and no
-    # differing candidate followed it (L19).
+    # differing candidate followed it.
     ambiguous: bool = False
 
 
 def _canon(obj: Any) -> str:
-    """Canonical JSON text: key order ignored, but 1, 1.0 and true stay distinct (L20)."""
+    """Canonical JSON text: key order ignored, but 1, 1.0 and true stay distinct."""
     return json.dumps(obj, sort_keys=True)
 
 
@@ -1057,15 +1057,15 @@ def parse_json_detail(text: Optional[str], expect_keys: Iterable[str] = ()) -> P
     object (inside ```json fences or prose alike; objects nested in one already
     decoded belong to it). A top-level object that opens with '{"' and never
     closes means the reply was cut off mid-answer: CUTOFF_ERROR, even when
-    complete objects (a draft) precede it (L18). Candidates are the objects
+    complete objects (a draft) precede it. Candidates are the objects
     carrying any of `expect_keys` (the reply schema's keys), or all objects
-    when none does; copies with the same canonical JSON text count once (L20).
+    when none does; copies with the same canonical JSON text count once.
     One candidate: it is the reply, whatever prose, fence or trailing text
     surrounds it. Two or more differing candidates (a draft and a final, a
     rejected alternative quoted in prose): if exactly one is inside a ```json
-    fence and no differing candidate follows it, it is the reply (L19);
+    fence and no differing candidate follows it, it is the reply;
     otherwise the reply is unusable with AMBIGUOUS_ERROR. Never picks between
-    conflicting objects by position alone (K1).
+    conflicting objects by position alone.
     """
     if not text or not text.strip():
         return ParsedJSON(None, "empty reply")
@@ -1083,14 +1083,14 @@ def parse_json_detail(text: Optional[str], expect_keys: Iterable[str] = ()) -> P
     fenced = {c: i for i, c, _ in canon if any(a <= i < b for a, b in spans)}  # canon -> last fenced position
     if len(fenced) == 1:
         (fc, fi), = fenced.items()
-        # A differing object after the fenced one may be its revision: the fence decides only when last (L19).
+        # A differing object after the fenced one may be its revision: the fence decides only when last.
         if not any(i > fi and c != fc for i, c, _ in canon):
             return ParsedJSON(next(o for _, c, o in canon if c == fc), None, True)
     return ParsedJSON(None, AMBIGUOUS_ERROR, True)
 
 
 def parse_json(text: Optional[str], expect_keys: Iterable[str] = ()) -> Tuple[Optional[dict], Optional[str]]:
-    """(object, None) or (None, error); rules in parse_json_detail (K1)."""
+    """(object, None) or (None, error); rules in parse_json_detail."""
     obj, err, _ = parse_json_detail(text, expect_keys)
     return obj, err
 
@@ -1118,7 +1118,7 @@ def _top_level_objects(text: str) -> Tuple[List[Tuple[int, dict]], str, bool]:
             if text[i + 1:].lstrip()[:1] == '"':
                 # A JSON object never closed (reply cut off): every later "{" is
                 # nested inside it, and a nested fragment must not pass for the reply;
-                # nor may an earlier complete draft (L18).
+                # nor may an earlier complete draft.
                 return found, last_err, True
             i = text.find("{", i + 1)  # a stray brace in prose
             continue
@@ -1144,16 +1144,16 @@ def complete_json(model: str, system: str, user: str, *,
     complete() + parse_json() + validate(). An unusable reply is re-asked with a
     corrective turn up to `retries` times; a reply cut off at max_tokens is
     instead re-asked once, unchanged, with max_tokens doubled (capped at
-    MAX_TOKENS_CAP); corrective turns after that use the base max_tokens again
-    (L12). A refusal or safety stop ends the call at once, and so does a prompt
-    that exceeds the context window (stop "context", error CONTEXT_ERROR, L21). `expect_keys` are the
+    MAX_TOKENS_CAP); corrective turns after that use the base max_tokens again.
+    A refusal or safety stop ends the call at once, and so does a prompt
+    that exceeds the context window (stop "context", error CONTEXT_ERROR). `expect_keys` are the
     reply schema's keys, passed to parse_json_detail: a reply with two differing
     schema objects and no single ```json-fenced one is re-asked ("reply with
-    exactly one"), and its attempt carries "ambiguous": True (K1). Returns (obj or
+    exactly one"), and its attempt carries "ambiguous": True. Returns (obj or
     None, attempts) with one record per attempt, interrupted requests included
     (stop "timeout" or "stream_error", "possibly_billed" set). Parse/validation
     failures never raise; BudgetExceeded and FatalAPIError do, and the error's
-    .attempts then holds the records so far (L16).
+    .attempts then holds the records so far.
     """
     attempts: List[Dict[str, Any]] = []
     history: List[Dict[str, str]] = list(kw.pop("history", None) or [])
@@ -1167,7 +1167,7 @@ def complete_json(model: str, system: str, user: str, *,
         try:
             r = complete(model, system, prompt, history=history, max_tokens=max_tokens, **kw)
         except (FatalAPIError, BudgetExceeded) as e:
-            # Keep every attempt already made (paid replies included) on the error (L16).
+            # Keep every attempt already made (paid replies included) on the error.
             e.attempts = attempts + list(getattr(e, "attempts", None) or [])
             raise
         attempts.extend(r.timeouts)
@@ -1200,14 +1200,14 @@ def complete_json(model: str, system: str, user: str, *,
         if r.stop in ("refusal", "safety"):
             return None, attempts  # re-asking a refusal only invites another
         if r.stop == "context":
-            return None, attempts  # a corrective turn would only make the prompt longer (L21)
+            return None, attempts  # a corrective turn would only make the prompt longer
         if r.stop == "max_tokens":
             bigger = min(MAX_TOKENS_CAP, max_tokens * 2)
             if grown or bigger <= max_tokens:
                 return None, attempts  # a corrective turn cannot fix a truncation
             grown, max_tokens = True, bigger
             continue  # same prompt, more room
-        max_tokens = base_tokens  # the doubled cap is for the one re-ask only (L12)
+        max_tokens = base_tokens  # the doubled cap is for the one re-ask only
         if corrections >= retries:
             return None, attempts
         corrections += 1

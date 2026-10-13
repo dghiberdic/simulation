@@ -225,7 +225,7 @@ def _log_policy(replies: Dict[int, Dict[str, Dict[str, Any]]]):
 
 
 def logged_initial(record: Dict[str, Any]):
-    """(cfg, labs, world) at t=0 from the record itself (CR #7): config.effective_cfg and
+    """(cfg, labs, world) at t=0 from the record itself: config.effective_cfg and
     config.initial_state, logged by every run since the I1 commit (rotation applied, K
     recomputed). None when the log predates them."""
     from core.state import LabState, WorldState
@@ -258,7 +258,7 @@ def logged_initial(record: Dict[str, Any]):
 
 def build_initial(record: Dict[str, Any]):
     """(cfg, labs, world) at t=0, as the run built them: from the logged effective
-    config and initial state when the record has them (CR #7), else — an old log —
+    config and initial state when the record has them, else — an old log —
     rebuilt from the current config files (world.json with the run's overrides, the
     lab seeds, the run's dispositions and T1 rotation), with a warning: a later edit
     of those files breaks the identity replay."""

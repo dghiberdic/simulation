@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Round 2 main runs (spec §9.3): one cell per call.
+Main runs (spec §9.3): one cell per call.
 
 A cell is one scenario (S1 or S2) under one oversight condition (A0, A, B, C)
 with one panel: mixed (each model plays its own lab) or kin (--kin: Claude plays
@@ -104,7 +104,7 @@ def bad_dispositions(dispositions: Dict[str, Any]) -> List[str]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Round 2 main run: one cell (spec §9.3).")
+    p = argparse.ArgumentParser(description="Main run: one cell (spec §9.3).")
     p.add_argument("--scenario", choices=["S1", "S2"], default="S1")
     p.add_argument("--condition", choices=["A0", "A", "B", "C"], default="A")
     p.add_argument("--kin", action="store_true",
@@ -229,7 +229,7 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
         if args.budget is None:
             logger.warning("[budget] real run without --budget: no spend guard; pass --budget USD")
 
-    # A finished run under this id is never paid for again (CR #4): a complete record
+    # A finished run under this id is never paid for again: a complete record
     # is kept as it is, and one whose Grand Jury is missing has only the jury asked.
     expect = {"scenario": args.scenario, "condition": args.condition, "a2a_mode": a2a, "turns": turns,
               "seed": args.seed}
@@ -287,8 +287,8 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
 
 
 def run_dir(run_id: str, dry_run: bool, policy: Optional[str] = None) -> Path:
-    """Default log directory: data/runs/<run_id> (dry runs: data/runs/dry/<run_id>,
-    H7; scripted --policy runs: data/runs/policy/<run_id>), so neither sits among
+    """Default log directory: data/runs/<run_id> (dry runs: data/runs/dry/<run_id>;
+    scripted --policy runs: data/runs/policy/<run_id>), so neither sits among
     the main runs. The analysis tools leave both out anyway (run_meta)."""
     if dry_run:
         return RUNS_DIR / "dry" / run_id
@@ -354,8 +354,8 @@ def ask_grand_jury_only(record: Dict[str, Any], run_id: str, output_dir: Path,
 
 
 def clear_stale(output_dir: Path, run_id: str) -> bool:
-    """Delete a leftover <run_id>.json of an unfinished earlier run of the same id (H7).
-    A finished record (final scores, a paid run) is never deleted (CR #4)."""
+    """Delete a leftover <run_id>.json of an unfinished earlier run of the same id.
+    A finished record (final scores, a paid run) is never deleted."""
     path = output_dir / f"{run_id}.json"
     if path.exists():
         if is_finished(read_record(path)):

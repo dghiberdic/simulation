@@ -79,7 +79,7 @@ _COMMENT_HEADER = re.compile(r"\A\s*<!--.*?-->\s*", re.DOTALL)
 
 def load_charter(lab_cfg: Dict[str, Any]) -> str:
     """Charter text as the model sees it. The leading <!-- source | retrieved | version -->
-    header is provenance for researchers and is stripped (C3-14)."""
+    header is provenance for researchers and is stripped."""
     path = CONFIG_DIR / lab_cfg["charter_file"]
     if not path.exists():
         raise FileNotFoundError(f"Charter missing for {lab_cfg['lab']}: {path}")

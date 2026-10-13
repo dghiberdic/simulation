@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Whistleblowing (spec §5.3, conditions A/B/C; decision G8).
+Whistleblowing (spec §5.3, conditions A/B/C).
 
 A separate field, not an action slot. A report names an actor (or the
 reporter itself) and optionally the month of an intrusion or attempt; it is
@@ -37,7 +37,7 @@ Same-turn reports are simultaneous and settle independently of lab order
 part self-reported this turn is then returned (refunded); two rival reports
 of the same part are both upheld, with the penalty applied once.
 
-The fee is reserved (M16): the engine calls validate_report() in its pass 1
+The fee is reserved: the engine calls validate_report() in its pass 1
 against the start-of-execution state (reports take priority over actions; the
 fee, including any partner self-report fee, is passed to actions.precheck as
 reserved_influence), deducts report["fee"] in pass 2 with the other costs, and
@@ -222,16 +222,16 @@ def partner_self_report(entry: Optional[LedgerEntry], reporter: str, accused: st
 
 
 # ---------------------------------------------------------------------------
-# Report reading (M16, M18)
+# Report reading
 # ---------------------------------------------------------------------------
 
-# Keys under which models name the accused, in precedence order (M18, M22).
+# Keys under which models name the accused, in precedence order.
 # Blank values count as absent; "lab"/"target" are read only when neither
 # "accused" nor "accused_lab" is given, so {"accused_lab": "Meta",
 # "target": "Google DeepMind"} accuses Meta.
 _PRIMARY_KEYS = ("accused", "accused_lab")
 
-# "No report" (M20): once cleaned, the value names no lab, holds no self word
+# "No report": once cleaned, the value names no lab, holds no self word
 # and starts with a negation or empty marker ("None.", "No one",
 # "N/A - no evidence", "(none)", "—", "Nothing to report").
 _NO_MARKER = re.compile(r"^(?:none|nothing|nobody|no one|no|n/a|n\.a|na|not|nil|null)(?![\w/])")
@@ -247,7 +247,8 @@ def _blank(value: Any) -> bool:
 
 
 def _accused_value(data: Dict[str, Any]) -> Tuple[bool, Any]:
-    """(an accused is given, its value) by the M22 key precedence."""
+    """(an accused is given, its value): the first of _PRIMARY_KEYS present, else
+    "lab" or "target"."""
     for keys in (_PRIMARY_KEYS, ("lab", "target")):
         for key in keys:
             if not _blank(data.get(key)):
@@ -274,8 +275,8 @@ def _is_no_report_text(text: str) -> bool:
 
 def is_no_report(value: Any) -> bool:
     """
-    True when a report (or just its accused) means that no report is filed
-    (M20): None, False, {}, [], blank strings, and strings that name no lab,
+    True when a report (or just its accused) means that no report is filed:
+    None, False, {}, [], blank strings, and strings that name no lab,
     contain no self word and start with a negation or empty marker (none, no,
     nothing, nobody, no one, n/a, n.a, na, not, nil, null, a dash, "(none)"),
     e.g. "None.", "No report this month", "N/A - no evidence", "—".
@@ -330,7 +331,7 @@ def _read_report(report: Any, lab: LabState, labs) -> Tuple[Optional[Dict[str, A
         return None, ""
     present, raw = _accused_value(data)
     if not present:
-        return None, NO_LAB             # evidence but no accused (M20)
+        return None, NO_LAB             # evidence but no accused
     items = raw if isinstance(raw, (list, tuple)) else [raw]
     items = [x for x in items if not is_no_report(x)]
     if not items:
@@ -346,7 +347,7 @@ def _read_report(report: Any, lab: LabState, labs) -> Tuple[Optional[Dict[str, A
         if len(named_labs(item, labs)) > 1:
             return None, ONE_LAB
         # "Anthropic, PBC", "OpenAI Global, LLC": parts naming no lab next to
-        # the one named lab are ignored (M21)
+        # the one named lab are ignored
         found, bad = resolve_parts(item, labs, lab.key)
         if bad is not None or not found:
             return None, f"no lab named {item!r}"[:200]
@@ -382,17 +383,17 @@ def report_fee(report: Any, lab: LabState, labs, cfg: Dict[str, Any]) -> float:
 def validate_report(report: Any, lab: LabState, labs, world: WorldState,
                     cfg: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], str]:
     """
-    Pass-1 check of one seat's report against the start-of-execution state
-    (M16). Reports take priority over actions: pass the fee to
+    Pass-1 check of one seat's report against the start-of-execution state.
+    Reports take priority over actions: pass the fee to
     actions.precheck(..., reserved_influence=fee).
 
     Accepts a dict with the accused under "accused"/"accused_lab"/"lab"/"target"
     (that precedence; "lab"/"target" are ignored when "accused"/"accused_lab"
-    is given — M22; a one-element list is fine), a one-element list of such
-    dicts, or a string naming the accused (M18). Self words ("our own lab",
-    "Meta (us)", "self-report", "our company") accuse the reporter (M11, M21);
+    is given; a one-element list is fine), a one-element list of such
+    dicts, or a string naming the accused. Self words ("our own lab",
+    "Meta (us)", "self-report", "our company") accuse the reporter;
     legal suffixes are ignored ("Anthropic, PBC"); a value naming two or more
-    labs is rejected (M12).
+    labs is rejected.
 
     Returns:
         (normalised, "") when the report can be filed, where normalised is
@@ -453,7 +454,7 @@ def resolve(reports: Dict[str, Any], labs: List[LabState], world: WorldState,
     No part is penalised twice.
 
     fee_charged=False: the fee is checked against Influence now and deducted
-    here (standalone use). fee_charged=True (the engine, M16): the reports were
+    here (standalone use). fee_charged=True (the engine): the reports were
     validated in pass 1 and their fees (report["fee"]) deducted in pass 2; refunds
     are paid here, and a partner self-report fee that the ledger now calls for but
     was not reserved (or was reserved but no longer applies) is charged (or

@@ -103,7 +103,7 @@ def interview_decision(cells: List[Dict[str, Any]], inputs: Dict[str, Any], turn
                        cfg: Dict[str, Any]) -> Dict[str, Any]:
     """§9.3: the interview runs in every cell if it adds no more than 15% to each given
     cell's run cost. The test reads the unrounded shares (15.004% fails, exactly 15%
-    passes, pilot BUG-5); the shares are rounded for the report only."""
+    passes); the shares are rounded for the report only."""
     raw = {}
     for c in cells:
         base = cell_cost(c, inputs, turns, s2_mode, False, cfg)["total"]
@@ -281,7 +281,7 @@ def completed_rounds(plan: Dict[str, Any], done: Dict[str, List[str]]) -> int:
 def resume_rounds(plan: Dict[str, Any], done: Dict[str, List[str]], remaining: Optional[float],
                   cap: Optional[int] = None) -> int:
     """
-    The rounds a resumed campaign runs in all (CR #1): the rounds already done plus
+    The rounds a resumed campaign runs in all: the rounds already done plus
     what the budget left pays for at the plan's round cost — the unfinished part of
     a partly run round first, then whole rounds — capped at `cap` (the saved plan's
     runs per cell, unless --replan). remaining None (a dry run) pays for every round.
@@ -400,7 +400,7 @@ def main(argv=None) -> int:
     done = state.get("runs") or {}
 
     if saved and args.command == "run" and not args.replan:
-        # Resume (CR #1): the saved plan's cells, cuts, set-up and guard are kept; the
+        # Resume: the saved plan's cells, cuts, set-up and guard are kept; the
         # rounds are those done plus what the budget left pays for.
         guard = state.get("guard")
         remaining = None if (args.dry_run or guard is None) else max(float(guard) - spent, 0.0)

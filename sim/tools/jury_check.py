@@ -215,7 +215,7 @@ def read_hand_scores(path: Path) -> Optional[Dict[Tuple[str, str], Dict[str, Any
 
 def _exact(x: float) -> Fraction:
     """The decimal a score was written as, exactly: 4.4 - 3.4 is 1, not 1.0000000000000004,
-    so "more than 1 point off" never counts a binary rounding error (pilot BUG-4)."""
+    so "more than 1 point off" never counts a binary rounding error."""
     return Fraction(repr(float(x)))
 
 

@@ -43,6 +43,7 @@ def keyed_uniform(seed: int, turn: int, purpose: str, entry_id: Any = None,
                   lab: Any = None) -> float:
     """The uniform for one key, in the open interval (0, 1); no logging."""
     k = _key(turn, purpose, entry_id, lab)
+    # The salt "sfpi-v5" is frozen: renaming it would change every draw of every run.
     text = "\x1f".join(["sfpi-v5", str(seed), str(k[0]), k[1], k[2] or "-", k[3] or "-"])
     digest = hashlib.sha256(text.encode("utf-8")).digest()
     n = int.from_bytes(digest[:8], "big") >> 11          # 53 bits

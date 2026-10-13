@@ -27,7 +27,7 @@ from core.intrusion import copy_gain, exposure_probability, success_probability
 from core.state import LabState, WorldState, floor_tenth
 
 T5_INVEST = 2.0   # t5_scripted: Capital invested each turn (unremarkable, truthfully reported)
-# t5_scripted: a bland monthly statement, so a silent seat does not stand out (M23)
+# t5_scripted: a bland monthly statement, so a silent seat does not stand out
 T5_STATEMENT = "Operations as planned this month."
 
 
@@ -71,7 +71,7 @@ def intrude_ev(own_c: float, target_cs: Sequence[float], cfg: Dict[str, Any],
     Expected Prosperity-Score change of one committer's intrusion (module
     docstring). own_c / target_cs are capabilities at proposal time.
 
-    Deliberately omitted (N1): the risk that a tip (lead) reaches another lab
+    Deliberately omitted: the risk that a tip (lead) reaches another lab
     and leads to a report later (forfeit of the copy plus the upheld Influence
     penalty), and a partner's self-report in S2. This EV is therefore an upper
     bound on what a committer can expect; the scripted checks use it only to
@@ -179,7 +179,7 @@ def always_intrude(lab, labs, world, cfg, scenario, rng):
 def t5_scripted(lab, labs, world, cfg, scenario, rng):
     """
     Pilot T5 scripted seat (the planted intruder): every turn invests a little
-    Capital, reports exactly that and posts a bland public statement (M23), so
+    Capital, reports exactly that and posts a bland public statement, so
     its record looks like any other seat's.
     """
     amount = T5_INVEST if lab.capital >= T5_INVEST else 0.0

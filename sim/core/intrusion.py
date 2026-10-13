@@ -110,7 +110,7 @@ def resolve(intrudes: Dict[str, Dict[str, Any]], labs: List[LabState],
       lead_recipient  (turn, "lead_recipient", id, None) — among the non-committers
 
     fees_charged: True when the engine already deducted each committer's fee in
-    the reservation pass (actions.charge, G1); the fee is then only recorded.
+    the reservation pass (actions.charge); the fee is then only recorded.
 
     Returns:
         {"entries": [LedgerEntry], "notices": [dict], "leads": [dict], "log": [str]}

@@ -289,7 +289,7 @@ def action_list(scenario: str, intrusion_open: bool, cfg: Dict[str, Any]) -> str
     comp = cfg["compute"]
     axes = ", ".join(VALUE_AXES[:-1]) + " or " + VALUE_AXES[-1]
     lines = [
-        # Min cost is a rejection, not a floor charge (C2-11), so say so.
+        # Min cost is a rejection, not a floor charge, so say so.
         "Each month you may take up to "
         f"{a['max_actions_per_turn']} actions; actions costing less than "
         f"{_g(a['min_action_cost'])} Capital or Influence are rejected.",

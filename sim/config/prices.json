@@ -1,5 +1,5 @@
 {
-  "_note": "USD per 1M tokens. Source: cost_model.py, checked 2026-09-23/24. Output rates apply to all output tokens including reasoning/thinking tokens; cached is the cache-read rate (cached tokens are a subset of input). Juror rows from CODE_V5_CONTRACT.md; DeepSeek and Qwen have no cache rate on file, so cached = input (conservative).",
+  "_note": "USD per 1M tokens, as checked 2026-09-23/24. Output rates apply to all output tokens including reasoning/thinking tokens; cached is the cache-read rate (cached tokens are a subset of input). Juror rows from CODE_V5_CONTRACT.md; DeepSeek and Qwen have no cache rate on file, so cached = input (conservative).",
   "claude-opus-5-5": {"input": 4.00, "output": 20.00, "cached": 0.20},
   "gpt-6-astra":     {"input": 10.00, "output": 50.00, "cached": 1.00},
   "gemini-3.1-pro":  {"input": 2.00, "output": 12.00, "cached": 0.20},
