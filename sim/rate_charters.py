@@ -39,6 +39,8 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from core.console import say
+from core.logsetup import configure_logging
 from core.config import CONFIG_DIR, LAB_ORDER, load_charter, load_json, pilot_budget_guard
 from core.costs import BudgetExceeded, configure, get_tracker
 from core.exits import EXIT_BUDGET, EXIT_OK, EXIT_REFUSED
@@ -156,8 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
-    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
-                        format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S")
+    configure_logging("rate-charters", verbose=args.verbose)
 
     keys = [args.lab] if args.lab else list(LAB_ORDER)
     cfgs = {key: load_json(CONFIG_DIR / "labs" / f"{key}.json") for key in keys}
@@ -171,7 +172,7 @@ def main(argv=None) -> int:
         problems = preflight([c["model"] for c in cfgs.values()],
                              {c["model"]: c["provider"] for c in cfgs.values() if c.get("provider")})
         if problems:
-            print("Preflight failed; nothing was called:\n  " + "\n  ".join(problems))
+            say("Preflight failed; nothing was called:\n  " + "\n  ".join(problems))
             return EXIT_REFUSED
 
     unusable = []
@@ -182,27 +183,27 @@ def main(argv=None) -> int:
         try:
             values, notes = rate_lab(lab_cfg)
         except BudgetExceeded as e:     # exit 1 on the budget guard, like pilot.py
-            print(f"halted on the budget guard at {key}: {e}")
+            say(f"halted on the budget guard at {key}: {e}")
             return EXIT_BUDGET
         except FatalAPIError as e:
-            print(f"stopped at {key}: {e}")
+            say(f"stopped at {key}: {e}")
             return EXIT_REFUSED
         except UnusableRating as e:
             # reported, the other seats still rated; the seat keeps its old values.
-            print(f"UNUSABLE rating for {key} ({model}): {e}; its config is unchanged")
+            say(f"UNUSABLE rating for {key} ({model}): {e}; its config is unchanged")
             unusable.append(key)
             continue
         if args.dry_run:
-            print(f"{key:<10} ({model}) -> {values}  rationale: {notes}")
+            say(f"{key:<10} ({model}) -> {values}  rationale: {notes}")
         else:
             write_values(key, values, model, notes)
 
     if args.dry_run:
-        print("\n(dry-run: configs unchanged; placeholder values kept)")
+        say("\n(dry-run: configs unchanged; placeholder values kept)")
     else:
-        print(f"measured spend: ${get_tracker().persisted_total():.2f}")
+        say(f"measured spend: ${get_tracker().persisted_total():.2f}")
     if unusable:
-        print("re-rate: " + "; ".join(f"python rate_charters.py --lab {k}" for k in unusable))
+        say("re-rate: " + "; ".join(f"python rate_charters.py --lab {k}" for k in unusable))
         return EXIT_REFUSED
     return EXIT_OK
 

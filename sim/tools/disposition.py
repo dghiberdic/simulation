@@ -65,7 +65,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.config import CONFIG_DIR, PILOT_DIR                            # noqa: E402
 from core.exits import EXIT_FAILED, EXIT_OK, EXIT_REFUSED, EXIT_WAITING     # noqa: E402
-from tools.jury_check import letters_to_labs, missing_columns, seat_ident, spearman
+from tools.jury_check import letters_to_labs, missing_columns, seat_ident, spearman, spearman_raw
 
 logger = logging.getLogger(__name__)
 
@@ -216,9 +216,10 @@ def agreement(human: Dict[Tuple[str, str], float],
     """Spearman rho between our ratings and the juror's on the seat-runs we rated."""
     keys = sorted(k for k in human if k in judged)
     missing = sorted(k for k in human if k not in judged)
-    rho = spearman([human[k] for k in keys], [judged[k] for k in keys]) \
+    raw = spearman_raw([human[k] for k in keys], [judged[k] for k in keys]) \
         if len(keys) >= MIN_PAIRS else None
-    return {"n": len(keys), "rho": rho, "passes": rho is not None and rho >= RHO_MIN,
+    rho = None if raw is None else round(raw, 4)        # reported; the floor reads the unrounded value
+    return {"n": len(keys), "rho": rho, "passes": raw is not None and raw >= RHO_MIN,
             "missing_juror": [f"{r}/{s}" for r, s in missing],
             "pairs": [{"run_id": r, "lab": s, "ours": human[(r, s)], "juror": judged[(r, s)]}
                       for r, s in keys]}
@@ -324,8 +325,8 @@ def _print_report(report: Dict[str, Any]) -> None:
 def main(argv: Optional[List[str]] = None) -> int:
     import argparse
 
-    logging.basicConfig(level=logging.INFO,
-                        format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S")
+    from core.logsetup import configure_logging
+    configure_logging("disposition")
     parser = argparse.ArgumentParser(description="T2: main-run dispositions from the pilot (§2, §9.2).")
     parser.add_argument("input", nargs="?", default=str(DEFAULT_RATINGS),
                         help="pooled juror ratings (default data/pilot/disposition_ratings.json)")

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# The `sim` command: ./sim <command> [options] (see cli.py, or ./sim --help).
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+py="$here/.venv/bin/python"
+[ -x "$py" ] || py=python3
+exec "$py" "$here/cli.py" "$@"

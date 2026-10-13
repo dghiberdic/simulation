@@ -90,6 +90,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from core.console import say
+from core.logsetup import configure_logging
 from core.config import CONFIG_DIR, LAB_ORDER, PILOT_DIR, build_labs_and_world, load_world
 from core import costs as costs_mod
 from core.costs import BudgetExceeded, configure, get_tracker, measure_runs, project_run, with_fallbacks
@@ -1042,8 +1044,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
-    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
-                        format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S")
+    configure_logging("pilot", verbose=args.verbose)
     with _SERVED_LOCK:
         _SERVED.clear()
     install_served_probe()
@@ -1084,9 +1085,9 @@ def _dispatch(args) -> int:
     if args.test == "plan":
         _configure(args, data)
         plan = build_plan(data, root, turns=args.turns, approval=approval)
-        print("\n".join(plan_lines(plan)))
+        say("\n".join(plan_lines(plan)))
         if not test_done(root, "priced"):
-            print("  next: python pilot.py priced" + (" --dry-run" if args.dry_run else ""))
+            say("  next: python pilot.py priced" + (" --dry-run" if args.dry_run else ""))
         return EXIT_OK
     if args.test == "approve":
         _configure(args, data)
@@ -1094,7 +1095,7 @@ def _dispatch(args) -> int:
     if args.test == "all":
         return run_all(args, data, root)
     if args.test not in (data.get("presets") or {}):
-        print(f"Unknown test {args.test!r}: choose one of {', '.join(data.get('order') or [])}, "
+        say(f"Unknown test {args.test!r}: choose one of {', '.join(data.get('order') or [])}, "
               f"or a command ({', '.join(COMMANDS)}).")
         return EXIT_REFUSED
     if args.rescore_grand_jury:
@@ -1110,18 +1111,18 @@ def approve(args, data: Dict[str, Any], root: Path) -> int:
     the next step).
     """
     if not test_done(root, "priced"):
-        print("Refusing to approve: the priced run is not done (python pilot.py priced).")
+        say("Refusing to approve: the priced run is not done (python pilot.py priced).")
         return EXIT_REFUSED
     allowed = data.get("t7_turns") or [8, 12]
     if args.turns is None or args.turns not in allowed:
-        print(f"approve needs the team's T7 decision: --turns {' or --turns '.join(str(t) for t in allowed)}")
+        say(f"approve needs the team's T7 decision: --turns {' or --turns '.join(str(t) for t in allowed)}")
         return EXIT_REFUSED
     # data["budget_guard"] is --budget (a team decision to move the guard), else the
     # earlier approval's, else pilot.json's; it is stored and enforced from now on.
     plan = build_plan(data, root, turns=args.turns)
-    print("\n".join(plan_lines(plan)))
+    say("\n".join(plan_lines(plan)))
     if plan["stop"]:
-        print(f"\nAPPROVAL REFUSED: the re-priced plan ({usd(plan['total'])}) exceeds the {usd(plan['guard'])} "
+        say(f"\nAPPROVAL REFUSED: the re-priced plan ({usd(plan['total'])}) exceeds the {usd(plan['guard'])} "
               "guard after every cut. Stop and agree on the next step (spec §9.2).")
         return EXIT_FAILED
     approval = {"turns": args.turns, "cuts": [{k: v for k, v in c.items() if k != "saves"} for c in plan["cuts"]],
@@ -1129,7 +1130,7 @@ def approve(args, data: Dict[str, Any], root: Path) -> int:
                 "plan_total": plan["total"], "reserve": plan["reserve"], "basis": plan["basis"],
                 "at": time.strftime("%Y-%m-%d %H:%M:%S"), "dry_run": args.dry_run}
     _write_json(root / APPROVAL_NAME, approval)
-    print(f"\napproved: later runs at {args.turns} turns (T5 stays 4); guard {usd(plan['guard'])} "
+    say(f"\napproved: later runs at {args.turns} turns (T5 stays 4); guard {usd(plan['guard'])} "
           "(enforced in every later test); cuts: "
           + ("; ".join(c["label"] for c in approval["cuts"]) or "none")
           + f"; next: python pilot.py T6{' --dry-run' if args.dry_run else ''}")
@@ -1141,14 +1142,14 @@ def run_all(args, data: Dict[str, Any], root: Path) -> int:
     for test in data.get("order") or []:
         approval = read_approval(root)
         if test_done(root, test):
-            print(f"[all] {test}: done")
+            say(f"[all] {test}: done")
             continue
         if test != "priced" and approval is None:
-            print(f"[all] stopping before {test}: the priced run's hard stop needs the team's approval "
+            say(f"[all] stopping before {test}: the priced run's hard stop needs the team's approval "
                   "(python pilot.py approve --turns 8|12)")
             return EXIT_OK
         if resolve_preset(data, test, approval)["cut"]:
-            print(f"[all] {test}: cut at approval")
+            say(f"[all] {test}: cut at approval")
             continue
         code = run_test(args, data, root, test)
         if code != EXIT_OK:
@@ -1250,7 +1251,7 @@ def latest_t6(root: Path, data: Dict[str, Any], dry_run: bool) -> Tuple[str, boo
 
 def run_test(args, data: Dict[str, Any], root: Path, test: str) -> int:
     if test in COMMANDS:
-        print(f"Refusing: {test} is a command, not a test.")
+        say(f"Refusing: {test} is a command, not a test.")
         return EXIT_REFUSED
     approval = read_approval(root)
     preset = resolve_preset(data, test, approval)
@@ -1266,22 +1267,22 @@ def run_test(args, data: Dict[str, Any], root: Path, test: str) -> int:
         completed_record(output_dir, run_id, expect, args.dry_run)
     if args.skip_completed and not (args.post_run_only or args.rerate) and not args.rerun \
             and test_done(root, test):
-        print(f"{test}: {(read_summary(root, test) or {}).get('run_id') or base_run_id(test)} already "
+        say(f"{test}: {(read_summary(root, test) or {}).get('run_id') or base_run_id(test)} already "
               "completed (skipped)")
         return EXIT_OK
     if args.post_run_only or args.rerate or (finished is not None and not run_complete(
             root, test, run_id, finished, preset, args.dry_run, args.rerun)):
         return _post_run_only(args, data, root, preset, test, run_id, finished, output_dir, ratings_file)
     if args.skip_completed and args.rerun and rerun_done(root, data, args.dry_run):
-        print(f"T6: {run_id} (the one re-run) already completed (skipped)")
+        say(f"T6: {run_id} (the one re-run) already completed (skipped)")
         return EXIT_OK
     why = _refusal(args, data, root, test, preset, approval)
     if why:
-        print(f"Refusing {test}: {why}.")
+        say(f"Refusing {test}: {why}.")
         return EXIT_REFUSED
     other = other_mode_log(output_dir, run_id, args.dry_run)
     if other is not None:
-        print(f"Refusing {test}: {other} is a {'real' if args.dry_run else 'dry'} run's log; a "
+        say(f"Refusing {test}: {other} is a {'real' if args.dry_run else 'dry'} run's log; a "
               f"{'dry' if args.dry_run else 'real'} run never overwrites or sets it aside: pass another "
               "--output.")
         return EXIT_REFUSED
@@ -1298,18 +1299,18 @@ def run_test(args, data: Dict[str, Any], root: Path, test: str) -> int:
         problems = model_problems(probe_labs, _real_jurors(), scripted, bool(preset.get("macro_jury", True)),
                                   bool(preset.get("grand_jury")))
         if problems:
-            print("Preflight failed; nothing was called:\n  " + "\n  ".join(problems))
+            say("Preflight failed; nothing was called:\n  " + "\n  ".join(problems))
             return EXIT_REFUSED
     claimed = claim_run_id(output_dir, run_id, expect, ratings_file, force=args.force)
     if claimed is None:
-        print(f"Refusing {test}: {run_id} has a finished record of this set-up that cannot be completed "
+        say(f"Refusing {test}: {run_id} has a finished record of this set-up that cannot be completed "
               "here; pass --force to run it again (the old record is kept aside).")
         return EXIT_REFUSED
     run_id = claimed
 
     plan = build_plan(data, root, approval=approval)
     est = next((s for s in plan["steps"] if s["test"] == test), {}).get("costs") or {}
-    print(f"\nPILOT {test}: {run_id} — {preset['scenario']}, condition {preset['condition']}, F3, "
+    say(f"\nPILOT {test}: {run_id} — {preset['scenario']}, condition {preset['condition']}, F3, "
           f"{preset['a2a']} messages, {turns} turns"
           + (f", event turn {preset['event_turn']}" if preset.get("event_turn") else "")
           + (f", swap {preset['swap']}" if preset.get("swap") else "")
@@ -1519,7 +1520,7 @@ def _hard_stop(args, data: Dict[str, Any], root: Path, summary: Dict[str, Any]) 
     lines += ["", "Next, once shared and T7 is decided: python pilot.py approve --turns 8   (or --turns 12)"
               + (" --dry-run" if args.dry_run else "")]
     text = "\n".join(lines)
-    print("\n" + text)
+    say("\n" + text)
     try:
         (root / "priced").mkdir(parents=True, exist_ok=True)
         (root / "priced" / SHARE_NAME).write_text(text + "\n")
@@ -1537,15 +1538,15 @@ def _post_run_only(args, data, root: Path, preset, test: str, run_id: str, recor
     rerate = bool(getattr(args, "rerate", False))
     budget = _configure(args, data)
     if record is None:
-        print(f"{test}: {run_id} has no finished {'dry' if args.dry_run else 'real'} record of this set-up; "
+        say(f"{test}: {run_id} has no finished {'dry' if args.dry_run else 'real'} record of this set-up; "
               "nothing collected")
         return EXIT_REFUSED
     missing = missing_post_run(record, run_id, test, ratings_file, preset, rerate)
     post: Dict[str, Any] = {"errors": [], "done": [], "rated": 0, "post_run_only": True}
     if rerate and not missing:
-        print(f"{test}: {run_id} has no unusable T2 rating to ask again")
+        say(f"{test}: {run_id} has no unusable T2 rating to ask again")
     if missing:
-        print(f"{test}: {run_id} is finished (not run again); collecting: {'; '.join(missing)}")
+        say(f"{test}: {run_id} is finished (not run again); collecting: {'; '.join(missing)}")
         seats = [SimpleNamespace(key=k, model=v.get("model")) for k, v in (record.get("labs") or {}).items()]
         if args.dry_run:
             jurors = install_stubs(seats)
@@ -1553,22 +1554,22 @@ def _post_run_only(args, data, root: Path, preset, test: str, run_id: str, recor
             jurors = _real_jurors()
             problems = model_problems([], jurors, uses_macro=False, uses_grand=bool(preset.get("grand_jury")))
             if problems:
-                print("Preflight failed; nothing was called:\n  " + "\n  ".join(problems))
+                say("Preflight failed; nothing was called:\n  " + "\n  ".join(problems))
                 return EXIT_REFUSED
         try:
             post.update(run_post_stages(record, run_id, test, output_dir, ratings_file, jurors, args.dry_run,
                                         preset, only_missing=True, rerate=rerate))
         except BudgetExceeded as e:
-            print(f"HALTED on the budget guard: {e}")
+            say(f"HALTED on the budget guard: {e}")
             return EXIT_BUDGET
         for line in post["done"] + [f"ERROR {e}" for e in post["errors"]]:
-            print(f"  {line}")
+            say(f"  {line}")
         still = missing_post_run(record, run_id, test, ratings_file, preset)
         if still:
-            print(f"  still missing: {'; '.join(still)}")
+            say(f"  still missing: {'; '.join(still)}")
             return EXIT_REFUSED
     if run_complete(root, test, run_id, record, preset, args.dry_run, bool(args.rerun)) and not (rerate and missing):
-        print(f"{test}: {run_id} complete")
+        say(f"{test}: {run_id} complete")
         return EXIT_OK
     if preset.get("disposition_rating", True):
         settled = set(settled_unusable(ratings_file, test, run_id)) & {s.key for s in model_seats(record)}
@@ -1588,32 +1589,32 @@ def rescore_grand_jury(args, data: Dict[str, Any], root: Path, test: str) -> int
     then reads the new verdict.
     """
     if test != "T6":
-        print("Refusing: --rescore-grand-jury is for T6 only (the Grand Jury's rubric runs on the T6 run, T8).")
+        say("Refusing: --rescore-grand-jury is for T6 only (the Grand Jury's rubric runs on the T6 run, T8).")
         return EXIT_REFUSED
     run_id, _rerun = latest_t6(root, data, args.dry_run)       # T8 reads the latest T6 run
     output_dir = root / "T6"
     record = read_json(output_dir / f"{run_id}.json")
     if not is_finished(record):
-        print(f"Refusing: no finished T6 record at {output_dir / (run_id + '.json')}.")
+        say(f"Refusing: no finished T6 record at {output_dir / (run_id + '.json')}.")
         return EXIT_REFUSED
     if is_dry(record) != bool(args.dry_run):
-        print(f"Refusing: {run_id} is a {'dry' if not args.dry_run else 'real'} record; pass "
+        say(f"Refusing: {run_id} is a {'dry' if not args.dry_run else 'real'} record; pass "
               f"{'--dry-run' if not args.dry_run else 'no --dry-run'} to re-score it.")
         return EXIT_REFUSED
     final = record["final"]
     if "grand_jury_previous" in final and grand_jury_usable(record):
-        print(f"Refusing: {run_id} was already re-scored once (final.grand_jury_previous exists; T8 revises "
+        say(f"Refusing: {run_id} was already re-scored once (final.grand_jury_previous exists; T8 revises "
               "the examples once).")
         return EXIT_REFUSED
     examples = jury_mod.load_examples()
     if not examples and not args.dry_run:
-        print("Refusing: config/jury_examples.json has no few-shot examples; revise them first (T8).")
+        say("Refusing: config/jury_examples.json has no few-shot examples; revise them first (T8).")
         return EXIT_REFUSED
     budget = _configure(args, data)
     if not args.dry_run:
         problems = model_problems([], {"grand": GRAND_JURY_MODELS, "macro": []}, uses_macro=False)
         if problems:
-            print("Preflight failed; nothing was called:\n  " + "\n  ".join(problems))
+            say("Preflight failed; nothing was called:\n  " + "\n  ".join(problems))
             return EXIT_REFUSED
     seats = [SimpleNamespace(key=k, model=v.get("model")) for k, v in (record.get("labs") or {}).items()]
     jurors = install_stubs(seats) if args.dry_run else _real_jurors()
@@ -1625,26 +1626,26 @@ def rescore_grand_jury(args, data: Dict[str, Any], root: Path, test: str) -> int
         final["grand_jury_previous"] = dict(final.get("grand_jury") or {},
                                             superseded=time.strftime("%Y-%m-%d %H:%M:%S"))
         _write_json(output_dir / f"{run_id}.json", record)
-    print(f"T6: re-scoring {run_id} with the revised examples ({len(examples)} example(s)); "
+    say(f"T6: re-scoring {run_id} with the revised examples ({len(examples)} example(s)); "
           f"the seats are not re-run" + (f"; guard {usd(budget)}" if budget is not None else ""))
     retry = (f"the re-score is not used up: re-ask with python pilot.py T6 --post-run-only"
              f"{' --dry-run' if args.dry_run else ''} (or --rescore-grand-jury again)")
     try:
         line = collect_grand_jury(record, jurors["grand"], run_id, output_dir)
     except BudgetExceeded as e:
-        print(f"HALTED on the budget guard: {e}; no usable verdict: {retry}")
+        say(f"HALTED on the budget guard: {e}; no usable verdict: {retry}")
         return EXIT_BUDGET
     except Exception as e:      # noqa: BLE001
         if first:               # nothing was re-scored: the record is as it was
             final.pop("grand_jury_previous", None)
             _write_json(output_dir / f"{run_id}.json", record)
-        print(f"Grand Jury failed: {type(e).__name__}: {e}; the re-score is not used up "
+        say(f"Grand Jury failed: {type(e).__name__}: {e}; the re-score is not used up "
               "(the verdict is unchanged): run --rescore-grand-jury again")
         return EXIT_REFUSED
     if not grand_jury_usable(record):
-        print(f"  {line}; {retry}")
+        say(f"  {line}; {retry}")
         return EXIT_REFUSED
-    print(f"  {line}; compare with our hand scores: python tools/jury_check.py {output_dir / (run_id + '.json')}")
+    say(f"  {line}; compare with our hand scores: python tools/jury_check.py {output_dir / (run_id + '.json')}")
     return EXIT_OK
 
 
@@ -1659,45 +1660,45 @@ def _fmt_rate(x: Optional[float]) -> str:
 
 
 def _print_summary(summary: Dict[str, Any]) -> None:
-    print("\n" + "=" * 72)
-    print(f"PILOT {summary['test']}  —  {'DRY-RUN' if summary['dry_run'] else 'REAL'}  ({summary['run_id']})")
-    print("=" * 72)
+    say("\n" + "=" * 72)
+    say(f"PILOT {summary['test']}  —  {'DRY-RUN' if summary['dry_run'] else 'REAL'}  ({summary['run_id']})")
+    say("=" * 72)
     usage = summary.get("usage") or {}
-    print(f"status         : {summary['status']}"
+    say(f"status         : {summary['status']}"
           + (f" — {summary['aborted']['error']}" if summary.get("aborted") else ""))
     if summary.get("aborted") and summary["aborted"].get("record_path"):
-        print(f"partial record : {summary['aborted']['record_path']}")
-    print(f"run cost       : ${float(usage.get('run_cost_usd') or 0.0):.2f}; pilot spend ${float(summary.get('spend_usd') or 0.0):.2f}"
+        say(f"partial record : {summary['aborted']['record_path']}")
+    say(f"run cost       : ${float(usage.get('run_cost_usd') or 0.0):.2f}; pilot spend ${float(summary.get('spend_usd') or 0.0):.2f}"
           + (f" (guard ${summary['budget']})" if summary.get("budget") else ""))
     for err in summary.get("post_run_errors") or []:
-        print(f"post-run error : {err}")
+        say(f"post-run error : {err}")
     if summary.get("error"):
-        print(f"summary error  : {summary['error']}")
+        say(f"summary error  : {summary['error']}")
     rows = usage.get("by_actor_model") or {}
     if rows:
-        print(f"\n{'actor model':<24}{'turns':>6}{'prop.fail':>10}{'msg.fail':>9}{'forfeit':>8}{'maxtok':>7}"
+        say(f"\n{'actor model':<24}{'turns':>6}{'prop.fail':>10}{'msg.fail':>9}{'forfeit':>8}{'maxtok':>7}"
               f"{'refuse':>7}{'iv':>4}{'iv.skip':>8}{'iv.empty':>9}{'iv.inc':>7}{'iv.cut':>7}{'cost $':>8}  served model")
         for model, r in sorted(rows.items()):
             served = ", ".join(f"{m}{' (MISMATCH)' if m in r['served_mismatch'] else ''}"
                                for m in sorted(r["served_models"])) or "-"
-            print(f"{model:<24}{r['seat_turns']:>6}{_fmt_rate(r['proposal_failure_rate']):>10}"
+            say(f"{model:<24}{r['seat_turns']:>6}{_fmt_rate(r['proposal_failure_rate']):>10}"
                   f"{_fmt_rate(r['message_failure_rate']):>9}{r['forfeits']:>8}{r['stop_max_tokens']:>7}"
                   f"{r['stop_refusal']:>7}{r['interviews']:>4}{r['interviews_skipped']:>8}"
                   f"{r.get('interviews_empty', 0):>9}{r.get('interviews_incomplete', 0):>7}"
                   f"{r.get('interviews_cut', 0):>7}{r['cost']:>8.2f}  {served}")
     for r in sorted((usage.get("jurors") or {}).values(), key=lambda r: (r["purpose"], r["model"])):
-        print(f"juror {r['model']:<24}{r['purpose']:<18} calls {r['calls']}, ${r['cost']:.2f}"
+        say(f"juror {r['model']:<24}{r['purpose']:<18} calls {r['calls']}, ${r['cost']:.2f}"
               + (f"; served {', '.join(r['served_models'])}" if r.get("served_models") else ""))
     mism = [m for m, r in rows.items() if r.get("served_mismatch")]
     if mism:
-        print(f"WARNING: the provider served a different model than configured for {', '.join(mism)}")
+        say(f"WARNING: the provider served a different model than configured for {', '.join(mism)}")
     if summary.get("plan"):
-        print()
-        print("\n".join(plan_lines(summary["plan"])))
+        say()
+        say("\n".join(plan_lines(summary["plan"])))
     for k, v in (summary.get("decisions") or {}).items():
-        print(f"{k}: {v}")
+        say(f"{k}: {v}")
     if summary.get("review"):
-        print(f"review file: {summary['review']}")
+        say(f"review file: {summary['review']}")
 
 
 if __name__ == "__main__":

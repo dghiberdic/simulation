@@ -520,7 +520,7 @@ def charge(lab: LabState, action: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[s
     lab.influence = _clamp(lab.influence - cost_i)
     charged = {"capital": round(before_c - lab.capital, 3),
                "influence": round(before_i - lab.influence, 3)}
-    logger.info(f"[charge] {lab.key} {action['type']} {charged}")
+    logger.debug(f"[charge] {lab.key} {action['type']} {charged}")
     return charged
 
 

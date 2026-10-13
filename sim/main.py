@@ -61,6 +61,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from core.console import say
+from core.logsetup import configure_logging
 from core import policies
 from core.config import LAB_ORDER, RUNS_DIR, build_labs_and_world, load_dispositions, load_world
 from core.costs import BudgetExceeded, configure, get_tracker
@@ -169,8 +171,7 @@ def apply_kin(labs) -> str:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
-    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
-                        format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S")
+    configure_logging("main", verbose=args.verbose)
     code, _record = run_cell(args)
     return code
 
@@ -205,11 +206,11 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
                  if v is not None}
         allowed = {"--scenario": ("S1", KIN_SCENARIO), "--condition": ("A", KIN_CONDITION)}
         if any(v not in allowed[f] for f, v in given.items()):
-            print("Refusing: the kin cell is S2 under condition A (§6.5).")
+            say("Refusing: the kin cell is S2 under condition A (§6.5).")
             return EXIT_REFUSED, None
         overridden = [f"{f} {v}" for f, v in given.items() if v not in (KIN_SCENARIO, KIN_CONDITION)]
         if overridden:
-            print(f"Note: --kin runs the kin cell, scenario {KIN_SCENARIO} under condition {KIN_CONDITION} "
+            say(f"Note: --kin runs the kin cell, scenario {KIN_SCENARIO} under condition {KIN_CONDITION} "
                   f"(§6.5): {', '.join(overridden)} overridden.")
         args.scenario, args.condition = KIN_SCENARIO, KIN_CONDITION
     args.scenario, args.condition = args.scenario or "S1", args.condition or "A"
@@ -217,7 +218,7 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
     turns = args.turns or int(cfg.get("turns", 8))
     a2a = "merged" if args.scenario == "S1" else args.a2a          # S1 always merges (§5.2)
     if args.scenario == "S1" and args.a2a != "merged":
-        print(f"Note: S1 always merges its messages into the proposal (§5.2): --a2a {args.a2a} "
+        say(f"Note: S1 always merges its messages into the proposal (§5.2): --a2a {args.a2a} "
               "overridden to merged.")
     cell = cell_name(args.scenario, args.condition, args.kin)
     run_id = args.run_id or default_run_id(cell)
@@ -225,13 +226,13 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
 
     dispositions, why = resolve_dispositions(args)
     if why:
-        print(why)
+        say(why)
         return EXIT_REFUSED, None
     labs, world = build_labs_and_world(cfg, dispositions=dispositions, charters=args.policy is None)
     kin_model = apply_kin(labs) if args.kin else None
     why = apply_model_overrides(labs, args.model)
     if why:
-        print(why)
+        say(why)
         return EXIT_REFUSED, None
 
     configure(spend_file=Path(args.spend_file) if args.spend_file else None,
@@ -251,7 +252,7 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
     elif not offline:
         problem = real_run_problems(labs, macro_jurors, run_grand_jury, args.allow_placeholder_values)
         if problem:
-            print(problem)
+            say(problem)
             return EXIT_REFUSED, None
         if args.budget is None:
             logger.warning("[budget] real run without --budget: no spend guard; pass --budget USD")
@@ -263,21 +264,21 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
     if args.dry_run:
         other = real_log(output_dir, run_id)
         if other is not None:
-            print(f"Refusing a dry run: {other} is a real run's log; a dry run never overwrites it or sets "
+            say(f"Refusing a dry run: {other} is a real run's log; a dry run never overwrites it or sets "
                   "it aside. Pass another --output or --run-id.")
             return EXIT_REFUSED, None
     existing, conflict = finished_record(output_dir, run_id, expect, bool(args.dry_run), args.policy)
     if conflict:
-        print(f"Refusing: {output_dir / (run_id + '.json')} holds a finished run of another set-up "
+        say(f"Refusing: {output_dir / (run_id + '.json')} holds a finished run of another set-up "
               f"({conflict}); pass another --run-id or --output (a finished run is never deleted).")
         return EXIT_REFUSED, None
     if existing is not None:
         if run_grand_jury and not grand_jury_usable(existing):
             if grand_jury_settled(existing) and not args.reask_grand_jury:
-                print(NO_VERDICT.format(run_id=run_id))
+                say(NO_VERDICT.format(run_id=run_id))
                 return EXIT_FAILED, existing
             return ask_grand_jury_only(existing, run_id, output_dir, grand_jurors)
-        print(f"{run_id}: already finished ({output_dir / (run_id + '.json')}); not run again")
+        say(f"{run_id}: already finished ({output_dir / (run_id + '.json')}); not run again")
         return EXIT_OK, existing
     if not args.dry_run and not offline:
         clear_stale(output_dir, run_id)
@@ -294,33 +295,33 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
             dry_run=bool(args.dry_run), parallel=not args.sequential,
             interview_turns=list(args.interview_turns or []), kin=bool(args.kin))
     except ValueError as e:         # a set-up the engine refuses (event turn outside the run)
-        print(f"Refusing: {e}.")
+        say(f"Refusing: {e}.")
         return EXIT_REFUSED, None
     try:
         record = engine.run()
     except BudgetExceeded as e:
         saved = read_record(output_dir / f"{run_id}.json")
         if is_finished(saved):
-            print(f"Halted on the budget guard during the Grand Jury: {e}\nThe run is finished and saved "
+            say(f"Halted on the budget guard during the Grand Jury: {e}\nThe run is finished and saved "
                   f"({output_dir / (run_id + '.json')}); only its Grand Jury verdict is missing. Re-running "
                   "this run id asks the Grand Jury only.")
             return EXIT_BUDGET, saved
-        print(f"Halted on the budget guard: {e}\nPartial record in {output_dir}")
+        say(f"Halted on the budget guard: {e}\nPartial record in {output_dir}")
         return EXIT_BUDGET, None
     except (RunAborted, FatalAPIError) as e:
-        print(f"Run aborted: {type(e).__name__}: {e}\nPartial record in {output_dir}")
+        say(f"Run aborted: {type(e).__name__}: {e}\nPartial record in {output_dir}")
         return EXIT_REFUSED, None
     except Exception as e:      # any other crash keeps the partial record and exits 2
         logger.exception(f"[crash] {run_id}: {type(e).__name__}: {e}")
-        print(f"Run crashed: {type(e).__name__}: {e}\nPartial record in {output_dir}")
+        say(f"Run crashed: {type(e).__name__}: {e}\nPartial record in {output_dir}")
         return EXIT_REFUSED, None
 
-    _print_scores(record)
-    print(f"\nLog: {output_dir / (run_id + '.json')}")
+    # The final standing is on the console already (the engine's "final" event).
+    say(f"\nLog: {output_dir / (run_id + '.json')}  (run log {output_dir / (run_id + '.log')})")
     if policy is None:
-        print(f"Measured spend (ledger): ${get_tracker().persisted_total():.2f}")
+        say(f"Measured spend (ledger): ${get_tracker().persisted_total():.2f}")
     if run_grand_jury and not grand_jury_usable(record):
-        print(NO_VERDICT.format(run_id=run_id))
+        say(NO_VERDICT.format(run_id=run_id))
         return EXIT_FAILED, record
     return EXIT_OK, record
 
@@ -396,18 +397,18 @@ def ask_grand_jury_only(record: Dict[str, Any], run_id: str, output_dir: Path,
                         grand_jurors: List[str]) -> Tuple[int, Optional[Dict[str, Any]]]:
     """Re-ask the Grand Jury on a finished run whose verdict is missing (a budget stop
     during the jury); the seats are never re-run. Returns (exit code, record)."""
-    print(f"{run_id}: the run is finished; asking the Grand Jury only")
+    say(f"{run_id}: the run is finished; asking the Grand Jury only")
     try:
         line = collect_grand_jury(record, grand_jurors, run_id, output_dir)
     except BudgetExceeded as e:
-        print(f"Halted on the budget guard during the Grand Jury: {e}")
+        say(f"Halted on the budget guard during the Grand Jury: {e}")
         return EXIT_BUDGET, record
     except Exception as e:      # noqa: BLE001 — the run is kept either way
-        print(f"Grand Jury failed: {type(e).__name__}: {e}")
+        say(f"Grand Jury failed: {type(e).__name__}: {e}")
         return EXIT_REFUSED, record
-    print(f"{run_id}: {line}")
+    say(f"{run_id}: {line}")
     if not grand_jury_usable(record):
-        print(NO_VERDICT.format(run_id=run_id))
+        say(NO_VERDICT.format(run_id=run_id))
         return EXIT_FAILED, record
     return EXIT_OK, record
 
@@ -437,19 +438,6 @@ def real_run_problems(labs, macro_jurors, run_grand_jury: bool, allow_placeholde
     if problems:
         return "Preflight failed; nothing was called:\n  " + "\n  ".join(problems)
     return ""
-
-
-def _print_scores(record) -> None:
-    names = record["labs"]
-    cfg = record["config"]
-    print("\n" + "=" * 52)
-    print(f"FINAL STANDING — {(cfg.get('run_meta') or {}).get('cell') or cfg['scenario'] + '/' + cfg['condition']}")
-    print("=" * 52)
-    print(f"{'Lab':<22}{'Prosperity':>12}{'Rank':>6}")
-    print("-" * 52)
-    for row in record["final"]["scores"]:
-        print(f"{names[row['lab']]['lab']:<22}{row['score']:>12.2f}{row['rank']:>6}")
-    print(f"\nUPS index: {record['final']['ups_index']['ups']}")
 
 
 if __name__ == "__main__":

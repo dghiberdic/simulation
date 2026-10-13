@@ -102,8 +102,8 @@ LAB_NAMES: Dict[str, Dict[str, Tuple[str, ...]]] = {
                           "safety case", "recommended security level", "deployment mitigations"),
     },
     "meta": {
-        "lab": ("Meta", "Meta Platforms", "Meta AI", "Meta Superintelligence Labs", "MSL",
-                "Facebook"),
+        "lab": ("Meta", "Meta Platforms", "Meta AI", "Meta Superintelligence Labs", "Superintelligence Labs",
+                "MSL", "Facebook"),
         "actor": ("Muse", "Llama"),
         "products": ("Muse Spark", "Spark", "FAIR", "Instagram", "WhatsApp", "Threads", "Oculus", "Ray-Ban Meta",
                      "Reality Labs", "PyTorch", "Hyperion", "Prometheus", "Meta Quest", "Quest 3",

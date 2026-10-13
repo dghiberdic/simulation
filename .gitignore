@@ -6,3 +6,6 @@ sim/data/spend*.json
 sim/data/spend*.jsonl
 sim/data/pilot/
 sim/data/runs/
+sim/data/logs/*.log
+sim/data/logs/calls-*.jsonl
+sim/.venv

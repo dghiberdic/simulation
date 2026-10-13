@@ -70,6 +70,8 @@ from typing import Any, Dict, Iterable, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from core.console import say
+from core.logsetup import configure_logging
 from core.config import RUNS_DIR, load_world
 from core.costs import configure, get_tracker, kin_seat_scale, project_run, with_fallbacks
 from core.engine import interview_schedule, review_turns
@@ -362,7 +364,7 @@ def run_campaign(plan: Dict[str, Any], runs_dir: Path, dry_run: bool, rounds: Op
         name, _, num = run_id.rpartition("-run")
         if name not in cells or not num.isdigit():
             continue
-        print(f"[campaign] {run_id}: finished, Grand Jury missing; asking the jury only")
+        say(f"[campaign] {run_id}: finished, Grand Jury missing; asking the jury only")
         code, record = run_cell(args_for(cells[name], int(num)))
         if code == EXIT_FAILED and is_finished(record) and grand_jury_settled(record):
             jury_missing.remove(run_id)
@@ -370,7 +372,7 @@ def run_campaign(plan: Dict[str, Any], runs_dir: Path, dry_run: bool, rounds: Op
             write_state(state_path, state)
             continue
         if code != 0:
-            print(f"[campaign] stopped at {run_id}'s Grand Jury (exit {code}); re-run to resume")
+            say(f"[campaign] stopped at {run_id}'s Grand Jury (exit {code}); re-run to resume")
             return code
         jury_missing.remove(run_id)
         write_state(state_path, state)
@@ -379,33 +381,33 @@ def run_campaign(plan: Dict[str, Any], runs_dir: Path, dry_run: bool, rounds: Op
     total = min(total, rounds) if rounds else total
     for c, r in run_order(plan, done, total):
         a = args_for(c, r)
-        print(f"[campaign] {a.run_id}")
+        say(f"[campaign] {a.run_id}")
         code, record = run_cell(a)
         if code == EXIT_FAILED and is_finished(record) and grand_jury_settled(record):
             done.setdefault(c["name"], []).append(a.run_id)
             no_verdict.append(a.run_id)
             write_state(state_path, state)
-            print(f"[campaign] {a.run_id} is finished; its Grand Jury gave no usable verdict after the "
+            say(f"[campaign] {a.run_id} is finished; its Grand Jury gave no usable verdict after the "
                   "fallback (settled, not re-asked: main.py --reask-grand-jury asks again)")
             continue
         if code != 0 and is_finished(record):
             done.setdefault(c["name"], []).append(a.run_id)
             jury_missing.append(a.run_id)
             write_state(state_path, state)
-            print(f"[campaign] {a.run_id} is finished but its Grand Jury is missing (exit {code}); "
+            say(f"[campaign] {a.run_id} is finished but its Grand Jury is missing (exit {code}); "
                   "re-run to resume (the jury alone is asked)")
             return code
         if code != 0:
             if code == EXIT_REFUSED:
                 state["refused"] = a.run_id
                 write_state(state_path, state)
-            print(f"[campaign] stopped at {a.run_id} (exit {code}); re-run to resume")
+            say(f"[campaign] stopped at {a.run_id} (exit {code}); re-run to resume")
             return code
         done.setdefault(c["name"], []).append(a.run_id)
         write_state(state_path, state)
-    print(f"[campaign] {total} round(s) complete")
+    say(f"[campaign] {total} round(s) complete")
     if no_verdict:
-        print(f"[campaign] no usable Grand Jury verdict (settled) for {', '.join(no_verdict)}")
+        say(f"[campaign] no usable Grand Jury verdict (settled) for {', '.join(no_verdict)}")
         return EXIT_FAILED
     return EXIT_OK
 
@@ -468,8 +470,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
-    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
-                        format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S")
+    configure_logging("campaign", verbose=args.verbose)
     import pilot
     pilot_root = Path(args.pilot_dir) if args.pilot_dir else pilot.pilot_root(args.dry_run)
     configure(spend_file=Path(args.spend_file) if args.spend_file else None)
@@ -490,7 +491,7 @@ def main(argv=None) -> int:
                                           ("--turns", args.turns), ("--a2a", args.a2a),
                                           ("--max-runs", args.max_runs)) if value is not None]
         if given:
-            print(f"Refusing: {runs_dir} holds a campaign in progress ({completed_rounds(saved, done)} round(s) "
+            say(f"Refusing: {runs_dir} holds a campaign in progress ({completed_rounds(saved, done)} round(s) "
                   f"done), resumed with its saved plan and guard; {', '.join(given)} would be ignored. Pass "
                   "--replan to re-plan with them, or drop them to resume.")
             return EXIT_REFUSED
@@ -499,8 +500,8 @@ def main(argv=None) -> int:
         guard = state.get("guard")
         remaining = None if (args.dry_run or guard is None) else max(float(guard) - spent, 0.0)
         n = resume_rounds(saved, done, remaining)
-        print("\n".join(campaign_lines(saved)))
-        print(f"[campaign] resuming the saved plan ({completed_rounds(saved, done)} round(s) done"
+        say("\n".join(campaign_lines(saved)))
+        say(f"[campaign] resuming the saved plan ({completed_rounds(saved, done)} round(s) done"
               + (f", ${remaining:.2f} of the guard left" if remaining is not None else "")
               + f"): {n} round(s) in all; --replan re-plans the cells")
         return run_campaign(saved, runs_dir, args.dry_run, args.rounds,
@@ -520,18 +521,19 @@ def main(argv=None) -> int:
         budget = max(ROUND_BUDGET - spent, 0.0)
     plan = build_campaign(pilot_inputs(pilot_root), budget,
                           turns=args.turns or (replan or {}).get("turns") or pilot_turns(pilot_root),
-                          s2_mode=args.a2a or pilot_s2_mode(pilot_root, include_dry=args.dry_run),
+                          s2_mode=args.a2a or (replan or {}).get("s2_mode")
+                          or pilot_s2_mode(pilot_root, include_dry=args.dry_run),
                           max_runs=args.max_runs or MAX_RUNS, done=done_counts,
                           restored=[c["name"] for c in (replan or {}).get("cells", []) if not c["runs"]],
                           catch_up=(replan or {}).get("catch_up"))
-    print("\n".join(campaign_lines(plan)))
+    say("\n".join(campaign_lines(plan)))
     if args.command == "plan":
         if saved:
-            print(f"  a campaign is in progress in {runs_dir} ({completed_rounds(saved, done)} round(s) done): "
+            say(f"  a campaign is in progress in {runs_dir} ({completed_rounds(saved, done)} round(s) done): "
                   "`run` resumes its saved plan; `run --replan` adopts a new one")
         return EXIT_OK
     guard = spent + budget
-    print(f"[campaign] guard: ledger total ${guard:.2f} (${spent:.2f} spent so far)")
+    say(f"[campaign] guard: ledger total ${guard:.2f} (${spent:.2f} spent so far)")
     state["guard"] = round(guard, 4)
     state["budget_at_plan"] = round(budget, 4)
     write_state(state_path, state)

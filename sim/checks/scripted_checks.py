@@ -1089,5 +1089,6 @@ def run_all(verbose: bool = True) -> bool:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.WARNING)
+    from core.logsetup import configure_logging
+    configure_logging("check", quiet=True)
     raise SystemExit(run_main(lambda: EXIT_OK if run_all() else EXIT_FAILED))

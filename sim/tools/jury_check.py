@@ -109,11 +109,17 @@ def _pearson(xs: Sequence[float], ys: Sequence[float]) -> Optional[float]:
     return sxy / math.sqrt(sxx * syy)
 
 
-def spearman(xs: Sequence[float], ys: Sequence[float]) -> Optional[float]:
-    """Spearman rho = Pearson on average ranks. None if < 2 pairs or a constant input."""
+def spearman_raw(xs: Sequence[float], ys: Sequence[float]) -> Optional[float]:
+    """Spearman rho = Pearson on average ranks, unrounded (what a floor is compared
+    with). None if < 2 pairs or a constant input."""
     if len(xs) != len(ys):
         raise ValueError("spearman: inputs differ in length")
-    r = _pearson(_ranks(list(xs)), _ranks(list(ys)))
+    return _pearson(_ranks(list(xs)), _ranks(list(ys)))
+
+
+def spearman(xs: Sequence[float], ys: Sequence[float]) -> Optional[float]:
+    """spearman_raw rounded to 4 places, for reports."""
+    r = spearman_raw(xs, ys)
     return None if r is None else round(r, 4)
 
 

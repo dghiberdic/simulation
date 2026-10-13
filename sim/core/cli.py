@@ -12,12 +12,17 @@ script) never reads a crash as the budget guard (1).
                                              logs are kept
 """
 
+import logging
 import sys
 import traceback
 from typing import Callable
 
 from core.costs import BudgetExceeded
 from core.exits import EXIT_BUDGET, EXIT_REFUSED
+
+# The same failures in the log files (the console already has the text above them).
+_log = logging.getLogger("sim.exit")
+_FILE_ONLY = {"no_console": True}
 
 
 def run_main(main: Callable[[], int]) -> int:
@@ -26,12 +31,15 @@ def run_main(main: Callable[[], int]) -> int:
         return main()
     except BudgetExceeded as e:
         print(f"HALTED on the budget guard: {e}", file=sys.stderr)
+        _log.error(f"[budget] HALTED on the budget guard: {e} (exit {EXIT_BUDGET})", extra=_FILE_ONLY)
         return EXIT_BUDGET
     except SystemExit as e:
         if e.code is None or isinstance(e.code, int):
             raise
         print(e.code, file=sys.stderr)
+        _log.error(f"{e.code} (exit {EXIT_REFUSED})", extra=_FILE_ONLY)
         return EXIT_REFUSED
     except Exception:       # noqa: BLE001 — a crash is "refused or crashed" (2), never the guard
         traceback.print_exc()
+        _log.critical(f"crashed (exit {EXIT_REFUSED})", exc_info=True, extra=_FILE_ONLY)
         return EXIT_REFUSED

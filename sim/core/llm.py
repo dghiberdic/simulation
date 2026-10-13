@@ -83,6 +83,7 @@ from typing import Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Tu
 
 from dotenv import load_dotenv
 
+from core import calllog
 from core.config import SIM_DIR
 from core.costs import BudgetExceeded, cost_of, get_tracker, price_for
 
@@ -928,6 +929,35 @@ def complete(model: str, system: str, user: str, *, provider: Optional[str] = No
              effort: Optional[str] = None, cache_system: bool = True, purpose: str = "actor",
              run_id: Optional[str] = None, history: Optional[List[Dict[str, str]]] = None,
              cache_key: Optional[str] = None) -> LLMResponse:
+    """_complete, with the call (prompt, raw reply or error) appended to the call
+    journal (core.calllog) the moment it returns or fails."""
+    start = time.monotonic()
+    try:
+        r = _complete(model, system, user, provider=provider, max_tokens=max_tokens,
+                      temperature=temperature, effort=effort, cache_system=cache_system,
+                      purpose=purpose, run_id=run_id, history=history, cache_key=cache_key)
+    except BaseException as e:
+        calllog.record(run_id=run_id, purpose=purpose, provider=_safe_provider(model, provider), model=model,
+                       system=system, user=user, history=history, error=e,
+                       latency_s=time.monotonic() - start)
+        raise
+    calllog.record(run_id=run_id, purpose=purpose, provider=r.provider, model=model, system=system,
+                   user=user, history=history, response=r)
+    return r
+
+
+def _safe_provider(model: str, provider: Optional[str]) -> str:
+    try:
+        return resolve_provider(model, provider)
+    except Exception:       # noqa: BLE001
+        return provider or ""
+
+
+def _complete(model: str, system: str, user: str, *, provider: Optional[str] = None,
+              max_tokens: int = 4000, temperature: Optional[float] = None,
+              effort: Optional[str] = None, cache_system: bool = True, purpose: str = "actor",
+              run_id: Optional[str] = None, history: Optional[List[Dict[str, str]]] = None,
+              cache_key: Optional[str] = None) -> LLMResponse:
     """
     One completion. `history` is optional prior turns ({"role": "user"|"assistant",
     "content": str}) placed between the system prompt and `user`. `cache_key` is a

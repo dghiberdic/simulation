@@ -69,6 +69,8 @@ from core.economy import purchases_frozen
 from core.fog import FOG, describe_action, observed_actions
 from core.jury import GRAND_JURY_MODELS, GrandJury, MacroJury, aggregate_grand
 from core.llm import FatalAPIError, complete_json, continue_call
+from core import console as monitor
+from core.logsetup import run_logging
 from core.records import write_json_atomic
 from core.resume import LoggedFailure, LoggedRun, load_partial, partial_path, set_aside, setup_diffs
 from core.rng import KeyedRNG
@@ -352,15 +354,29 @@ class SimulationEngine:
 
     # ------------------------------------------------------------------ run
     def run(self) -> Dict[str, Any]:
+        """The run, logged to <run_id>.log / .events.jsonl / .calls.jsonl beside its
+        record (core.logsetup.run_logging; nothing when there is no output_dir)."""
+        cfg = self.record.get("config") or {}
+        with run_logging(self.output_dir, self.run_id,
+                         cell=(cfg.get("run_meta") or {}).get("cell")
+                         or f"{cfg.get('scenario')}-{cfg.get('condition')}",
+                         turns=self.turns, seed=cfg.get("seed"), a2a=cfg.get("a2a_mode"),
+                         policy=cfg.get("policy"), dry_run=cfg.get("dry_run")):
+            record = self._run()
+            self._emit_final()
+            return record
+
+    def _run(self) -> Dict[str, Any]:
         self._prepare_resume()
         try:
             for turn in range(1, self.turns + 1):
                 if not self._replaying(turn):
                     self._live = True
-                self._run_turn(turn)            # appends its turn record (before the MacroJury)
+                turn_rec = self._run_turn(turn)  # appends its turn record (before the MacroJury)
                 self._inflight = None
                 if self._live:
                     self._save_partial()
+                self._emit_turn(turn_rec)
             self._finalise()
         except FatalAPIError as e:
             if not self._live:                  # still replaying the log: leave it as it was
@@ -440,7 +456,11 @@ class SimulationEngine:
     def _run_turn(self, turn: int) -> Dict[str, Any]:
         world = self.world
         world.turn = turn
-        logger.info(f"── Month {turn} ({month_date(world.start, turn).isoformat()}) ──")
+        monitor.emit("turn_start", f"── Month {turn} ({month_date(world.start, turn).isoformat()}) ──",
+                     {"turn": turn, "date": month_date(world.start, turn).isoformat(),
+                      "label": month_date(world.start, turn).strftime("%B %Y"),
+                      "replay": self._replaying(turn), "event_turn": turn == self.event_turn,
+                      "review": bool(self.macro_jurors) and turn in self.review_turns}, log=logger)
         self._inflight = {"turn": turn, "date": world.date.isoformat(), "stage": "setup"}
         self._message_attempts = {}
 
@@ -990,8 +1010,18 @@ class SimulationEngine:
         lab.disposition_reason = _text(chosen_reason(reply))
         if lab.key in self.system:          # A.2 note: "You have set ..." from next month on
             self.system[lab.key] = self._system_prompt(lab)
-        logger.info(f"[disposition] {lab.key} chose {lab.disposition}: {lab.disposition_reason}")
+        if self._blind():
+            # §9.2 T2: we rate the seat-runs blind; the value is in the record, not on screen.
+            logger.info(f"[disposition] {lab.key} chose its setting (hidden in pilot runs until the T2 "
+                        "ratings; it is in the run record)")
+        else:
+            logger.info(f"[disposition] {lab.key} chose {lab.disposition}: {lab.disposition_reason}")
         return True
+
+    def _blind(self) -> bool:
+        """A pilot run: its dispositions (chosen and juror-perceived) stay off the
+        console and the human log until our own T2 ratings are in (§9.2)."""
+        return bool(((self.record.get("config") or {}).get("run_meta") or {}).get("pilot"))
 
     def _check_report(self, lab: LabState, raw: Any):
         """(normalised report | None, refusal reason | None). No report, or one filed
@@ -1280,7 +1310,9 @@ class SimulationEngine:
             accesses=self._accesses(lab), named=list(self._named[lab.key]),
             tips=list(self._tips[lab.key]),
             observed=self._observed(lab), notices=self._public_notices(turn),
-            inbox=self._inbox(lab, turn, stage), statements=self.last_statements)
+            inbox=self._inbox(lab, turn, stage),
+            # A.8 note: the other labs' public statements (as with their reported actions)
+            statements={k: v for k, v in self.last_statements.items() if k != lab.lab})
 
     def _posted(self, turn: int) -> str:
         """The ledger's posting date: the first working day of the month (A.3)."""
@@ -1537,5 +1569,60 @@ class SimulationEngine:
 
     def _write(self, path: Path) -> Path:
         write_json_atomic(path, self.record)        # never a truncated record
-        logger.info(f"[save] wrote {path}")
+        logger.debug(f"[save] wrote {path}")
         return path
+
+    # ---------------------------------------------------------- monitoring
+    # Structured events for the console and the run's logs (core.console); they
+    # read the record and never change it.
+    def _names(self) -> Dict[str, str]:
+        return {lab.key: lab.lab for lab in self.labs}
+
+    def _emit_turn(self, turn_rec: Dict[str, Any]) -> None:
+        try:
+            turn = turn_rec.get("turn")
+            monitor.emit("turn_summary", f"month {turn} done",
+                         monitor.summarize_turn(turn_rec, self._names(), monitor.spend_now()), log=logger)
+            mj = turn_rec.get("macro_jury")
+            if mj:
+                per = mj.get("per_juror") or {}
+                monitor.emit("macro_jury", f"[macro_jury] month {turn}: {mj.get('values')}", {
+                    "turn": turn, "before": (turn_rec.get("world") or {}).get("state_values"),
+                    "values": mj.get("values"), "mandate": mj.get("mandate"),
+                    "mandate_dropped": mj.get("mandate_dropped"),
+                    "failed": sum(1 for v in per.values() if not (v or {}).get("result")),
+                }, log=logger)
+        except Exception as e:      # noqa: BLE001 — monitoring never stops a run
+            logger.debug(f"turn summary not shown: {type(e).__name__}: {e}")
+
+    def _emit_final(self) -> None:
+        try:
+            final = self.record.get("final") or {}
+            names = self._names()
+            disp = final.get("dispositions") or {}
+            gj = final.get("grand_jury") or {}
+            blind = self._blind()
+            if blind:
+                disp = {}
+            if gj and self.run_grand_jury:
+                actors = gj.get("actors") or {}
+                monitor.emit("grand_jury", "[grand_jury] verdict", {
+                    "blind": blind,
+                    "rows": [{"name": names.get(k, k),
+                              "perceived": None if blind else (actors.get(k) or {}).get("perceived_disposition"),
+                              "composite": (actors.get(k) or {}).get("composite")} for k in names],
+                    "status": gj.get("error") and f"error: {gj['error']}" or (
+                        f"juror {gj.get('juror')}" + (" (fallback)" if gj.get("fallback_used") else "")),
+                }, level=logging.WARNING if gj.get("error") else logging.INFO, log=logger)
+            cfg = self.record.get("config") or {}
+            monitor.emit("final", f"final standing {self.run_id}", {
+                "run_id": self.run_id,
+                "cell": (cfg.get("run_meta") or {}).get("cell") or f"{cfg.get('scenario')}/{cfg.get('condition')}",
+                "scores": [dict(s, name=names.get(s["lab"], s["lab"]), disposition=disp.get(s["lab"]))
+                           for s in final.get("scores") or []],
+                "ups_index": final.get("ups_index"),
+                "record": str(self.output_dir / f"{self.run_id}.json") if self.output_dir else None,
+                "spend": monitor.spend_now(),
+            }, log=logger)
+        except Exception as e:      # noqa: BLE001
+            logger.debug(f"final standing not shown: {type(e).__name__}: {e}")

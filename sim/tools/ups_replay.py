@@ -485,7 +485,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                    help="in a directory, read dry-run logs too (a log file given by name is always read)")
     args = p.parse_args(argv)
     import logging
-    logging.basicConfig(level=logging.WARNING)
+    from core.logsetup import configure_logging
+    configure_logging("ups-replay", quiet=True)
     logs = find_logs(Path(args.path), include_dry=args.include_dry)
     if not logs:
         print(f"no finished run logs under {args.path}")

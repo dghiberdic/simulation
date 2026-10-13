@@ -79,7 +79,7 @@ def test_rho_below_floor_gives_median_chosen_for_every_seat():
 
 @pytest.mark.parametrize("rho,passes", [(0.5, True), (0.4999, False), (None, False)])
 def test_rho_floor_is_inclusive(monkeypatch, rho, passes):
-    monkeypatch.setattr(dt, "spearman", lambda xs, ys: rho)
+    monkeypatch.setattr(dt, "spearman_raw", lambda xs, ys: rho)   # the floor reads the unrounded value
     judged, human = _agreeing()
     rep = dt.agreement(human, judged)
     assert rep["rho"] == rho and rep["passes"] is passes

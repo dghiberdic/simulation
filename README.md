@@ -29,6 +29,57 @@ uv pip install -r requirements.txt     # SDKs, python-dotenv, pytest
 `uv run <cmd>` uses `sim/.venv`; so does `.venv/bin/python <cmd>`. The
 commands below write `python` for either.
 
+### The `sim` command
+
+One entry point for everything (`sim/cli.py`); it delegates to the scripts
+below with the same options and exit codes, so `python main.py …` and
+`./sim run …` are the same run.
+
+```bash
+./sim --help                                         # every command, with examples
+./sim run --scenario S2 --condition C --dry-run      # = python main.py …
+./sim pilot all --dry-run                            # = python pilot.py all …
+./sim campaign plan                                  # = python campaign.py plan
+./sim check                                          # scripted checks SC1–SC15, as a table
+./sim test --fast                                    # the offline suite, in parallel
+./sim status                                         # spend vs budget, recent runs
+./sim logs                                           # runs, newest first
+./sim logs <run_id> --follow                         # watch a run from another terminal
+./sim logs <run_id> --events --tag intrusion         # one kind of record
+./sim logs <run_id> --calls                          # every model call: tokens, cost, stop
+./sim tool disposition --write                       # any tools/*.py
+```
+
+Global options go before the command: `-v`/`-vv` (DEBUG on the console),
+`-q` (warnings only), `--no-color`, `--log-dir DIR`. From the repo root,
+`python -m sim …` works the same.
+
+### Logs (nothing is lost)
+
+The console shows each month as a rule, then a table of what every lab did
+(accepted actions, rejected count, what it paid, C, compute, Capital,
+Influence, score and rank), the month's public notices, MacroJury and Grand
+Jury tables, the final standing, and measured spend against the guard.
+Messages are coloured by level and by their `[tag]` (intrusion and whistleblow
+red, events magenta, juries blue, spend green). Output is plain when it is not
+a terminal, when `NO_COLOR` is set, or with `--no-color`. Pilot runs keep
+dispositions (chosen and juror-perceived) off the console and the `.log` until
+the T2 ratings are in (§9.2); the record keeps them.
+
+Every record is also written to files, at DEBUG, whatever the console level:
+
+| File | What |
+|---|---|
+| `<run dir>/<run_id>.log` | the run as the terminal showed it (tables included), with a header: argv, git commit and dirty flag, package versions, config hash, seed. A resumed run appends to it. |
+| `<run dir>/<run_id>.events.jsonl` | the same records, one JSON object each, with the structured data behind every table (`event`: `run_header`, `turn_start`, `turn_summary`, `macro_jury`, `grand_jury`, `final`) |
+| `<run dir>/<run_id>.calls.jsonl` | every model call as it returns or fails: purpose, model, the user prompt and history, the raw reply and thinking, stop reason, tokens, cost, latency, timeouts, error. System prompts are stored once by hash (`core.calllog.read_calls` restores them). |
+| `data/logs/<time>-<command>-<pid>.log` | every record of every invocation (tools, refusals and crashes before a run directory exists). Never rotated. |
+| `data/logs/calls-<date>.jsonl` | model calls outside a run (`rate_charters.py`, post-run juries) |
+
+Uncaught exceptions (main thread and worker threads), Python warnings and
+the failures `core.cli.run_main` maps to exit codes are logged with their
+tracebacks before the process exits.
+
 ### API keys
 
 Real runs read `sim/.env` (git-ignored):

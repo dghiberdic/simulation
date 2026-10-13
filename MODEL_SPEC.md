@@ -327,6 +327,16 @@ as `config.initial_state` (`core.engine.initial_state`).
   `shown_sheets`, `integrity_inputs`, `ups_index`), `ledger`, `a2a`,
   `macro_jury`, `final`. Partial record after every turn
   (`_save_partial`); a fatal API error raises `core.engine.RunAborted`.
+- Logs: `core.logsetup.configure_logging` (console via `rich`, coloured by
+  level and `[tag]`; `data/logs/<time>-<command>-<pid>.log` at DEBUG) and
+  `core.logsetup.run_logging`, entered by `SimulationEngine.run`
+  (`<run_id>.log`, `<run_id>.events.jsonl`). The engine logs structured events
+  (`core.console.emit`: `turn_start`, `turn_summary`, `macro_jury`,
+  `grand_jury`, `final`) that render as tables; pilot runs hide dispositions
+  there (`SimulationEngine._blind`, §9.2 T2). `core.llm.complete` journals
+  every call, reply or error to `<run_id>.calls.jsonl` (`core.calllog`).
+  `cli.py` (`./sim`) is the single command over `main.py`, `pilot.py`,
+  `campaign.py`, `rate_charters.py`, the scripted checks, pytest and `tools/`.
 
 ## Spec changes of this round (13 Oct)
 

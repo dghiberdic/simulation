@@ -5,5 +5,9 @@ anthropic>=0.97
 openai>=2.30
 google-genai>=1.70
 python-dotenv>=1.0
+# Console and log rendering (core.logsetup, core.console, the `sim` command).
+rich>=13
 # Tests (offline; no API keys needed).
 pytest>=8
+# Optional: `sim test --fast` runs the suite in parallel.
+pytest-xdist>=3
