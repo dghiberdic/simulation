@@ -35,8 +35,10 @@ from the first turn the log does not hold complete.
 
 Exit codes (core.exits): 0 done, 1 budget guard (when it trips during the Grand
 Jury the finished record is kept), 2 refused, aborted or crashed, 3 the run is
-finished but has no usable Grand Jury verdict (every juror failed; calling again
-asks the jury only).
+finished but its Grand Jury gave no usable verdict after the whole fallback
+chain. Such a verdict is settled: calling again does not re-ask it (exit 3
+again); --reask-grand-jury asks the jury only. A verdict the guard, a kill or a
+crash interrupted is re-asked by calling again.
 
 A finished record under the run id is this run only if its set-up (scenario,
 condition, message mode, turns, seed, kin) and its scripted --policy match;
@@ -68,13 +70,15 @@ from core.jury import GRAND_JURY_MODELS, MACRO_JURY_MODELS, collect_grand_jury
 from core.llm import FatalAPIError
 from core.preflight import model_problems, placeholder_labs
 from core.records import (KIN_CONDITION, KIN_SCENARIO, KIN_SEAT, PARTIAL_SUFFIX, cell_name,
-                          grand_jury_usable, is_dry, is_finished, is_scripted_run, read_record)
+                          grand_jury_settled, grand_jury_usable, is_dry, is_finished, is_scripted_run,
+                          read_record)
 from core.stubs import install_stubs
 
 logger = logging.getLogger(__name__)
 
-NO_VERDICT = ("{run_id}: no usable Grand Jury verdict (every juror failed); the run is finished and kept. "
-              "Calling again with this run id asks the Grand Jury only (exit 3 until it answers).")
+NO_VERDICT = ("{run_id}: no usable Grand Jury verdict after the whole fallback chain; the run is finished "
+              "and kept, and the jury is not asked again on its own (an uninterrupted run ends the same "
+              "way). To ask it again: the same command with --reask-grand-jury (the seats are not re-run).")
 
 
 def default_run_id(cell: str) -> str:
@@ -139,6 +143,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "default (warned)")
     p.add_argument("--spend-file", default=None, help="measured-spend ledger (default sim/data/spend.json)")
     p.add_argument("--no-grand-jury", action="store_true")
+    p.add_argument("--reask-grand-jury", action="store_true",
+                   help="a finished run whose Grand Jury gave no usable verdict: ask the jury again "
+                        "(only the jury; never re-runs the seats)")
     p.add_argument("--no-macro-jury", action="store_true", help="skip the MacroJury (state values stay fixed)")
     p.add_argument("--output", default=None, help="directory for the run log (default data/runs/<run_id>)")
     p.add_argument("--run-id", default=None, help="run id (default <cell>-YYYYmmdd-HHMMSS)")
@@ -265,6 +272,9 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
         return EXIT_REFUSED, None
     if existing is not None:
         if run_grand_jury and not grand_jury_usable(existing):
+            if grand_jury_settled(existing) and not args.reask_grand_jury:
+                print(NO_VERDICT.format(run_id=run_id))
+                return EXIT_FAILED, existing
             return ask_grand_jury_only(existing, run_id, output_dir, grand_jurors)
         print(f"{run_id}: already finished ({output_dir / (run_id + '.json')}); not run again")
         return EXIT_OK, existing

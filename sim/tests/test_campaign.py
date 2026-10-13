@@ -529,41 +529,45 @@ def test_finished_record_identity_includes_kin_and_policy(tmp_path, capsys):
     assert "policy 'idle' != 'always_intrude'" in capsys.readouterr().out
 
 
-def test_no_usable_grand_jury_verdict_exits_3_and_is_asked_again(tmp_path, monkeypatch):
+def test_no_usable_grand_jury_verdict_exits_3_and_is_not_reasked(tmp_path, monkeypatch, capsys):
+    """A verdict unusable after the whole fallback is settled: exit 3, never re-asked on
+    its own; --reask-grand-jury asks the jury only."""
     from core import jury as jury_mod
     orig = jury_mod.GrandJury.evaluate
-    monkeypatch.setattr(jury_mod.GrandJury, "evaluate",
-                        lambda self, *a, **kw: {"error": "no usable verdict", "actors": {}})
+    asked = []
+
+    def unusable(self, *a, **kw):
+        asked.append(1)
+        return {"error": "no usable verdict", "actors": {}}
+    monkeypatch.setattr(jury_mod.GrandJury, "evaluate", unusable)
     out = tmp_path / "r"
     code, rec = _cell(out, "g")
-    assert code == 3 and rec["final"]["scores"]
-    code, _ = _cell(out, "g")                       # still none: asked again, exit 3 again
-    assert code == 3
+    assert code == 3 and rec["final"]["scores"] and asked == [1]
+    assert _cell(out, "g")[0] == 3 and asked == [1]               # settled: not asked again
+    assert "--reask-grand-jury" in capsys.readouterr().out
     monkeypatch.setattr(jury_mod.GrandJury, "evaluate", orig)
     monkeypatch.setattr(main_mod.SimulationEngine, "run", lambda self: pytest.fail("seats run again"))
-    code, rec = _cell(out, "g")
+    code, rec = _cell(out, "g", "--reask-grand-jury")
     assert code == 0 and rec["final"]["grand_jury"].get("collected_post_run")
 
 
-def test_campaign_keeps_going_past_a_missing_verdict_and_asks_again(tmp_path):
+def test_campaign_goes_on_past_a_settled_missing_verdict(tmp_path):
     plan = campaign.build_campaign(None, 750.0, turns=8, s2_mode="merged")
     first = next(c["name"] for c in plan["cells"] if c["runs"])
-    calls, verdicts = [], {"ok": False}
+    calls = []
 
     def fake(args):
         calls.append(args.run_id)
-        if args.run_id == f"{first}-run01" and not verdicts["ok"]:
+        if args.run_id == f"{first}-run01":
             return 3, {"final": {"scores": [{"lab": "xai"}], "grand_jury": {"error": "no usable verdict"}}}
         return 0, {"final": {"scores": [{"lab": "xai"}]}}
     assert campaign.run_campaign(plan, tmp_path, dry_run=True, rounds=1, run_cell=fake) == 3
     state = json.loads((tmp_path / campaign.STATE_NAME).read_text())
     assert len(calls) == sum(1 for c in plan["cells"] if c["runs"])          # the round went on
-    assert state["jury_missing"] == [f"{first}-run01"]
-    verdicts["ok"] = True
+    assert state["no_verdict"] == [f"{first}-run01"] and state["jury_missing"] == []
     calls.clear()
-    assert campaign.run_campaign(plan, tmp_path, dry_run=True, rounds=1, run_cell=fake) == 0
-    assert calls == [f"{first}-run01"]
-    assert json.loads((tmp_path / campaign.STATE_NAME).read_text())["jury_missing"] == []
+    assert campaign.run_campaign(plan, tmp_path, dry_run=True, rounds=1, run_cell=fake) == 3
+    assert calls == []                                                        # never re-asked
 
 
 def test_dry_run_never_touches_a_real_runs_log(tmp_path, capsys):

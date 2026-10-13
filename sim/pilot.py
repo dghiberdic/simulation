@@ -98,8 +98,8 @@ from core.jury import GRAND_JURY_MODELS, MACRO_JURY_MODELS, DispositionJury, col
 from core.llm import FatalAPIError
 from core.policies import POLICIES
 from core.preflight import model_problems, placeholder_labs
-from core.records import (DRY_SUBDIR, PARTIAL_SUFFIX, finished_records, grand_jury_usable, is_dry,
-                          is_finished, read_json, write_json_atomic)
+from core.records import (DRY_SUBDIR, PARTIAL_SUFFIX, finished_records, grand_jury_settled,
+                          grand_jury_usable, is_dry, is_finished, read_json, write_json_atomic)
 from core.stubs import install_stubs
 from core.transcript import disposition_transcript, seat_letters
 from tools import summarize_run as SR
@@ -820,7 +820,7 @@ def completed_record(output_dir: Path, run_id: str, expect: Optional[Dict[str, A
 def missing_post_run(record: Dict[str, Any], run_id: str, test: str, ratings_file: Path,
                      preset: Dict[str, Any]) -> List[str]:
     out = []
-    if preset.get("grand_jury") and not grand_jury_usable(record):
+    if preset.get("grand_jury") and not grand_jury_settled(record):
         gj = (record.get("final") or {}).get("grand_jury")
         out.append(f"Grand Jury verdict ({(gj or {}).get('error') or 'none'})")
     if preset.get("disposition_rating", True):
@@ -845,7 +845,7 @@ def run_post_stages(record: Dict[str, Any], run_id: str, test: str, output_dir: 
     post: Dict[str, Any] = {"errors": [], "done": [], "rated": 0}
     stage = "Grand Jury"
     try:
-        if only_missing and preset.get("grand_jury") and not grand_jury_usable(record):
+        if only_missing and preset.get("grand_jury") and not grand_jury_settled(record):
             try:
                 post["done"].append(collect_grand_jury(record, jurors["grand"], run_id, output_dir))
             except BudgetExceeded:

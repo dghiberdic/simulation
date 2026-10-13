@@ -30,9 +30,9 @@ ratings are in):
   <out>/key/letters.csv          run_id, letter, lab, model, letter_salt: the letter
                                  -> lab key and the run's secret letter salt
 
-The letters come from the run's secret salt (core.transcript.seat_letters). A
-record that has none gets one now, and the record file is rewritten with it, so
-every tool reads the same letters.
+The letters come from the run's secret salt (core.transcript.seat_letters); a
+record without one keeps its legacy run-id letters. Records are only read,
+never rewritten, so every tool reads the same letters.
 
 Scripted seats (T5's xAI) are left out of the T2 transcripts and templates.
 Existing templates are never overwritten (they may hold our scores) unless
@@ -45,8 +45,6 @@ CLI:
 
 import argparse
 import csv
-import json
-import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -119,12 +117,6 @@ def export(records: List[Dict[str, Any]], out: Path, force: bool = False) -> Dic
             "grand_jury": str(out / "grand_jury"), "key": str(key_dir), "templates_written": wrote}
 
 
-def _write_record(path: Path, record: Dict[str, Any]) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(record, indent=2, default=str), encoding="utf-8")
-    os.replace(tmp, path)
-
-
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(description="Redacted transcripts, the letter key and blank score sheets "
                                             "for the human steps (T2, T8).")
@@ -136,17 +128,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     loaded = [(Path(path), r) for path, r in
               finished_records(args.logs, include_dry=args.include_dry, recursive=True)]
     records = [r for _path, r in loaded]
-    unsalted = [(path, r) for path, r in loaded
-                if not r.get("letter_salt") and not r.get("seat_letters")]
     if not records:
         print("no finished run records (dry-run records need --include-dry)")
         return EXIT_REFUSED
     first = Path(args.logs[0])
     out = Path(args.output) if args.output else (first if first.is_dir() else first.parent) / "human"
     res = export(records, out, args.force)
-    for path, rec in unsalted:          # the letters just drawn must stay the run's letters
-        _write_record(path, rec)
-        print(f"  {path.name}: had no letter salt; one was drawn and saved in the record")
     print(f"{len(res['runs'])} run(s), {res['seat_runs']} model seat-run(s): T2 transcripts and "
           f"blank templates (run_id + letter) in {res['blind']}; Grand Jury transcripts in "
           f"{res['grand_jury']}; letter key in {res['key']} (keep the key and the Grand Jury "

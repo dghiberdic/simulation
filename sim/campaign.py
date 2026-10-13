@@ -44,11 +44,12 @@ is then in the sum), and its catch-up runs go in the rounds the campaign has
 reached, never ahead of a higher-priority cell's next run (run_order). A run
 stopped by the guard during its Grand Jury is finished and saved: it counts as
 done with its jury missing, and the resume asks only that jury. A finished run
-whose Grand Jury gave no usable verdict (main.py exit 3) counts as done too;
-the campaign goes on and asks that jury again on the next `run`.
+whose Grand Jury gave no usable verdict after the whole fallback (main.py exit
+3; settled, as in an uninterrupted run) counts as done too and is not re-asked:
+the campaign goes on and lists it (main.py --reask-grand-jury asks again).
 
-Exit codes (core.exits): 0 done, 3 done but a Grand Jury verdict is still
-missing, else the stopping run's code (1 budget guard, 2 refused, aborted or
+Exit codes (core.exits): 0 done, 3 done but a run has no usable Grand Jury
+verdict, else the stopping run's code (1 budget guard, 2 refused, aborted or
 crashed).
 
 Money: the shared ledger's guard (a ledger total) is fixed when the campaign is
@@ -71,8 +72,8 @@ from core.config import RUNS_DIR, load_world
 from core.costs import configure, get_tracker, kin_seat_scale, project_run, with_fallbacks
 from core.engine import interview_schedule, review_turns
 from core.exits import EXIT_FAILED, EXIT_OK, EXIT_REFUSED
-from core.records import (KIN_CONDITION, KIN_SCENARIO, cell_name, finished_records, is_finished,
-                          write_json_atomic)
+from core.records import (KIN_CONDITION, KIN_SCENARIO, cell_name, finished_records, grand_jury_settled,
+                          is_finished, write_json_atomic)
 
 logger = logging.getLogger(__name__)
 
@@ -313,9 +314,10 @@ def run_campaign(plan: Dict[str, Any], runs_dir: Path, dry_run: bool, rounds: Op
     Finished runs are recorded in the state file; a re-run resumes. A run halted by
     the guard during its Grand Jury is finished and saved: it counts as done with its
     jury missing, and the next call asks only that jury (main.run_cell does). Stops on
-    a non-zero exit (budget guard: 1; anything else: 2), except a finished run with no
-    usable Grand Jury verdict (exit 3): it counts as done, its jury is asked again on the
-    next call, and the campaign goes on (exit 3 at the end while a verdict is missing).
+    a non-zero exit (budget guard: 1; anything else: 2), except a finished run whose
+    Grand Jury gave no usable verdict after the whole fallback (main.py exit 3, settled):
+    it counts as done, is listed in state["no_verdict"] and never re-asked, and the
+    campaign goes on (exit 3 at the end while such a run exists).
     `n_rounds` (resume) overrides the plan's runs per cell."""
     from main import build_parser as main_parser
     if run_cell is None:
@@ -324,6 +326,7 @@ def run_campaign(plan: Dict[str, Any], runs_dir: Path, dry_run: bool, rounds: Op
     state = read_state(state_path)
     done: Dict[str, List[str]] = state.setdefault("runs", {})
     jury_missing: List[str] = state.setdefault("jury_missing", [])
+    no_verdict: List[str] = state.setdefault("no_verdict", [])
     state["plan"] = plan
     write_state(state_path, state)
 
@@ -342,9 +345,11 @@ def run_campaign(plan: Dict[str, Any], runs_dir: Path, dry_run: bool, rounds: Op
         if name not in cells or not num.isdigit():
             continue
         print(f"[campaign] {run_id}: finished, Grand Jury missing; asking the jury only")
-        code, _record = run_cell(args_for(cells[name], int(num)))
-        if code == EXIT_FAILED:
-            print(f"[campaign] {run_id}: still no usable Grand Jury verdict; asked again on the next run")
+        code, record = run_cell(args_for(cells[name], int(num)))
+        if code == EXIT_FAILED and is_finished(record) and grand_jury_settled(record):
+            jury_missing.remove(run_id)
+            no_verdict.append(run_id)
+            write_state(state_path, state)
             continue
         if code != 0:
             print(f"[campaign] stopped at {run_id}'s Grand Jury (exit {code}); re-run to resume")
@@ -358,14 +363,17 @@ def run_campaign(plan: Dict[str, Any], runs_dir: Path, dry_run: bool, rounds: Op
         a = args_for(c, r)
         print(f"[campaign] {a.run_id}")
         code, record = run_cell(a)
+        if code == EXIT_FAILED and is_finished(record) and grand_jury_settled(record):
+            done.setdefault(c["name"], []).append(a.run_id)
+            no_verdict.append(a.run_id)
+            write_state(state_path, state)
+            print(f"[campaign] {a.run_id} is finished; its Grand Jury gave no usable verdict after the "
+                  "fallback (settled, not re-asked: main.py --reask-grand-jury asks again)")
+            continue
         if code != 0 and is_finished(record):
             done.setdefault(c["name"], []).append(a.run_id)
             jury_missing.append(a.run_id)
             write_state(state_path, state)
-            if code == EXIT_FAILED:
-                print(f"[campaign] {a.run_id} is finished but has no usable Grand Jury verdict; it counts as "
-                      "done and its jury is asked again on the next run")
-                continue
             print(f"[campaign] {a.run_id} is finished but its Grand Jury is missing (exit {code}); "
                   "re-run to resume (the jury alone is asked)")
             return code
@@ -374,11 +382,10 @@ def run_campaign(plan: Dict[str, Any], runs_dir: Path, dry_run: bool, rounds: Op
             return code
         done.setdefault(c["name"], []).append(a.run_id)
         write_state(state_path, state)
-    if jury_missing:
-        print(f"[campaign] {total} round(s) run; Grand Jury verdict still missing for {', '.join(jury_missing)}: "
-              "run again to ask the jury only")
-        return EXIT_FAILED
     print(f"[campaign] {total} round(s) complete")
+    if no_verdict:
+        print(f"[campaign] no usable Grand Jury verdict (settled) for {', '.join(no_verdict)}")
+        return EXIT_FAILED
     return EXIT_OK
 
 
