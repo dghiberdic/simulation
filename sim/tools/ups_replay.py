@@ -57,7 +57,8 @@ Usage (from sim/):
 A directory is searched recursively for finished run logs (final scores;
 *.partial.json skipped; dry-run logs only with --include-dry; a log file given
 by name is always read). Exit codes (core.exits): 0 every identity replay
-reproduces its run, 3 one does not, 2 no finished run log.
+reproduces its run, 3 one does not, 2 no finished run log or a log that
+cannot be replayed (the others are still replayed).
 """
 
 import argparse
@@ -309,6 +310,11 @@ def replay(record: Dict[str, Any], replies: Optional[Dict[int, Dict[str, Dict[st
     turns = len(complete_turns(record))
     macro = macro_outputs(record)
     extra: Dict[str, Any] = {}
+    event = conf.get("event_turn")
+    # A run shorter than its event turn (a short pre-event test run) never had the
+    # event: the engine is not asked for one, as the run's own engine was not.
+    if event is not None and int(event) >= turns:
+        event = None
     if conf.get("kin") or (conf.get("run_meta") or {}).get("kin"):
         extra["kin"] = True
     engine = ReplayEngine(
@@ -319,7 +325,7 @@ def replay(record: Dict[str, Any], replies: Optional[Dict[int, Dict[str, Dict[st
         interventions=conf.get("interventions") or [],
         choose_disposition=bool(conf.get("choose_disposition")), run_grand_jury=False,
         run_id=f"ups-replay:{(conf.get('run_meta') or {}).get('run_id', 'run')}",
-        parallel=False, interview_turns=None, event_turn=conf.get("event_turn"),
+        parallel=False, interview_turns=None, event_turn=event,
         macro_log=macro)
     if conf.get("review_turns") is not None:     # the run's schedule (a partial log is shorter)
         engine.review_turns = sorted(int(t) for t in conf["review_turns"])
@@ -484,12 +490,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not logs:
         print(f"no finished run logs under {args.path}")
         return EXIT_REFUSED
-    results = []
+    results, failed = [], []
     for path, record in logs:
         if not (records.is_run_record(record) and records.is_finished(record)):
             print(f"{path}: not a finished run log; skipped")
             continue
-        res = contributions(record)
+        try:
+            res = contributions(record)
+        except Exception as e:      # noqa: BLE001 — one log the engine cannot rebuild never stops the others
+            print(f"{path}: cannot replay ({type(e).__name__}: {e}); skipped")
+            failed.append(str(path))
+            continue
         results.append((path, res))
         if not args.json:
             print(format_result(path, res) + "\n")
@@ -498,7 +509,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         return EXIT_REFUSED
     if args.json:
         print(json.dumps([dict(r, path=str(pth)) for pth, r in results], indent=2, default=str))
-    return EXIT_OK if all(r["identity"]["ok"] for _, r in results) else EXIT_FAILED
+    if not all(r["identity"]["ok"] for _, r in results):
+        return EXIT_FAILED
+    return EXIT_REFUSED if failed else EXIT_OK
 
 
 if __name__ == "__main__":

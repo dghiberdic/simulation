@@ -346,3 +346,28 @@ def test_replay_starts_from_the_logged_state_after_config_edits(monkeypatch):
     res = U.contributions(old)
     assert res["start_state"] == "config files" and not res["identity"]["ok"]
     assert "rebuilt from the CURRENT config files" in U.format_result(Path("x.json"), res)
+
+
+def test_a_run_shorter_than_its_event_turn_replays(tmp_path):
+    import main as main_mod
+    assert main_mod.main(["--policy", "idle", "--turns", "2", "--output", str(tmp_path), "--run-id", "short"]) == 0
+    assert U.main([str(tmp_path / "short.json")]) == 0
+
+
+def test_no_finished_log_exits_2_and_a_bad_log_never_stops_the_others(tmp_path, capsys, monkeypatch):
+    assert U.main([str(tmp_path)]) == 2
+    import main as main_mod
+    for rid in ("a", "b"):
+        assert main_mod.main(["--policy", "idle", "--turns", "3", "--output", str(tmp_path / rid),
+                              "--run-id", rid]) == 0
+    real = U.contributions
+
+    def flaky(record):
+        if record.get("run_id") == "a" or (record.get("config", {}).get("run_meta") or {}).get("run_id") == "a":
+            raise ValueError("cannot rebuild")
+        return real(record)
+    monkeypatch.setattr(U, "contributions", flaky)
+    capsys.readouterr()
+    assert U.main([str(tmp_path)]) == 2
+    out = capsys.readouterr().out
+    assert "cannot replay" in out and "reproduces the run exactly" in out

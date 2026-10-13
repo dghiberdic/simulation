@@ -63,8 +63,11 @@ logs mixes pilot and main runs, the pilot runs are dropped unless --include-pilo
 
 CLI (directories are searched recursively; dry/ subdirectories only with --include-dry):
   python tools/summarize_run.py <log.json|dir> [...] [--json] [--include-dry]
-                                [--decide T3,T4,...] [--review-dir DIR] [--all-accounts]
-                                [--include-pilot] [--ups-contribution]
+                                [--decide T3,T4,... [--dvs]] [--review-dir DIR] [--all-accounts]
+                                [--include-pilot] [--include-policy] [--ups-contribution]
+  (--decide prints only the decision lines, --dvs the DV blocks too; scripted
+   --policy runs are left out unless --include-policy; with no matching run,
+   or a missing file, every form exits 2 and writes nothing)
   python tools/summarize_run.py --t1 data/pilot          # T1 over the priced and T6 runs
   python tools/summarize_run.py --t7 data/pilot/priced   # T7 criterion and sparse-events note
   python tools/summarize_run.py --t6-sheet OUT.csv data/pilot/priced data/pilot/T6
