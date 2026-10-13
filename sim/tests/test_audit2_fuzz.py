@@ -69,9 +69,6 @@ def test_resume_replays_a_review_without_a_mandate(tmp_path):
     assert _same(got) == _same(want)
 
 
-@pytest.mark.xfail(strict=True, raises=ResumeMismatch, reason=(
-    "BUG-fuzz-1: a replayed turn whose MacroJury review issued a mandate fails the resume "
-    "check (mandates_active is compared before the logged review is applied)"))
 def test_resume_replays_a_review_that_issued_a_mandate(tmp_path):
     """core.resume: 'Apart from "resumed" and the call latencies, the resumed run's
     record equals the record of an uninterrupted run given the same replies.' A
@@ -80,6 +77,17 @@ def test_resume_replays_a_review_that_issued_a_mandate(tmp_path):
     assert want["turns"][1]["mandates_active"] == [{"turn": 2, "text": MANDATE}]
     got = eng.run()
     assert _same(got) == _same(want)
+
+
+def test_resume_stops_on_a_logged_mandate_the_review_did_not_issue(tmp_path):
+    """The mandates the replayed review leaves active are still checked against the log."""
+    want, eng = _resume_after_turn_3(tmp_path, "a2fz_mj_mandate")
+    path = tmp_path / "k" / "a2fz.partial.json"
+    partial = json.loads(path.read_text())
+    partial["turns"][1]["mandates_active"] = [{"turn": 2, "text": "Something else."}]
+    path.write_text(json.dumps(partial))
+    with pytest.raises(ResumeMismatch, match="mandates_active"):
+        _engine(tmp_path / "k", "a2fz_mj_mandate").run()
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +161,8 @@ def test_reinvoked_test_writes_the_missing_summary(tmp_path, monkeypatch):
 def test_kill_after_the_final_record_leaves_the_partial_log(tmp_path, monkeypatch):
     """Documents the window (engine._save_final: write the final, then unlink the
     partial): a kill between the two keeps <run_id>.partial.json beside a finished
-    record, and nothing later removes it."""
+    record. Re-invoking the completed test leaves it; a later run of the same set-up
+    ignores it (core.resume.load_partial) and replaces it."""
     import core.engine as engine_mod
     root = _pilot_root(tmp_path)
     orig = engine_mod.write_json_atomic
@@ -216,8 +225,6 @@ MISSED = [
 
 
 @pytest.mark.parametrize("text", MISSED)
-@pytest.mark.xfail(strict=True, reason="BUG-fuzz-5: §5.1 mandate filter misses a mandate on intrusion, "
-                                       "reporting, audits or a named lab")
 def test_mandate_filter_drops(text):
     assert mandate_violation(text) is not None
 
@@ -230,8 +237,6 @@ DROPPED = [
 
 
 @pytest.mark.parametrize("text", DROPPED)
-@pytest.mark.xfail(strict=True, reason="BUG-fuzz-6: §5.1 mandate filter drops a mandate that mentions "
-                                       "none of intrusion, reporting, audits or a named lab")
 def test_mandate_filter_keeps(text):
     assert mandate_violation(text) is None
 
@@ -259,9 +264,6 @@ def _record_with(texts):
     return rec
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG-fuzz-7: spaced-out and look-alike lab names survive transcript masking "
-    "(the mandate filter normalises them; core.transcript does not)"))
 @pytest.mark.parametrize("leak", ["A n t h r o p i c", "ANTHROPΙC"])
 def test_transcripts_mask_obfuscated_lab_names(leak):
     rec = _record_with({"anthropic": f"As {leak} we keep our lead."})
@@ -274,16 +276,34 @@ def test_transcripts_mask_plain_lab_names_control():
     assert "As Anthropic" not in str(full_transcript(rec))
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG-fuzz-8: identifiability reports 0 identified while every seat's text carries an "
-    "identifying name that survived masking (the tool only scores the names the mask removes)"))
+FUZZ_LEAKS = {"anthropic": "Our Model Context Protocol and Golden Gate work set us apart.",
+              "openai": "Ilya's old team and our Whisper and Atlas products set us apart.",
+              "gdm": "Mountain View, NotebookLM and Vertex AI set us apart.",
+              "meta": "PyTorch, FAIR and Menlo Park set us apart.",
+              "xai": "Macrohard, SuperGrok and Optimus set us apart."}
+
+
+def test_transcripts_mask_the_fuzz_identifiers():
+    """§2: the products, places and people the fuzz audit injected are masked in both views."""
+    rec = _record_with(FUZZ_LEAKS)
+    words = ("Model Context Protocol", "Golden Gate", "Ilya", "Whisper", "Atlas", "Mountain View",
+             "NotebookLM", "Vertex AI", "PyTorch", "FAIR", "Menlo Park", "Macrohard", "SuperGrok",
+             "Optimus")
+    gj = str(full_transcript(rec))
+    t2 = " ".join(str(disposition_transcript(rec, k)) for k in FUZZ_LEAKS)
+    assert [w for w in words if w in gj or w in t2] == []
+
+
 def test_identifiability_counts_surviving_identifying_text():
-    texts = {"anthropic": "Our Model Context Protocol and Golden Gate work set us apart.",
-             "openai": "Ilya's old team and our Whisper and Atlas products set us apart.",
-             "gdm": "Mountain View, NotebookLM and Vertex AI set us apart.",
-             "meta": "PyTorch, FAIR and Menlo Park set us apart.",
-             "xai": "Macrohard, SuperGrok and Optimus set us apart."}
+    """Identifiers the mask leaves (LEAK_TERMS) or misses still count as evidence."""
+    texts = {"anthropic": "Our PBC structure and the Benefit Trust set us apart.",
+             "openai": "Our Microsoft Azure partnership sets us apart.",
+             "gdm": "Isomorphic and Gmail set us apart.",
+             "meta": "Our Scale AI ties set us apart.",
+             "xai": "Starbase sets us apart."}
     rec = _record_with(texts)
     gj = str(full_transcript(rec))
-    assert all(w in gj for w in ("PyTorch", "Mountain View", "Macrohard", "Whisper", "Golden Gate"))
-    assert ID.run_identifiability(rec)["grand_jury.text"]["identified"] > 0
+    assert all(w in gj for w in ("Benefit Trust", "Azure", "Isomorphic", "Scale AI", "Starbase"))
+    out = ID.run_identifiability(rec)
+    assert out["grand_jury.text"]["identified"] == 5
+    assert out["t2.text"]["identified"] == 5

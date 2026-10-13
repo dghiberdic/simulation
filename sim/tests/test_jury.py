@@ -326,7 +326,8 @@ import pytest
 from core import policies
 from core.config import build_labs_and_world, load_world
 from core.config import load_state
-from core.engine import SimulationEngine, mandate_violation
+from core.engine import SimulationEngine
+from core.mandates import mandate_violation
 from core.jury import MACRO_JURY_MODELS, MacroJury, median_value
 from core.llm import register_stub
 
@@ -865,3 +866,45 @@ def test_forfeit_error_payload_does_not_name_provider():
         assert "googleapis" not in text and "muse:" not in text and "fatalapierror" not in text
         assert "turn forfeited" in text
 
+
+
+# ---------------------------------------------------------------- post-run collection
+
+def _finished_record():
+    import test_identifiability as TI
+    return TI._record()
+
+
+def test_collect_grand_jury_keeps_paid_verdicts_on_an_interrupt(tmp_path):
+    """Ctrl-C during the fallback: the first juror's paid (failed) call is saved with
+    error "interrupted", as the engine does, then the interrupt goes on."""
+    from core.jury import collect_grand_jury
+
+    def interrupt(s, u):
+        raise KeyboardInterrupt
+    register_stub("gj_int1", lambda s, u: "not json")
+    register_stub("gj_int_fb", interrupt)
+    rec = _finished_record()
+    with pytest.raises(KeyboardInterrupt):
+        collect_grand_jury(rec, ["stub:gj_int1", "stub:gj_int_fb"], "ident-0", tmp_path)
+    saved = json.loads((tmp_path / "ident-0.json").read_text())["final"]["grand_jury"]
+    assert saved["error"] == "interrupted"
+    assert list(saved["per_juror"]) == ["stub:gj_int1"]
+
+
+def test_an_unusable_verdict_after_the_fallback_is_settled(tmp_path):
+    """Asked to the end of the chain with no usable verdict: recorded and settled, so
+    a re-invocation does not ask again (an uninterrupted run ends the same way)."""
+    from core.jury import collect_grand_jury
+    from core.records import grand_jury_settled, grand_jury_usable
+
+    register_stub("gj_bad1", lambda s, u: "not json")
+    register_stub("gj_bad_fb", lambda s, u: "still not json")
+    rec = _finished_record()
+    assert not grand_jury_settled(rec)
+    note = collect_grand_jury(rec, ["stub:gj_bad1", "stub:gj_bad_fb"], "ident-0", tmp_path)
+    assert note == "Grand Jury: no usable verdict"
+    assert not grand_jury_usable(rec) and grand_jury_settled(rec)
+    for stopped in ("pending", "budget", "interrupted", "RuntimeError: x"):
+        rec["final"]["grand_jury"] = {"error": stopped}
+        assert not grand_jury_settled(rec)

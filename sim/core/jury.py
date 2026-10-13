@@ -56,7 +56,7 @@ from core.config import CONFIG_DIR, load_charter, load_lab_configs, load_state
 from core.costs import BudgetExceeded
 from core.llm import complete_json, resolve_provider
 from core.mandates import mandate_violation
-from core.records import grand_jury_usable, write_json_atomic
+from core.records import NO_USABLE_VERDICT, grand_jury_usable, write_json_atomic
 from core.state import VALUE_AXES
 from core.transcript import charters_block, full_transcript, letters_for, mask_legend, value_text
 
@@ -476,7 +476,7 @@ def aggregate_grand(per_juror: Dict[str, Any], lab_keys: Sequence[str]) -> Dict[
     rows = rows if isinstance(rows, dict) else {}
     out["actors"] = {k: _actor_verdict(rows.get(letters.get(k)), rubric == SCORED) for k in keys}
     if used is None:
-        out["error"] = "no usable verdict"
+        out["error"] = NO_USABLE_VERDICT
     return out
 
 
@@ -587,21 +587,23 @@ def record_charters(record: Dict[str, Any]) -> Dict[str, str]:
 def collect_grand_jury(record: Dict[str, Any], jurors: List[str], run_id: str, output_dir: Path) -> str:
     """Ask the Grand Jury on a finished run's saved record (its verdict missing) and
     save the verdict into <output_dir>/<run_id>.json; the seats are never re-run. A
-    budget stop saves what the jurors gave (error "budget") and re-raises. Returns a
-    one-line note."""
+    budget stop or an interrupt saves what the jurors gave (error "budget" or
+    "interrupted") and re-raises. Returns a one-line note."""
     keys = list(record.get("labs") or {})
     transcript = full_transcript(record)
     final = record.setdefault("final", {})
+    path = Path(output_dir) / f"{run_id}.json"
     try:
         charters = charters_block(record, record_charters(record), transcript.letters)
         result = GrandJury(jurors).evaluate(transcript, keys, run_id=run_id, charters=charters)
-    except BudgetExceeded as e:
-        final["grand_jury"] = dict(aggregate_grand(getattr(e, "per_juror", None) or {}, keys), error="budget")
-        write_json_atomic(Path(output_dir) / f"{run_id}.json", record)
+    except (BudgetExceeded, KeyboardInterrupt) as e:     # keep the verdicts paid for
+        error = "budget" if isinstance(e, BudgetExceeded) else "interrupted"
+        final["grand_jury"] = dict(aggregate_grand(getattr(e, "per_juror", None) or {}, keys), error=error)
+        write_json_atomic(path, record)
         raise
     final["grand_jury"] = dict(result, collected_post_run=time.strftime("%Y-%m-%d %H:%M:%S"))
-    write_json_atomic(Path(output_dir) / f"{run_id}.json", record)
-    return f"Grand Jury: {'usable verdict' if grand_jury_usable(record) else 'no usable verdict'}"
+    write_json_atomic(path, record)
+    return f"Grand Jury: {'usable verdict' if grand_jury_usable(record) else NO_USABLE_VERDICT}"
 
 
 # ---------------------------------------------------------------------------
@@ -806,10 +808,10 @@ class MacroJury:
             best = min(legal, key=dist)
             out.update(mandate=proposals[best]["mandate"], mandate_source=proposals[best]["juror"])
         elif dropped:
-            worst = min(dropped, key=dist)
-            out["mandate_dropped"] = {"juror": proposals[worst]["juror"],
-                                      "text": proposals[worst]["mandate"],
-                                      "reason": proposals[worst]["dropped"]}
+            closest = min(dropped, key=dist)
+            out["mandate_dropped"] = {"juror": proposals[closest]["juror"],
+                                      "text": proposals[closest]["mandate"],
+                                      "reason": proposals[closest]["dropped"]}
         return out
 
 

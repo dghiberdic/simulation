@@ -21,7 +21,7 @@ import pilot
 from core import costs, llm, stubs
 from core.config import build_labs_and_world, load_world
 from core.costs import configure, get_tracker
-from core.engine import mandate_violation
+from core.mandates import mandate_violation
 from prompts.interview import QUESTION as IVQ
 from tools import disposition as disposition_mod
 from tools import jury_check

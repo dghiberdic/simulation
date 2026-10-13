@@ -328,3 +328,20 @@ def test_resumed_run_keeps_the_partial_logs_letter_salt(harness):
     got = _engine(out, letter_salt=None).run()
     assert salt and got["letter_salt"] == salt
     assert got["resumed"][-1]["replayed_turns"] == 2
+
+
+def test_a_partial_beside_the_finished_record_of_its_run_is_ignored(tmp_path):
+    """A stop between writing the final record and removing the partial log leaves
+    both; the log is stale and never replayed."""
+    from core.records import write_json_atomic
+    from core.resume import load_partial, partial_path
+
+    final = {"config": {"seed": 1}, "labs": {"a": {}}, "turns": [{"turn": 1}],
+             "final": {"scores": {"a": 1}}}
+    partial = dict(final, final={})
+    write_json_atomic(partial_path(tmp_path, "r"), partial)
+    assert load_partial(tmp_path, "r") == partial
+    write_json_atomic(tmp_path / "r.json", final)
+    assert load_partial(tmp_path, "r") is None
+    write_json_atomic(tmp_path / "r.json", dict(final, config={"seed": 2}))
+    assert load_partial(tmp_path, "r") == partial

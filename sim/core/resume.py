@@ -36,12 +36,14 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from core.llm import parse_json_detail
-from core.records import read_json
+from core.records import is_finished, read_json
 
 # Config keys that may differ between the partial log and the resuming run.
 _FREE_CONFIG_KEYS = ("run_meta",)
 # Turn-record keys the check leaves out: the review is checked on its own.
 _UNCHECKED_TURN_KEYS = ("macro_jury",)
+# Set again after a review: a logged finished review's mandate is in the logged list.
+_AFTER_REVIEW_KEYS = ("mandates_active",)
 
 
 class ResumeMismatch(RuntimeError):
@@ -100,12 +102,17 @@ def partial_path(output_dir: Path, run_id: str) -> Path:
 
 
 def load_partial(output_dir: Optional[Path], run_id: str) -> Optional[Dict[str, Any]]:
-    """The partial log of run_id, or None (missing, unreadable or not a run record)."""
+    """The partial log of run_id, or None: missing, unreadable, not a run record, or
+    left over beside the finished record of the same run (a stop between writing the
+    final record and removing the log; the next save replaces it)."""
     if output_dir is None:
         return None
     rec = read_json(partial_path(output_dir, run_id))
     if not isinstance(rec, dict) or not isinstance(rec.get("turns"), list) \
             or not isinstance(rec.get("config"), dict):
+        return None
+    final = read_json(Path(output_dir) / f"{run_id}.json")
+    if is_finished(final) and not setup_diffs(rec, final):
         return None
     return rec
 
@@ -218,9 +225,12 @@ class LoggedRun:
                                      f"after turn {self.last}; the engine or config changed since the run")
 
     def check_turn(self, turn: int, rebuilt: Dict[str, Any]) -> None:
-        """Raise ResumeMismatch unless the rebuilt turn record equals the logged one."""
-        logged = {k: v for k, v in self.turns[turn].items() if k not in _UNCHECKED_TURN_KEYS}
-        mine = {k: v for k, v in normalise(rebuilt).items() if k not in _UNCHECKED_TURN_KEYS}
+        """Raise ResumeMismatch unless the rebuilt turn record equals the logged one.
+        Called before the turn's review; when the log holds a finished review, the
+        keys it sets again are checked after it is replayed (check_reviewed)."""
+        skip = _UNCHECKED_TURN_KEYS + (_AFTER_REVIEW_KEYS if review_done(self.turns[turn]) else ())
+        logged = {k: v for k, v in self.turns[turn].items() if k not in skip}
+        mine = {k: v for k, v in normalise(rebuilt).items() if k not in skip}
         if logged == mine:
             return
         keys = sorted(k for k in set(logged) | set(mine) if logged.get(k) != mine.get(k))
@@ -231,3 +241,14 @@ class LoggedRun:
                      if (la.get(s) or {}).get(f) != (ma.get(s) or {}).get(f)]
         raise ResumeMismatch(f"turn {turn} rebuilt from the log differs from the logged turn "
                              f"({', '.join(keys[:12])}); the engine or config changed since the run")
+
+    def check_reviewed(self, turn: int, rebuilt: Dict[str, Any]) -> None:
+        """After a replayed review: the keys it set again must equal the logged ones."""
+        if not review_done(self.turns[turn]):
+            return
+        mine = normalise(rebuilt)
+        keys = [k for k in _AFTER_REVIEW_KEYS if self.turns[turn].get(k) != mine.get(k)]
+        if keys:
+            raise ResumeMismatch(f"turn {turn} rebuilt from the log differs from the logged turn "
+                                 f"after its review ({', '.join(keys)}); the engine or config "
+                                 f"changed since the run")

@@ -211,19 +211,29 @@ def test_jury_transcript_has_no_condition_text_and_seat_letters(condition):
 
 
 def test_seat_letters_fixed_per_run_and_overridable():
-    from core.transcript import letters_for, seat_letters
+    from core.transcript import legacy_letter_seed, letters_for, new_letter_salt, seat_letters
     rec = make_record()
-    letters = seat_letters(rec)                                       # salt drawn and stored
-    assert rec["letter_salt"] and seat_letters(copy.deepcopy(rec)) == letters
+    rec["letter_salt"] = salt = new_letter_salt()
+    letters = seat_letters(rec)
+    assert seat_letters(copy.deepcopy(rec)) == letters
     assert full_transcript(rec).letters == letters
-    assert letters == letters_for(KEYS, "salt:" + rec["letter_salt"])
-    # Not derivable from the run id: two copies of one run without a salt differ.
+    assert letters == letters_for(KEYS, "salt:" + salt)
+    # Not derivable from the run id: runs with the same id and different salts differ.
     keys = set()
     for _ in range(20):
         r = make_record()
         r["config"]["run_meta"] = {"run_id": "T6-run01"}
+        r["letter_salt"] = new_letter_salt()
         keys.add(tuple(seat_letters(r).values()))
     assert len(keys) > 1
+    # A record written before salts: its legacy letters, the same on every read, and
+    # the record is not changed.
+    legacy = make_record()
+    legacy.pop("letter_salt", None)
+    legacy["config"]["run_meta"] = {"run_id": "R1-run03"}
+    before = copy.deepcopy(legacy)
+    assert seat_letters(legacy) == seat_letters(legacy) == letters_for(KEYS, legacy_letter_seed(legacy))
+    assert legacy_letter_seed(legacy) == "run:R1-run03" and legacy == before
     rec["seat_letters"] = {"anthropic": "A", "openai": "B", "gdm": "C", "meta": "D", "xai": "E"}
     assert seat_letters(rec) == rec["seat_letters"]
     assert letters_for(KEYS) == {"anthropic": "A", "openai": "B", "gdm": "C", "meta": "D",

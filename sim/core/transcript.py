@@ -48,7 +48,8 @@ from datetime import date
 from fractions import Fraction
 from typing import Any, Dict, List, Optional, Tuple
 
-from core.names import LAB_NAMES, ORDINARY_WORDS, VERSION_TAIL, VERSIONED
+from core.mandates import normalise_spans
+from core.names import LAB_NAMES, ORDINARY_WORDS, UPPERCASE_ONLY, VERSION_TAIL, VERSIONED, capitalised
 import prompts.brief as _brief_mod
 from prompts.packets import opening_items, scenario_items
 from prompts.turn import value_text
@@ -822,7 +823,7 @@ AMBIGUOUS_TERMS = {"frontier ai framework"}
 GENERIC_CHARTER_MASK = "[CHARTER]"
 CHARTER_TERM_MASK = "[CHARTER TERM]"
 # core.names categories -> the mask category.
-_MASK_CATEGORY = {"lab": "lab", "actor": "lab", "products": "lab", "people": "person",
+_MASK_CATEGORY = {"lab": "lab", "actor": "lab", "products": "lab", "places": "lab", "people": "person",
                   "charter": "charter", "charter_terms": "charter_term"}
 # Never masked although they contain a charter or lab word.
 # "AI Risk Management Framework" is NIST's (cited in xAI's text), not xAI's RMF.
@@ -860,21 +861,35 @@ def new_letter_salt() -> str:
     return secrets.token_hex(16)
 
 
+def legacy_letter_seed(record: Dict[str, Any]) -> str:
+    """The letter seed of a record written before runs carried a secret salt: its
+    run id, else its config (the letters such a record was judged under)."""
+    cfg = record.get("config") or {}
+    run_id = record.get("run_id") or (cfg.get("run_meta") or {}).get("run_id")
+    if run_id:
+        return f"run:{run_id}"
+    first = next((t.get("date") for t in record.get("turns") or [] if t.get("date")), None)
+    ident = [cfg.get(k) for k in ("seed", "scenario", "condition", "fog", "a2a_mode", "rotation",
+                                  "turns")] + [first, sorted(record.get("labs") or {})]
+    return "cfg:" + json.dumps(ident, sort_keys=True, default=str)
+
+
 def seat_letters(record: Dict[str, Any]) -> Dict[str, str]:
     """The run's fixed seat letters (code contract, "Juries"): record["seat_letters"]
     if the record carries a complete map, else a permutation of A-E seeded by the
-    run's secret salt, record["letter_salt"] (also written to key/letters.csv), so
-    the juror and our own blind ratings see the same letters, a letter does not
-    name the same lab in every run, and no one can rebuild the key from the run id
-    the raters see. A record without a salt gets one drawn now and stored in it;
-    save the record afterwards (the engine stores the salt at run start)."""
+    run's secret salt, record["letter_salt"] (set by the engine at run start, also
+    written to key/letters.csv), so the juror and our own blind ratings see the
+    same letters, a letter does not name the same lab in every run, and no one
+    can rebuild the key from the run id the raters see. A record without a salt
+    (written before salts) keeps the letters of its legacy seed
+    (legacy_letter_seed). Pure: the record is never changed."""
     keys = list(record.get("labs") or {})
     given = record.get("seat_letters")
     if isinstance(given, dict) and set(given) >= set(keys) and \
             len({given[k] for k in keys}) == len(keys):
         return {k: str(given[k]) for k in keys}
     if not record.get("letter_salt"):
-        record["letter_salt"] = new_letter_salt()
+        return letters_for(keys, legacy_letter_seed(record))
     return letters_for(keys, "salt:" + str(record["letter_salt"]))
 
 
@@ -928,21 +943,26 @@ def _mask_terms(record: Dict[str, Any], seat_key: Optional[str], letters: Dict[s
     return terms
 
 
-def _term_regex(term: str) -> str:
+def term_regex(term: str) -> str:
     """Whole words joined by space, hyphen or nothing ("Deep Mind", "Open-AI");
     VERSIONED names with their version ("grok 4.7"); ORDINARY_WORDS only
-    capitalised, in capitals, or lower-case directly before a version."""
-    body = r"[\s\-‐]*".join(map(re.escape, term.split(" ")))
+    capitalised, in capitals, or lower-case directly before a version;
+    UPPERCASE_ONLY words in capitals only."""
+    def joined(t: str) -> str:
+        return r"[\s\-‐]*".join(map(re.escape, t.split(" ")))
+    body = joined(term)
     tail = VERSION_TAIL if term in VERSIONED else ""
+    if term in UPPERCASE_ONLY:
+        return joined(term.upper())
     if term in ORDINARY_WORDS:
-        cap = re.escape(term[0].upper()) + re.escape(term[1:])
-        return rf"(?:(?:{cap}|{re.escape(term.upper())}){tail}|(?i:{body})(?=[\s-]?\d)(?i:{tail}))"
+        cap = joined(capitalised(term))
+        return rf"(?:(?:{cap}|{joined(term.upper())}){tail}|(?i:{body})(?=[\s-]?\d)(?i:{tail}))"
     return f"(?i:{body}{tail})"
 
 
 def _names_pattern(terms: Dict[str, Tuple[str, str]]) -> Tuple[re.Pattern, List[str]]:
     ordered = sorted(terms, key=len, reverse=True)                 # longest first
-    alts = "|".join(f"(?P<g{i}>{_term_regex(t)})" for i, t in enumerate(ordered))
+    alts = "|".join(f"(?P<g{i}>{term_regex(t)})" for i, t in enumerate(ordered))
     # Hyphen prefixes mask ("ex-OpenAI"); plural and possessive suffixes stay.
     return re.compile(r"(?<![\w])(?:" + alts + r")(?P<suf>'s|’s|s|es)?(?![\w])"), ordered
 
@@ -972,13 +992,17 @@ def _mask_names(text: str, record: Dict[str, Any], seat_key: Optional[str],
         return m.group(0)
     text = re.sub(r"(?<![\w.])@([A-Za-z0-9_]+)", handle, text)
 
+    # Names are found in the normalised text (spaced-out letters, look-alikes,
+    # invisible characters: core.mandates.normalise_spans) and masked in the original.
     pattern, ordered = _names_pattern(terms)
-
-    def sub(m: re.Match) -> str:
+    shadow, origin = normalise_spans(text)
+    out, last = [], 0
+    for m in pattern.finditer(shadow):
         group = next(g for g in m.groupdict() if g.startswith("g") and m.group(g) is not None)
-        mask = terms[ordered[int(group[1:])]][0]
-        return mask + (m.group("suf") or "")
-    text = pattern.sub(sub, text)
+        start, end = origin[m.start()], origin[m.end() - 1] + 1
+        out += [text[last:start], terms[ordered[int(group[1:])]][0] + (m.group("suf") or "")]
+        last = end
+    text = "".join(out) + text[last:]
     return re.sub("\ue000(\\d+)\ue001", lambda m: saved[int(m.group(1))], text)
 
 
@@ -992,7 +1016,10 @@ def redact(text: str, record: Dict[str, Any], seat_key: Optional[str] = None,
     terms and slogans, as whole words (longest first; case-insensitive;
     multi-word names across space or hyphen; plural/possessive suffixes and
     hyphen prefixes handled; "US Constitution", "meta-analysis", "to grok", "I
-    muse" kept). The table is core.names.
+    muse" kept). The table is core.names. Names are read on the text normalised
+    as the mandate filter reads it (core.mandates.normalise_spans: spaced-out or
+    hyphenated letters, look-alike letters, invisible characters, a zero for o),
+    and the original span is masked.
 
     Every lab's names become its seat letter ("Seat C"; `letters`, a {lab key:
     letter} map, else seat_letters(record)), its charter "[Seat C charter]",
