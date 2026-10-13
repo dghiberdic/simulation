@@ -146,7 +146,7 @@ def test_runs_per_cell_from_the_budget_and_whole_cell_cuts():
 def test_interview_runs_only_if_it_adds_at_most_15_percent():
     cheap = {"interview_per_turn": 0.05}
     plan = campaign.build_campaign(cheap, 750.0)
-    assert plan["interview"]["run"] and plan["interview_turns"] == [3, 4, 5, "final"]
+    assert plan["interview"]["run"] and plan["interview_turns"] == [3, 4, 5, 8]
     dear = {"interview_per_turn": 2.0}
     plan = campaign.build_campaign(dear, 750.0)
     assert not plan["interview"]["run"] and plan["interview_turns"] == []
@@ -594,9 +594,78 @@ def test_resume_refuses_plan_flags_without_replan(tmp_path, monkeypatch, capsys)
 
 
 def test_replan_order_runs_a_restored_cell_at_the_current_round():
-    plan = {"runs_per_cell": 6, "cells": [{"name": n, "runs": 6} for n in ("S1-A", "S2-A", "S1-A0")]}
+    plan = {"runs_per_cell": 6, "cells": [{"name": n, "runs": 6} for n in ("S1-A", "S2-A", "S1-A0")],
+            "catch_up": {"S1-A0": 4}}
     done = {"S1-A": ["r"] * 4, "S2-A": ["r"] * 4}
     order = [f"{c['name']}-run{r:02d}" for c, r in campaign.run_order(plan, done, 6)]
     assert order[:3] == ["S1-A-run05", "S2-A-run05", "S1-A0-run01"]
     assert order[3:6] == ["S1-A-run06", "S2-A-run06", "S1-A0-run02"]
     assert order[6:] == ["S1-A0-run03", "S1-A0-run04", "S1-A0-run05", "S1-A0-run06"]
+
+
+def test_replan_restoring_a_cut_cell_keeps_its_catch_up_across_resumes(tmp_path, monkeypatch):
+    """The cells cut at plan time come back on --replan after two rounds: their run 1
+    goes in round 3, after the round's higher-priority runs, and a plain resume after a
+    stop keeps that order (the offsets are in the saved plan)."""
+    plan, cost, active, state = _two_rounds_done(tmp_path, monkeypatch)
+    cut = [c["name"] for c in plan["cells"] if not c["runs"]]
+    a0 = [c["name"] for c in plan["cells"] if c["group"] == "A0"]
+    _ledger(tmp_path / "spend.json", state["guard"] - 2000.0)
+    costs.configure()
+    order = []
+    monkeypatch.setattr(main_mod, "run_cell", _paying_run_cell(tmp_path, cost, order=order,
+                                                               fail_at=f"{a0[0]}-run02"))
+    assert campaign.main(_campaign_argv(tmp_path, "--replan")) == 1
+    saved = json.loads((tmp_path / "runs" / campaign.STATE_NAME).read_text())["plan"]
+    assert saved["catch_up"] == {n: 2 for n in cut}
+    assert order[:len(active) + len(cut)] == [f"{k}-run03" for k in active] + [f"{n}-run01" for n in cut]
+    costs.configure()
+    order.clear()
+    monkeypatch.setattr(main_mod, "run_cell", _paying_run_cell(tmp_path, cost, order=order))
+    assert campaign.main(_campaign_argv(tmp_path, "--rounds", "5")) == 0
+    assert order[:len(cut)] == [f"{n}-run02" for n in cut]       # round 4 finishes, from the stopped run
+    assert order[len(cut):len(cut) + len(active)] == [f"{k}-run05" for k in active]
+
+
+def test_replan_in_round_one_does_not_push_the_round_back():
+    """A re-plan while round 1 is in progress: the cells not yet run are not "restored"
+    (none was cut), so round 1 finishes first."""
+    names = [c["name"] for c in campaign.all_cells()]
+    plan = campaign.build_campaign(None, 750.0, turns=8, s2_mode="separate", done={names[0]: 1}, restored=[])
+    assert plan["catch_up"] == {}
+    order = [f"{c['name']}-run{r:02d}" for c, r in campaign.run_order(plan, {names[0]: ["x"]}, 2)]
+    assert order[0] == f"{names[1]}-run01"
+
+
+def test_refused_first_run_is_planned_afresh_but_a_stopped_one_resumes(tmp_path, monkeypatch):
+    """Only a refused first run (nothing on disk) re-plans; a first run stopped with its
+    partial log on disk resumes the saved plan and its flags."""
+    _ledger(tmp_path / "spend.json", 0.0)
+    monkeypatch.setattr(main_mod, "run_cell", lambda a: (2, None))
+    assert campaign.main(_campaign_argv(tmp_path, "--turns", "4", "--max-runs", "2")) == 2
+    assert json.loads((tmp_path / "runs" / campaign.STATE_NAME).read_text())["refused"] == "S1-A-run01"
+    turns = []
+    monkeypatch.setattr(main_mod, "run_cell", lambda a: (turns.append(a.turns), (2, None))[1])
+    assert campaign.main(_campaign_argv(tmp_path)) == 2              # refused, nothing paid: afresh
+    assert turns == [8]
+    (tmp_path / "runs" / "S1-A").mkdir(parents=True)
+    (tmp_path / "runs" / "S1-A" / "S1-A-run01.partial.json").write_text("{}")
+    turns.clear()
+    assert campaign.main(_campaign_argv(tmp_path)) == 2              # a log on disk: the saved plan
+    assert turns == [8]
+    assert "--turns would be ignored" in _refusal(tmp_path, "--turns", "4")
+
+
+def _refusal(tmp_path, *flags):
+    import io
+    from contextlib import redirect_stdout
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        assert campaign.main(_campaign_argv(tmp_path, *flags)) == 2
+    return buf.getvalue()
+
+
+def test_plan_lists_only_the_interview_turns_a_run_has(capsys):
+    assert campaign.main(["plan", "--dry-run", "--turns", "4", "--pilot-dir", "/nonexistent"]) == 0
+    out = capsys.readouterr().out
+    assert "interview at turns 3, 4 (4 = final)" in out and "5" not in out.split("interview", 1)[1].split("(")[0]

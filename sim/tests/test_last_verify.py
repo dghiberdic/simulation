@@ -122,8 +122,6 @@ def test_settled_unusable_grand_jury_is_not_reasked_on_post_run_only(tmp_path, m
 # Recovery: the campaign's saved plan after a stop during its first run
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, reason="BUG-last-2: a stop during the campaign's first run discards the "
-                                       "saved plan; a plain `run` re-plans with defaults (8 turns, not 4)")
 def test_campaign_resume_after_stop_in_first_run_keeps_saved_plan(tmp_path, monkeypatch):
     """README: "`run` again resumes the saved plan: the same cells and set-up". The plan
     was saved with --turns 4; the first run was interrupted (its partial log is on
@@ -375,9 +373,6 @@ def test_stale_partial_beside_a_finished_record_is_removed_on_reinvocation(tmp_p
     assert not partial.exists()
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-last-8: after a stop mid-round, the resumed campaign runs the "
-                                       "higher-priority cells' next round before the unfinished round's "
-                                       "remaining cells")
 def test_resume_mid_round_finishes_the_round_first():
     """§9.3: "Runs go in interleaved rounds, one per cell, in priority A, C, A0, kin, B".
     Stopped during round 1 after S1-A, S2-A and S1-C: round 1's S2-C comes next, not

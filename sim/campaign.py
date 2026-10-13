@@ -32,16 +32,18 @@ per round, recording the plan, the guard and finished runs in
 with the saved plan: the same cells, cuts and set-up, and rounds = rounds done +
 floor(budget left / round cost) (never more than first planned). On a resume,
 --budget, --headroom, --turns, --a2a and --max-runs are refused (they would be
-ignored): pass --replan to use them. A saved plan under which no run has
-finished yet (the first run was refused or stopped) is planned afresh, with
-its saved guard unless --budget or --headroom is given. `run --replan`
+ignored): pass --replan to use them. Only a campaign whose first run was
+refused (main.py exit 2 with no run log on disk: nothing paid) is planned
+afresh, with its saved guard unless --budget or --headroom is given; a first
+run that was stopped or killed resumes the saved plan like any other. `run --replan`
 re-plans the cells from the budget left instead: each cell keeps the runs it
 has done (a cell counts only the runs it actually ran), runs per cell are the
 most R whose remaining cost, the sum over the kept cells of (R − done[cell]) ×
 run cost, fits the budget left, and cells are cut whole against that sum. A
 cell cut before restarts from run 1 only if the re-plan keeps it (its full cost
 is then in the sum), and its catch-up runs go in the rounds the campaign has
-reached, never ahead of a higher-priority cell's next run (run_order). A run
+reached, never ahead of a higher-priority cell's next run (the plan's
+catch_up offsets, read by run_order). A run
 stopped by the guard during its Grand Jury is finished and saved: it counts as
 done with its jury missing, and the resume asks only that jury. A finished run
 whose Grand Jury gave no usable verdict after the whole fallback (main.py exit
@@ -64,7 +66,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -146,7 +148,8 @@ def affordable_runs(cells: List[Dict[str, Any]], done: Dict[str, int], budget: f
 def build_campaign(inputs: Optional[Dict[str, Any]], budget: float, turns: int = 8, s2_mode: str = "separate",
                    max_runs: int = MAX_RUNS, min_runs: int = MIN_RUNS,
                    cfg: Optional[Dict[str, Any]] = None, done_rounds: int = 0,
-                   done: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
+                   done: Optional[Dict[str, int]] = None, restored: Iterable[str] = (),
+                   catch_up: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
     """
     The schedule: interview decision, per-cell run cost, runs per cell and the
     cells cut. Runs per cell R = affordable_runs: the most R whose cost, the sum
@@ -156,7 +159,10 @@ def build_campaign(inputs: Optional[Dict[str, Any]], budget: float, turns: int =
     and the plan says so; a cut that buys no run is not made). A re-plan
     mid-campaign (--replan) passes `done` ({cell: runs it has done}, only the
     cells that ran) and the budget left; `done_rounds` (every cell the same) is
-    the older form.
+    the older form. It also passes `restored` (the cells the saved plan cut) and
+    the saved plan's `catch_up`: a restored cell the new plan keeps starts its
+    catch-up in the round the cells it rejoins have reached, so its run r goes in
+    round r + catch_up[cell] (run_order); the saved offsets of kept cells carry over.
     """
     cfg = cfg or load_world()
     full = with_fallbacks(inputs)
@@ -171,15 +177,20 @@ def build_campaign(inputs: Optional[Dict[str, Any]], budget: float, turns: int =
     round_cost = round(sum(c["cost"]["total"] for c in active), 2)
     remaining_cost = sum(max(0, runs - done.get(c["name"], 0)) * c["cost"]["total"] for c in active)
     done_min = min((done.get(c["name"], 0) for c in active), default=0)
+    kept = {c["name"] for c in active}
+    restored = set(restored) & kept
+    base = min((done.get(n, 0) for n in kept - restored), default=0)
+    offsets = {n: o for n, o in (catch_up or {}).items() if n in kept - restored and o}
+    offsets.update({n: base - done.get(n, 0) for n in sorted(restored) if base > done.get(n, 0)})
     return {
         "budget": round(budget, 2), "turns": turns, "s2_mode": s2_mode, "interview": iv,
-        "interview_turns": MAIN_INTERVIEW if iv["run"] else [],
+        "interview_turns": interview_schedule(MAIN_INTERVIEW, turns) if iv["run"] else [],
         "cells": [{"name": c["name"], "group": c["group"], "scenario": c["scenario"], "condition": c["condition"],
                    "kin": c["kin"], "a2a": c["a2a"], "run_cost": c["cost"]["total"], "cost_parts": c["cost"],
                    "runs": runs if c in active else 0} for c in cells],
         "cut_groups": cut, "runs_per_cell": runs, "round_cost": round_cost, "done_rounds": done_min,
         "done": {c["name"]: done.get(c["name"], 0) for c in cells if done.get(c["name"], 0)},
-        "total": round(remaining_cost, 2),
+        "catch_up": offsets, "total": round(remaining_cost, 2),
         "reserve": round(budget - remaining_cost, 2),
         "below_min": runs < min_runs, "estimated": full.get("estimated") or [],
         "kin_seat_scale": kin_seat_scale(full),
@@ -213,10 +224,16 @@ def _schedule(full: Dict[str, Any], budget: float, turns: int, s2_mode: str, int
     return cells, runs, cut, active
 
 
+def _interview_text(plan: Dict[str, Any]) -> str:
+    """'at turns 3, 4, 5, 8 (8 = final)': the turns a run of the plan's length has."""
+    turns = plan["interview_turns"]
+    return f"at turn{'s' if len(turns) > 1 else ''} {', '.join(map(str, turns))} ({plan['turns']} = final)"
+
+
 def campaign_lines(plan: Dict[str, Any]) -> List[str]:
     iv = plan["interview"]
     lines = [f"Main-run campaign: ${plan['budget']:.2f} for the main runs, {plan['turns']} turns, S2/kin messages "
-             f"{plan['s2_mode']}, interview {'at 3, 4, 5, final' if iv['run'] else 'dropped'} (adds at most "
+             f"{plan['s2_mode']}, interview {_interview_text(plan) if iv['run'] else 'dropped'} (adds at most "
              f"{iv['worst_share']:.0%} of a run's cost; threshold {INTERVIEW_SHARE:.0%})",
              f"  {'cell':<10}{'a2a':<10}{'run $':>8}{'runs':>6}"]
     for c in plan["cells"]:
@@ -328,6 +345,7 @@ def run_campaign(plan: Dict[str, Any], runs_dir: Path, dry_run: bool, rounds: Op
     jury_missing: List[str] = state.setdefault("jury_missing", [])
     no_verdict: List[str] = state.setdefault("no_verdict", [])
     state["plan"] = plan
+    state.pop("refused", None)
     write_state(state_path, state)
 
     def args_for(c: Dict[str, Any], r: int) -> argparse.Namespace:
@@ -378,6 +396,9 @@ def run_campaign(plan: Dict[str, Any], runs_dir: Path, dry_run: bool, rounds: Op
                   "re-run to resume (the jury alone is asked)")
             return code
         if code != 0:
+            if code == EXIT_REFUSED:
+                state["refused"] = a.run_id
+                write_state(state_path, state)
             print(f"[campaign] stopped at {a.run_id} (exit {code}); re-run to resume")
             return code
         done.setdefault(c["name"], []).append(a.run_id)
@@ -389,24 +410,32 @@ def run_campaign(plan: Dict[str, Any], runs_dir: Path, dry_run: bool, rounds: Op
     return EXIT_OK
 
 
+def started(state: Dict[str, Any], runs_dir: Path) -> bool:
+    """Whether the saved plan has begun: a run finished, or the last `run` did not end
+    on a refusal of its first run, or a run log (finished or partial) of one of its
+    cells is on disk."""
+    if any((state.get("runs") or {}).values()) or state.get("jury_missing") or not state.get("refused"):
+        return True
+    cells = [c["name"] for c in (state.get("plan") or {}).get("cells", [])]
+    return any(any((runs_dir / n).glob(f"{n}-run*.json")) for n in cells if (runs_dir / n).is_dir())
+
+
 def run_order(plan: Dict[str, Any], done: Dict[str, List[str]], total: int) -> List[Any]:
     """
     The remaining runs (cell, run number) up to `total` per cell, in interleaved
-    rounds in priority order (§9.3). A cell behind the others (one a re-plan
-    restored after a cut) starts its catch-up at the round the campaign has
-    reached, so its runs never go ahead of a higher-priority cell's next run:
-    run r of a cell with d runs done goes in round max(r, R0 + r - d), where R0
-    is the fewest runs done by a cell that has run.
+    rounds in priority order (§9.3): run r of a cell goes in round r, so a resume
+    finishes the round in progress before the next begins. A cell a re-plan
+    restored after a cut catches up from the round the campaign had reached: its
+    run r goes in round r + plan["catch_up"][cell] (build_campaign), never ahead
+    of a higher-priority cell's next run.
     """
     active = [c for c in plan["cells"] if c["runs"]]
-    counts = {c["name"]: len(done.get(c["name"], [])) for c in active}
-    ran = [n for n in counts.values() if n]
-    r0 = min(ran) if ran else 0
+    offsets = plan.get("catch_up") or {}
     slots = []
     for priority, c in enumerate(active):
-        d = counts[c["name"]]
+        d = len(done.get(c["name"], []))
         for r in range(d + 1, total + 1):
-            slots.append((max(r, r0 + r - d), priority, r, c))
+            slots.append((r + offsets.get(c["name"], 0), priority, r, c))
     return [(c, r) for _slot, _priority, r, c in sorted(slots, key=lambda x: x[:3])]
 
 
@@ -451,10 +480,10 @@ def main(argv=None) -> int:
     saved = state.get("plan") if isinstance(state.get("plan"), dict) and state["plan"].get("cells") else None
     done = state.get("runs") or {}
 
-    # A saved plan under which nothing has finished yet (the first run was refused or
-    # stopped) is planned afresh; its guard is kept unless --budget/--headroom is given.
-    started = any(done.values()) or bool(state.get("jury_missing"))
-    if saved and not started:
+    # A campaign whose first run was refused, with nothing paid, is planned afresh (its
+    # guard is kept unless --budget/--headroom is given); a stopped or killed first run
+    # resumes the saved plan.
+    if saved and not started(state, runs_dir):
         saved = None
     if saved and args.command == "run" and not args.replan:
         given = [flag for flag, value in (("--budget", args.budget), ("--headroom", args.headroom),
@@ -492,7 +521,9 @@ def main(argv=None) -> int:
     plan = build_campaign(pilot_inputs(pilot_root), budget,
                           turns=args.turns or (replan or {}).get("turns") or pilot_turns(pilot_root),
                           s2_mode=args.a2a or pilot_s2_mode(pilot_root, include_dry=args.dry_run),
-                          max_runs=args.max_runs or MAX_RUNS, done=done_counts)
+                          max_runs=args.max_runs or MAX_RUNS, done=done_counts,
+                          restored=[c["name"] for c in (replan or {}).get("cells", []) if not c["runs"]],
+                          catch_up=(replan or {}).get("catch_up"))
     print("\n".join(campaign_lines(plan)))
     if args.command == "plan":
         if saved:

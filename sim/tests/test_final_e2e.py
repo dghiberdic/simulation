@@ -139,8 +139,10 @@ def test_post_run_only_collects_the_rerun_grand_jury(tmp_path, capsys):
 
 def test_replan_keeps_priority_order_when_a_cut_cell_returns(tmp_path):
     done = {"S1-A": 4, "S2-A": 4, "S1-C": 4, "S2-C": 4}
-    plan = campaign.build_campaign(None, 300.0, turns=8, s2_mode="separate", done=done)
+    cut = [c["name"] for c in campaign.all_cells() if c["group"] in ("A0", "kin", "B")]
+    plan = campaign.build_campaign(None, 300.0, turns=8, s2_mode="separate", done=done, restored=cut)
     assert any(c["runs"] for c in plan["cells"] if c["group"] == "A0")      # the re-plan keeps A0
+    assert plan["catch_up"]["S1-A0"] == 4
     state = {"runs": {k: [f"{k}-run{i:02d}" for i in range(1, n + 1)] for k, n in done.items()}}
     (tmp_path / campaign.STATE_NAME).write_text(json.dumps(state))
     order = []
