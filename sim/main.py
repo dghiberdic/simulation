@@ -128,7 +128,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--model", action="append", default=[], metavar="KEY=MODEL",
                    help="override one seat's model, e.g. meta=claude-opus-5-5")
     p.add_argument("--budget", type=float, default=None,
-                   help="halt at this measured spend (USD, shared ledger); none by default (warned)")
+                   help="ledger total (USD, absolute, shared ledger) at which the run halts; none by "
+                        "default (warned)")
     p.add_argument("--spend-file", default=None, help="measured-spend ledger (default sim/data/spend.json)")
     p.add_argument("--no-grand-jury", action="store_true")
     p.add_argument("--no-macro-jury", action="store_true", help="skip the MacroJury (state values stay fixed)")

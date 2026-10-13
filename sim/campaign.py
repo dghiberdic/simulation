@@ -23,7 +23,7 @@ untested, §6.4). "A run's cost" is read per cell, over the cells the plan with
 the interview keeps (a cut cell never decides), on the unrounded share.
 
 Commands:
-    python campaign.py plan [--budget USD] [--turns N] [--s2-mode merged|separate]
+    python campaign.py plan [--budget USD | --headroom USD] [--turns N] [--s2-mode merged|separate]
     python campaign.py run  [--dry-run] [--rounds N] [--replan] [same options]
 
 `run` executes the plan round by round through main.run_cell, one run per cell
@@ -38,9 +38,13 @@ are the most R whose remaining cost, the sum over the kept cells of
 against that sum. A cell cut before restarts from run 1 only if the re-plan
 keeps it (its full cost is then in the sum). A run stopped by the
 guard during its Grand Jury is finished and saved: it counts as done with its
-jury missing, and the resume asks only that jury. The shared ledger's guard is
-fixed when the campaign is first planned: the ledger total then plus the main
-runs' budget ($750 minus the spend so far, by default).
+jury missing, and the resume asks only that jury.
+
+Money: the shared ledger's guard (a ledger total) is fixed when the campaign is
+first planned. --budget USD is that total, as in every other tool (default
+$750, the round's budget, pilot included); --headroom USD instead sets it to
+the ledger's measured spend so far plus USD. The main runs are planned against
+the guard minus the spend so far.
 """
 
 import argparse
@@ -200,7 +204,7 @@ def _schedule(full: Dict[str, Any], budget: float, turns: int, s2_mode: str, int
 
 def campaign_lines(plan: Dict[str, Any]) -> List[str]:
     iv = plan["interview"]
-    lines = [f"Main-run campaign: budget ${plan['budget']:.2f}, {plan['turns']} turns, S2/kin messages "
+    lines = [f"Main-run campaign: ${plan['budget']:.2f} for the main runs, {plan['turns']} turns, S2/kin messages "
              f"{plan['s2_mode']}, interview {'at 3, 4, 5, final' if iv['run'] else 'dropped'} (adds at most "
              f"{iv['worst_share']:.0%} of a run's cost; threshold {INTERVIEW_SHARE:.0%})",
              f"  {'cell':<10}{'a2a':<10}{'run $':>8}{'runs':>6}"]
@@ -361,8 +365,12 @@ def run_campaign(plan: Dict[str, Any], runs_dir: Path, dry_run: bool, rounds: Op
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Main-run schedule (spec §9.3).")
     p.add_argument("command", choices=["plan", "run"])
-    p.add_argument("--budget", type=float, default=None,
-                   help="USD for the main runs (default: $750 minus the ledger's measured spend so far)")
+    money = p.add_mutually_exclusive_group()
+    money.add_argument("--budget", type=float, default=None,
+                       help="ledger total (USD, absolute, shared ledger) at which the campaign stops; the "
+                            "main runs get this minus the measured spend so far (default: $750)")
+    money.add_argument("--headroom", type=float, default=None,
+                       help="USD the main runs may add on top of the ledger's measured spend so far")
     p.add_argument("--turns", type=int, default=None, help="run length (default: the pilot's T7 decision, else 8)")
     p.add_argument("--s2-mode", choices=["merged", "separate"], default=None,
                    help="S2 and kin message mode (default: T9's decision from the pilot logs)")
@@ -409,8 +417,10 @@ def main(argv=None) -> int:
     # --replan: each cell keeps the runs it actually ran (never the campaign's
     # completed rounds credited to a cell that has none).
     done_counts = {name: len(runs) for name, runs in done.items() if runs} if (saved and args.replan) else {}
-    if args.budget is not None:
-        budget = args.budget
+    if args.headroom is not None:
+        budget = args.headroom
+    elif args.budget is not None:
+        budget = max(args.budget - spent, 0.0)
     elif saved and args.replan and state.get("guard") is not None:
         budget = max(float(state["guard"]) - spent, 0.0)
     else:
@@ -426,6 +436,7 @@ def main(argv=None) -> int:
                   "`run` resumes its saved plan; `run --replan` adopts a new one")
         return 0
     guard = spent + budget
+    print(f"[campaign] guard: ledger total ${guard:.2f} (${spent:.2f} spent so far)")
     state["guard"] = round(guard, 4)
     state["budget_at_plan"] = round(budget, 4)
     write_state(state_path, state)

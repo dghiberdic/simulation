@@ -142,8 +142,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="use stub models; print ratings but write nothing (non-destructive)")
     p.add_argument("--lab", choices=list(LAB_ORDER), default=None, help="rate a single seat")
     p.add_argument("--budget", type=float, default=None,
-                   help="absolute guard on the shared ledger total (USD); default: config/pilot.json "
-                        "budget_guard")
+                   help="ledger total (USD, absolute, shared ledger) at which rating halts; default: "
+                        "config/pilot.json budget_guard")
     p.add_argument("--headroom", type=float, default=None,
                    help="instead of an absolute guard, allow this much spend on top of the ledger's current total")
     p.add_argument("--spend-file", default=None,

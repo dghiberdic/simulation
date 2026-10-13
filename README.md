@@ -345,15 +345,17 @@ perceived vs chosen disposition per seat, UPS-weight sensitivity).
 2. Plan: `python campaign.py plan`. It reads the pilot's measured costs
    (`data/pilot`), T7's run length (`approval.json`) and T9's message mode
    (from the T4/T9 logs), decides whether the interview at turns 3, 4, 5 and
-   final fits (≤ 15% of a run's cost), and sets runs per cell from the budget
-   ($750 minus the ledger's spend so far, or `--budget`); cells are cut whole
+   final fits (≤ 15% of a run's cost), and sets runs per cell from the money
+   left under the guard. `--budget USD` is the guard, a ledger total as in
+   every other tool (default $750, the round's budget, pilot included);
+   `--headroom USD` sets it to the spend so far plus USD instead. Cells are cut whole
    (B, kin, A0, C) below 6 runs per cell; at most 12 (`--max-runs`).
    `--turns`, `--s2-mode merged|separate` override the pilot's decisions.
 3. Run: `python campaign.py run [--rounds N]`. Interleaved rounds, one run per
    cell per round, priority A, C, A0, kin, B. `--rounds N` is the TOTAL number
    of rounds to have done (rounds already done count), not N more rounds. The first `run` saves its plan
    (cells, cuts, run length, message mode, interview turns) and the guard
-   (ledger total then + budget) in `data/runs/campaign_state.json`, with every
+   (a ledger total) in `data/runs/campaign_state.json`, with every
    finished run. It stops on the first non-zero exit (1 budget guard, 2
    anything else); `run` again resumes the saved plan: the same cells and
    set-up, and rounds = rounds done + floor(budget left / round cost), never
@@ -521,14 +523,16 @@ aborts the run. A seat whose reply cannot be parsed forfeits that month.
 One ledger, `data/spend.json`, records the measured cost of every paid call
 (priced from `config/prices.json`) across all tools and runs; the per-call log
 is `data/spend_calls.jsonl`. The guard is checked before every paid call and
-compares the **ledger total** (not the current run's spend) with the guard:
+compares the **ledger total** (not the current run's spend) with the guard.
+`--budget USD` is that ledger total in every tool; `--headroom N` (rate_charters,
+campaign) sets it to the ledger's spend so far plus N:
 
 | Entry point | Guard |
 |---|---|
 | `rate_charters.py` | $48 (`budget_guard` in `config/pilot.json`); `--budget USD` or `--headroom N` (ledger + N) |
 | `pilot.py` | `--budget USD`, else the approval's (`approve --budget`), else $48 |
 | `main.py` | none unless `--budget USD` (a warning is printed) |
-| `campaign.py run` | fixed when the campaign is first planned: ledger spend then + budget (default $750 − spend so far); a resume keeps it |
+| `campaign.py run` | fixed when the campaign is first planned: `--budget USD` (default $750) or `--headroom N` (ledger + N); a resume keeps it |
 
 Calls already in flight when the guard trips still complete, so spend can
 exceed it by at most one stage of concurrent calls. A timed-out request or

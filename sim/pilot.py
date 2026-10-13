@@ -926,8 +926,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output", default=None, help="pilot root directory (default data/pilot, dry: data/pilot/dry)")
     p.add_argument("--spend-file", default=None, help="measured-spend ledger (default sim/data/spend.json)")
     p.add_argument("--budget", type=float, default=None,
-                   help="the guard in USD (a team decision): approve stores it; default the approval's, "
-                        "else $48")
+                   help="the guard: ledger total (USD, absolute, shared ledger) at which the pilot halts "
+                        "(a team decision): approve stores it; default the approval's, else pilot.json's")
     p.add_argument("--turns", type=int, default=None,
                    help="T7: the run length the team decided (approve, plan); 8 or 12")
     p.add_argument("--rerun", action="store_true", help="T6 only: the reserve's re-run (T6-run02)")

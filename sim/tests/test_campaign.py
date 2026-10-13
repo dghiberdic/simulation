@@ -274,10 +274,10 @@ def test_resume_reuses_the_saved_plan_across_processes(tmp_path, monkeypatch):
     order = []
     monkeypatch.setattr(main_mod, "run_cell", _paying_run_cell(tmp_path, cost, fail_at=f"{active[1]}-run03",
                                                                order=order))
-    assert campaign.main(_campaign_argv(tmp_path, "--budget", "300")) == 1
+    assert campaign.main(_campaign_argv(tmp_path, "--headroom", "300")) == 1
     state = json.loads((tmp_path / "runs" / campaign.STATE_NAME).read_text())
     assert state["guard"] == pytest.approx(300.0) and state["plan"]["runs_per_cell"] == plan["runs_per_cell"]
-    # A fresh process: new tracker, module state re-read from disk, no --budget.
+    # A fresh process: new tracker, module state re-read from disk, no --headroom.
     costs.configure()
     order.clear()
     monkeypatch.setattr(main_mod, "run_cell", _paying_run_cell(tmp_path, cost, order=order))
@@ -296,7 +296,7 @@ def test_resume_rounds_follow_the_budget_left(tmp_path, monkeypatch):
     active = [c["name"] for c in plan["cells"] if c["runs"]]
     monkeypatch.setattr(main_mod, "run_cell", _paying_run_cell(tmp_path, cost, factor=1.5,
                                                                fail_at=f"{active[0]}-run03"))
-    assert campaign.main(_campaign_argv(tmp_path, "--budget", "300")) == 1
+    assert campaign.main(_campaign_argv(tmp_path, "--headroom", "300")) == 1
     costs.configure()
     spent = json.loads((tmp_path / "spend.json").read_text())["total_usd"]
     want = 2 + int((300.0 - spent) // plan["round_cost"])
@@ -405,7 +405,7 @@ def _two_rounds_done(tmp_path, monkeypatch):
     cost = {c["name"]: c["run_cost"] for c in plan["cells"]}
     active = [c["name"] for c in plan["cells"] if c["runs"]]
     monkeypatch.setattr(main_mod, "run_cell", _paying_run_cell(tmp_path, cost, fail_at=f"{active[0]}-run03"))
-    assert campaign.main(_campaign_argv(tmp_path, "--budget", "300")) == 1
+    assert campaign.main(_campaign_argv(tmp_path, "--headroom", "300")) == 1
     state = json.loads((tmp_path / "runs" / campaign.STATE_NAME).read_text())
     assert {k: len(v) for k, v in state["runs"].items()} == {k: 2 for k in active}
     return plan, cost, active, state
@@ -492,3 +492,18 @@ def test_rounds_is_the_total_not_more_rounds(tmp_path):
     assert ran == []                                   # already at 2 rounds: nothing more
     assert campaign.run_campaign(plan, tmp_path, dry_run=True, rounds=3, run_cell=ok) == 0
     assert ran and all(r.endswith("-run03") for r in ran)
+
+
+def test_budget_is_the_ledger_total_and_headroom_is_on_top(tmp_path, monkeypatch):
+    """--budget is an absolute ledger total, as in main.py and pilot.py; --headroom adds
+    to the spend so far. After a $50 pilot: --budget 300 -> guard $300; --headroom 300 -> $350."""
+    monkeypatch.setattr(main_mod, "run_cell", lambda args: (2, None))     # stop at the first run
+    for flag, guard in (("--budget", 300.0), ("--headroom", 350.0)):
+        d = tmp_path / flag.strip("-")
+        d.mkdir()
+        _ledger(d / "spend.json", 50.0)
+        costs.configure()
+        assert campaign.main(_campaign_argv(d, flag, "300")) == 2
+        state = json.loads((d / "runs" / campaign.STATE_NAME).read_text())
+        assert state["guard"] == guard
+        assert state["budget_at_plan"] == guard - 50.0

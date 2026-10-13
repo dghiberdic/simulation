@@ -167,7 +167,7 @@ as `config.initial_state` (`core.engine.initial_state`).
 | T2 blind disposition rater (same juror) | `core.jury.DispositionJury` |
 | MacroJury: `kimi-k3`, `deepseek-v4-pro`, `qwen-3.8-max`, median | `core.jury.MacroJury` (`MACRO_JURY_MODELS`; models listed in `config/states/usa.json`); each review's values and mandate kept in `record["macro_jury"]` |
 | Pilot slant read of the first values and mandates; mandates logged by cell (§5.1) | `tools/summarize_run.py` `_macro_section`, `macro_lines`, `macro_slant_line` (every pilot summary's `MacroJury` line), `_aggregate_macro` (mandates by cell) |
-| Grand Jury re-ask on a saved record (budget stop during the jury; T8 re-score) | `pilot.collect_grand_jury`; `main.ask_grand_jury_only`; `pilot.rescore_grand_jury` (`pilot.py T6 --rescore-grand-jury`, old verdict in `final.grand_jury_previous`) |
+| Grand Jury re-ask on a saved record (budget stop during the jury; T8 re-score) | `core.jury.collect_grand_jury` (via `pilot.py` and `main.ask_grand_jury_only`); `pilot.rescore_grand_jury` (`pilot.py T6 --rescore-grand-jury`, old verdict in `final.grand_jury_previous`) |
 | Juror providers (OpenAI-compatible) and router | `core.llm` (`KEY_ENV`, `JUROR_BASE_URLS`, `BASE_URL_ENV`, `JUROR_BASE_URL` / `JUROR_API_KEY` / `JUROR_MODEL_IDS`, `wire_model_id`) |
 
 ## §8 Scoring
@@ -195,7 +195,7 @@ as `config.initial_state` (`core.engine.initial_state`).
   pair_intrude, always_intrude, t5_scripted, malformed).
 - Pilot (presets priced, T6, T5, T4, T9 in `config/pilot.json`): `pilot.py`
   (`resolve_preset`, `run_test`, `run_all`, `approve`, `build_plan`,
-  `plan_lines`, `_hard_stop`). T1 seed swap: `pilot.swap_capability`. T5
+  `plan_lines`, `_hard_stop`). T1 seed swap: `core.economy.swap_capability`. T5
   plant: `SimulationEngine._apply_interventions` (`plant_intrusion`) and the
   scripted xAI `core.policies.t5_scripted`.
 - Budget: `$50` / guard `$48` (`config/pilot.json` `budget`, `budget_guard`);
@@ -237,6 +237,11 @@ as `config.initial_state` (`core.engine.initial_state`).
 
 ### §9.3 Dependent variables and main runs
 
+- Run records: `core/records.py` (`load_records`, `finished_records`,
+  `is_finished`, `grand_jury_usable`, `run_id_of`, `cell_name`, `cell_of`,
+  `run_kind`: main / pilot / policy / dry; `write_json_atomic`), read by every
+  tool and driver. Dry-run stubs: `core/stubs.py`; checks before a real run
+  (placeholder charter values, model keys): `core/preflight.py`.
 - DVs per run and pooled: `tools/summarize_run.py` `summarize`, `aggregate`
   (`_intrusion_section`, `_collusion_section`, `_reporting_section` with rival
   vs costly reports `report_kind` — a partner report whose reporter's own part
@@ -251,7 +256,7 @@ as `config.initial_state` (`core.engine.initial_state`).
   `load_main_runs`).
 - Alignment and chosen vs judged disposition per seat:
   `tools/jury_analysis.py` (`extract_rows`, `seat_measures`).
-- One cell per call: `main.py` (`run_cell`, `cell_name`, `resolve_dispositions`,
+- One cell per call: `main.py` (`run_cell`, `resolve_dispositions`,
   `apply_model_overrides`; a finished record is never re-run or deleted,
   `finished_record`, `clear_stale`; a missing Grand Jury is asked alone,
   `ask_grand_jury_only`; dry runs default to `data/runs/dry/`, `run_dir`).
