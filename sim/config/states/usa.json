@@ -7,10 +7,6 @@
     "risk_tolerance": 60,
     "democratic_tendency": 70
   },
-  "macro_jury_models": [
-    "kimi-k3",
-    "deepseek-v4-pro",
-    "qwen-3.8-max"
-  ],
-  "mandate_screen_model": "deepseek-v4-pro"
+  "macro_jury_model": "kimi-k3",
+  "mandate_screen_model": "kimi-k3"
 }

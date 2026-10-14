@@ -106,7 +106,9 @@ def test_verified_b_cut_first_then_kin():                     # verified
     """§9.3: below about 6 runs per cell whole cells are cut, B first."""
     cfg = load_world()
     full = None
-    p = campaign.build_campaign(full, 300.0, turns=8, s2_mode="merged", cfg=cfg)
+    # $280: the single-juror MacroJury (one Kimi call + the screen per review) made a
+    # review cheaper, so at $300 only B is cut now; $280 still cuts B, then kin.
+    p = campaign.build_campaign(full, 280.0, turns=8, s2_mode="merged", cfg=cfg)
     assert p["cut_groups"][:2] == ["B", "kin"]
     assert p["runs_per_cell"] >= campaign.MIN_RUNS
     assert all(c["runs"] == 0 for c in p["cells"] if c["group"] in p["cut_groups"])

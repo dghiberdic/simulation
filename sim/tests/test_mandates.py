@@ -446,5 +446,5 @@ def test_run_names_reach_the_filter_through_deliberate():
     register_stub("mand_named", lambda s, u: _json.dumps(
         {"values": {a: 50 for a in VALUE_AXES}, "mandate": "Zeta Labs must slow down.", "rationale": "x"}))
     current = {a: 50 for a in VALUE_AXES}
-    out = MacroJury(["stub:mand_named"] * 3).deliberate("United States", current, "s", labs=[Seat()])
+    out = MacroJury(["stub:mand_named"]).deliberate("United States", current, "s", labs=[Seat()])
     assert out["mandate"] == "" and out["mandate_dropped"]["reason"] == "names a lab ('Zeta Labs')"

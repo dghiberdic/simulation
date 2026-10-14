@@ -35,33 +35,37 @@ def _vote(v=50, mandate=""):
 
 
 def _board(name, replies):
-    models = []
-    for i, r in enumerate(replies):
-        def fn(s, u, r=r):
-            if isinstance(r, Exception):
-                raise r
-            return r if isinstance(r, str) else json.dumps(r)
-        register_stub(f"{name}{i}", fn)
-        models.append(f"stub:{name}{i}")
-    return models
+    """The one stub juror: it answers replies[i] on its i-th call (the last
+    repeats); a reply is a dict (JSON), a raw string, or an Exception (raised)."""
+    left = list(replies)
+
+    def fn(s, u):
+        r = left.pop(0) if len(left) > 1 else left[0]
+        if isinstance(r, Exception):
+            raise r
+        return r if isinstance(r, str) else json.dumps(r)
+    register_stub(name, fn)
+    return [f"stub:{name}"]
 
 
 # ---------------------------------------------------------------- MacroJury (§7)
 
-def test_median_even_votes_and_out_of_range_juror():                   # verified
-    """§7: median of the jurors that answer, whole point; an out-of-range juror
-    does not answer (retried, then unusable), so two votes decide."""
-    jurors = _board("a4oor", [_vote(61), _vote(64), {"values": {a: 150 for a in VALUE_AXES}}])
+def test_vote_rounded_and_out_of_range_reply_is_asked_again():          # verified
+    """§7: one juror; its values rounded to a whole point (half up). An out-of-range
+    reply is unusable (corrective retries, then the review is asked once more)."""
+    oor = {"values": {a: 150 for a in VALUE_AXES}, "mandate": ""}
+    jurors = _board("a4oor", [oor, oor, oor, _vote(62.5)])
     out = MacroJury(jurors).deliberate("United States", dict(START), "s")
-    assert out["values"] == {a: 63 for a in VALUE_AXES}          # mean 62.5 -> 63
-    assert out["per_juror"][jurors[2]]["result"] is None
-    assert median_value([10, 62.5, 90]) == 63
+    assert out["values"] == {a: 63 for a in VALUE_AXES}          # 62.5 -> 63
+    tries = out["per_juror"][jurors[0]]["review_attempts"]
+    assert [t["result"] is None for t in tries] == [True, False]
+    assert median_value([62.5]) == 63
 
 
-def test_all_jurors_fail_or_malformed_values_stay():                    # verified
-    jurors = _board("a4dead", [RuntimeError("down"), "not json at all", RuntimeError("x")])
+def test_juror_fails_twice_values_stay():                               # verified
+    jurors = _board("a4dead", [RuntimeError("down"), "not json at all"])
     out = MacroJury(jurors).deliberate("United States", dict(START), "s")
-    assert out["values"] == START and "0 usable vote(s)" in out["values_kept"]
+    assert out["values"] == START and "after 2 ask(s)" in out["values_kept"]
     assert out["mandate"] == ""
 
 
@@ -70,7 +74,7 @@ def test_screen_fails_closed_on_error_and_on_garbage():                 # verifi
     register_stub("a4scr_bad", lambda s, u: '{"violates": "maybe"}')
     for model in ("stub:a4scr_err", "stub:a4scr_bad"):
         assert screen_mandate("Expand domestic compute.", model)["violates"] is None
-        jurors = _board("a4scrb" + model[-3:], [_vote(50, "Expand domestic compute.")] * 3)
+        jurors = _board("a4scrb" + model[-3:], [_vote(50, "Expand domestic compute.")])
         out = MacroJury(jurors, screen_model=model).deliberate("United States", dict(START), "s")
         assert out["mandate"] == "" and out["values"] == {a: 50 for a in VALUE_AXES}
 
@@ -82,11 +86,16 @@ def test_review_turns_never_reach_the_final_turn():                     # verifi
     assert review_turns(cfg, 6) == [2] and review_turns(cfg, 2) == []
 
 
-def test_single_legal_mandate_is_not_issued():   # behaviour pinned (spec-ambiguity A4-3)
-    """§7 says only 'may issue mandates'; code needs 2 of 3 legal proposals."""
-    jurors = _board("a4one", [_vote(50, "Expand domestic compute."), _vote(50), _vote(50)])
+def test_single_juror_legal_mandate_is_issued():   # behaviour pinned (A4-3, now one juror)
+    """§7 'may issue mandates': the one juror's mandate is issued when it passes the
+    keyword filter and the language-model screen; no majority is needed."""
+    jurors = _board("a4one", [_vote(50, "Expand domestic compute.")])
     out = MacroJury(jurors).deliberate("United States", dict(START), "s")
-    assert out["mandate"] == ""
+    assert out["mandate"] == "Expand domestic compute." and out["mandate_source"] == jurors[0]
+    assert [s["violates"] for s in out["mandate_screen"]] == [False]
+    jurors = _board("a4one_bad", [_vote(50, "Labs will be audited next month.")])
+    out = MacroJury(jurors).deliberate("United States", dict(START), "s")
+    assert out["mandate"] == "" and out["mandate_dropped"]["text"] == "Labs will be audited next month."
 
 
 @pytest.mark.xfail(strict=True, reason='refuted on verification (see audit/AUDIT_2026-10-13.md): A4-4 the language-model screen covers it (fails closed); only the keyword pre-filter misses it')

@@ -1596,6 +1596,7 @@ class SimulationEngine:
                     "values": mj.get("values"), "mandate": mj.get("mandate"),
                     "mandate_dropped": mj.get("mandate_dropped"),
                     "failed": sum(1 for v in per.values() if not (v or {}).get("result")),
+                    "retried": bool(mj.get("retried")),
                 }, log=logger)
         except Exception as e:      # noqa: BLE001 — monitoring never stops a run
             logger.debug(f"turn summary not shown: {type(e).__name__}: {e}")

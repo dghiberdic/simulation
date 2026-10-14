@@ -284,7 +284,9 @@ def _macro_jury(d: Dict[str, Any]):
     elif d.get("mandate_dropped"):
         t.caption = f"mandate dropped: {d['mandate_dropped']}"
     if d.get("failed"):
-        t.caption = (t.caption or "") + f"  ({d['failed']} juror(s) failed)"
+        t.caption = (t.caption or "") + "  (no usable reply after two asks: values kept)"
+    elif d.get("retried"):
+        t.caption = (t.caption or "") + "  (asked twice)"
     return t
 
 

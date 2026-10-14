@@ -408,7 +408,7 @@ def test_turn_appended_before_macro_jury(tmp_path):
         raise BudgetExceeded("guard")
     register_stub("r2_bad_macro", bad_juror)
     eng = _model_engine(lambda k, s, m, u: _idle(s), turns=5, output_dir=tmp_path, run_id="mj",
-                        macro_jurors=["stub:r2_bad_macro"] * 3)
+                        macro_jurors=["stub:r2_bad_macro"])
     with pytest.raises(BudgetExceeded):
         eng.run()
     saved = json.loads((tmp_path / "mj.partial.json").read_text())
@@ -936,19 +936,25 @@ def test_budget_during_grand_jury_keeps_the_paid_verdicts(tmp_path):
 
 
 def test_budget_during_macro_jury_keeps_the_votes_cast(tmp_path):
-    """An incomplete MacroJury keeps the per_juror entries paid for."""
-    def broke(s, u):
+    """An incomplete MacroJury keeps the per_juror entry paid for: the first ask
+    failed, the budget stopped the second; the first ask is kept."""
+    calls = []
+
+    def juror(s, u):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("HTTP 502")
         raise BudgetExceeded("guard")
-    axes = ("time_horizon", "transparency_threshold", "risk_tolerance", "democratic_tendency")
-    register_stub("claude-r6mok", lambda s, u: json.dumps({"values": {a: 50 for a in axes}, "mandate": ""}))
-    register_stub("gpt-r6mbroke", broke)
+    register_stub("kimi-r6m", juror)
     eng = _model_engine(lambda k, s, m, u: _idle(s), turns=5, output_dir=tmp_path, run_id="mj6",
-                        macro_jurors=["stub:claude-r6mok", "stub:gpt-r6mbroke", "stub:claude-r6mok"])
+                        macro_jurors=["stub:kimi-r6m"])
     with pytest.raises(BudgetExceeded):
         eng.run()
     # updated: the first review is now at the end of turn 2 (review_turns)
     mj = json.loads((tmp_path / "mj6.partial.json").read_text())["turns"][1]["macro_jury"]
-    assert mj["incomplete"] is True and list(mj["per_juror"]) == ["stub:claude-r6mok"]
+    assert mj["incomplete"] is True and list(mj["per_juror"]) == ["stub:kimi-r6m"]
+    pj = mj["per_juror"]["stub:kimi-r6m"]
+    assert len(pj["review_attempts"]) == 1 and "HTTP 502" in pj["error"]
 
 
 def test_shown_and_opening_sheets_match_the_prompts():

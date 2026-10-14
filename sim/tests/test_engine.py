@@ -104,11 +104,8 @@ def _macro_stub(name, mandate="Prioritise domestic compute and long-term plannin
     def macro(system, user):
         return json.dumps({"values": {a: 50 for a in VALUE_AXES},
                            "mandate": mandate, "rationale": "x"})
-    jurors = []
-    for fam in ("claude", "gpt", "gemini"):
-        register_stub(f"{fam}-{name}", macro)
-        jurors.append(f"stub:{fam}-{name}")
-    return jurors
+    register_stub(f"kimi-{name}", macro)
+    return [f"stub:kimi-{name}"]
 
 
 def _macro_run(turns, jurors, overrides=None):

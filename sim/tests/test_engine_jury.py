@@ -70,14 +70,14 @@ def _macro_reply(system, user):
 
 def test_lineup_and_families():
     assert GRAND_JURY_MODELS == ("kimi-k3", "deepseek-v4-pro")
-    assert MACRO_JURY_MODELS == ("kimi-k3", "deepseek-v4-pro", "qwen-3.8-max")
+    assert MACRO_JURY_MODELS == ("kimi-k3",)
     assert GrandJury(examples=[]).jurors == ["kimi-k3", "deepseek-v4-pro"]
     assert DispositionJury().jurors == ["kimi-k3", "deepseek-v4-pro"]
     assert MacroJury().jurors == list(MACRO_JURY_MODELS)
     assert juror_family("kimi-k3") == "kimi" and juror_family("stub:qwen-x") == "qwen"
     assert juror_family("deepseek-v4-pro") == "deepseek" and juror_family("odd") == "other"
     with pytest.raises(ValueError):
-        MacroJury(["stub:a"])
+        MacroJury(["stub:a", "stub:b"])
 
 
 def test_grand_and_macro_jury_in_the_engine():
@@ -91,7 +91,7 @@ def test_grand_and_macro_jury_in_the_engine():
     eng = SimulationEngine(
         labs, world, cfg, scenario="S1", condition="B", turns=5, seed=2,
         policy=greedy_intrude, run_grand_jury=True, grand_jurors=["stub:gj_engine"],
-        macro_jurors=["stub:mj1", "stub:mj2", "stub:mj3"])
+        macro_jurors=["stub:mj1"])
     jury_mod_examples = jury_mod.load_examples
     record = eng.run()
     gj = record["final"]["grand_jury"]
@@ -376,118 +376,132 @@ def _capture(monkeypatch):
     return calls
 
 
+def _seq(name, replies):
+    """One stub juror answering `replies` in order (the last one repeats); a
+    reply is a dict (sent as JSON), a raw string, or an Exception (raised)."""
+    left = list(replies)
+
+    def fn(system, user):
+        r = left.pop(0) if len(left) > 1 else left[0]
+        if isinstance(r, BaseException):
+            raise r
+        return r if isinstance(r, str) else json.dumps(r)
+    register_stub(name, fn)
+    return f"stub:{name}"
+
+
+def _v(values, mandate=""):
+    return {"values": {a: values for a in AXES}, "mandate": mandate, "rationale": "x"}
+
+
 def test_macro_jury_numeric_robustness(monkeypatch):
     calls = _capture(monkeypatch)
-    register_stub("mj_bad", lambda s, u: json.dumps(
-        {"values": {"time_horizon": "about 60", "transparency_threshold": 50,
-                    "risk_tolerance": 50, "democratic_tendency": None}, "mandate": ""}))
     register_stub("mj_hi", lambda s, u: json.dumps(
         {"values": {"time_horizon": 90, "transparency_threshold": "10",
-                    "risk_tolerance": 50, "democratic_tendency": 50},
+                    "risk_tolerance": 50.5, "democratic_tendency": 49.4},
          "mandate": "Expand domestic compute.", "rationale": "x"}))
     current = {"time_horizon": 55, "transparency_threshold": 65, "risk_tolerance": 60,
                "democratic_tendency": 70}
     mandates = [{"turn": 4, "text": "Report breaches within a week."}]
-    res = MacroJury(["stub:mj_bad", "stub:mj_hi", "stub:mj_hi"]).deliberate(
-        "United States", current, "summary", mandates=mandates)
-    bad = res["per_juror"]["stub:mj_bad"]                    # failed juror kept
-    assert bad["result"] is None and bad["attempts"] == 3
-    assert len(bad["errors"]) == 3 and "about 60" in bad["errors"][0]
-    assert res["per_juror"]["stub:mj_hi"]["result"]["mandate"] == "Expand domestic compute."
-    # §7: the median of the usable votes (two: their mean), no step cap
+    res = MacroJury(["stub:mj_hi"]).deliberate("United States", current, "summary",
+                                               mandates=mandates)
+    # §7: the juror's values, rounded to a whole point (halves up), no step cap
     assert res["values"] == {"time_horizon": 90, "transparency_threshold": 10,
-                             "risk_tolerance": 50, "democratic_tendency": 50}
-    assert res["mandate"] == "Expand domestic compute."     # 2 of the 3-member board
-    assert res["values_kept"] is None
-    assert res["per_juror"]["stub:mj_hi"]["effort"] == "medium"
-    assert res["per_juror"]["stub:mj_hi"]["max_tokens"] == 8000
+                             "risk_tolerance": 51, "democratic_tendency": 49}
+    assert res["mandate"] == "Expand domestic compute." and res["mandate_source"] == "stub:mj_hi"
+    assert res["values_kept"] is None and res["retried"] is False
+    pj = res["per_juror"]["stub:mj_hi"]
+    assert pj["effort"] == "medium" and pj["max_tokens"] == 8000 and pj["family"] == "other"
+    assert len(pj["review_attempts"]) == 1
     call = calls[0]
     assert call["max_tokens"] == 8000 and call["effort"] == "medium"
-    assert "at most 5 points" not in call["user"] and "median" in call["user"]
+    assert "at most 5 points" not in call["user"] and "median" not in call["user"]
+    assert "three-member" not in call["system"]
     assert "Report breaches within a week." in call["user"]
     assert '"rationale"' in call["user"]
 
-    # All jurors hedge: values unchanged, no mandate, no crash.
-    res = MacroJury(["stub:mj_bad"] * 3).deliberate("United States", current, "s")
-    assert res["values"] == current and res["mandate"] == ""
+
+def test_macro_jury_hedging_juror_is_asked_twice_then_values_stay():
+    """Non-numeric values (after complete_json's corrective retries) are unusable:
+    the review is asked once more; if that fails too the values stay, no mandate."""
+    register_stub("mj_bad", lambda s, u: json.dumps(
+        {"values": {"time_horizon": "about 60", "transparency_threshold": 50,
+                    "risk_tolerance": 50, "democratic_tendency": None},
+         "mandate": "Expand domestic compute."}))
+    current = {a: 50 for a in AXES}
+    res = MacroJury(["stub:mj_bad"]).deliberate("United States", current, "s")
+    bad = res["per_juror"]["stub:mj_bad"]
+    assert res["values"] == current and res["mandate"] == "" and res["retried"] is True
+    assert "no usable reply" in res["values_kept"]
+    assert bad["result"] is None and len(bad["review_attempts"]) == 2
+    assert bad["attempts"] == 6 and len(bad["errors"]) == 6 and "about 60" in bad["errors"][0]
+    assert all(t["attempts"] == 3 and t["result"] is None for t in bad["review_attempts"])
+    json.dumps(res)
 
 
-def test_macro_jury_mandate_needs_majority():
-    register_stub("mj_m", lambda s, u: json.dumps(
-        {"values": {a: 50 for a in AXES}, "mandate": "Pause expansion."}))
-    register_stub("mj_n", lambda s, u: json.dumps({"values": {a: 50 for a in AXES},
-                                                    "mandate": ""}))
+def test_macro_jury_first_ask_fails_second_is_used():
+    """(b) An erroring first ask is retried once on the same model; the second reply is used."""
+    model = _seq("kimi-mjretry", [RuntimeError("HTTP 502 upstream"), _v(62.5, "Expand domestic compute.")])
+    res = MacroJury([model]).deliberate("US", {a: 50 for a in AXES}, "s")
+    assert res["values"] == {a: 63 for a in AXES} and res["values_kept"] is None
+    assert res["mandate"] == "Expand domestic compute." and res["retried"] is True
+    pj = res["per_juror"][model]
+    assert pj["result"]["mandate"] == "Expand domestic compute." and "error" not in pj
+    first, second = pj["review_attempts"]
+    assert first["result"] is None and "HTTP 502" in first["error"]
+    assert second["result"] is not None
+    assert any("HTTP 502" in e for e in pj["errors"])          # both asks' errors kept
+
+
+def test_macro_jury_unusable_first_reply_is_retried():
+    model = _seq("kimi-mjjunk", ["not json", "not json", "not json", _v(40)])
+    res = MacroJury([model]).deliberate("US", {a: 50 for a in AXES}, "s")
+    assert res["values"] == {a: 40 for a in AXES} and res["retried"] is True
+    assert [t["result"] is None for t in res["per_juror"][model]["review_attempts"]] == [True, False]
+
+
+def test_macro_jury_both_asks_fail_values_stay_run_continues():
+    """(c) Both asks fail: values stay, no mandate, nothing raised."""
+    model = _seq("kimi-mjdead", [RuntimeError("down")])
     cur = {a: 50 for a in AXES}
-    jury = MacroJury(["stub:mj_m", "stub:mj_n", "stub:mj_n"])
-    assert jury.deliberate("US", cur, "")["mandate"] == ""
-    jury = MacroJury(["stub:mj_m", "stub:mj_m", "stub:mj_n"])
-    assert jury.deliberate("US", cur, "")["mandate"] == "Pause expansion."
+    res = MacroJury([model]).deliberate("US", cur, "s")
+    assert res["values"] == cur and res["mandate"] == "" and res["mandate_dropped"] is None
+    assert res["proposals"] == [] and res["mandate_screen"] == []
+    pj = res["per_juror"][model]
+    assert pj["result"] is None and len(pj["review_attempts"]) == 2 and "down" in pj["error"]
+    assert "after 2 ask(s)" in res["values_kept"]
+
+
+def test_macro_jury_needs_exactly_one_model():
     with pytest.raises(ValueError):
-        MacroJury(["stub:mj_m"])
+        MacroJury(["stub:mj_a", "stub:mj_b", "stub:mj_c"])
+    assert MacroJury("stub:mj_a").jurors == ["stub:mj_a"]
 
 
 def _vote(values, mandate):
     return lambda s, u: json.dumps({"values": {a: values for a in AXES}, "mandate": mandate})
 
 
-def test_macro_mandate_text_from_juror_closest_to_median():
-    # Two of three propose; the median vector is 50 (mj_mid's); the text comes from
-    # the proposer closest to it, not the first or the most common.
-    register_stub("mj_far", _vote(90, "Halt all compute purchases."))
-    register_stub("mj_mid", _vote(50, "Publish every purchase within a month."))
-    register_stub("mj_low", _vote(40, ""))
+def test_macro_mandate_single_juror_issued_or_dropped():
+    """(d) The juror's legal mandate is issued (after the screen); an illegal or blank
+    one is not."""
+    register_stub("mj_m", _vote(50, "Pause expansion."))
+    register_stub("mj_n", _vote(50, ""))
+    register_stub("mj_blank", _vote(50, "   "))
+    register_stub("mj_illegal", _vote(50, "All labs will be audited next month."))
     cur = {a: 50 for a in AXES}
-    res = MacroJury(["stub:mj_far", "stub:mj_mid", "stub:mj_low"]).deliberate("US", cur, "")
-    assert res["mandate"] == "Publish every purchase within a month."
-    assert res["mandate_source"] == "stub:mj_mid"
-    assert res["proposals"] == [
-        {"juror": "stub:mj_far", "mandate": "Halt all compute purchases."},
-        {"juror": "stub:mj_mid", "mandate": "Publish every purchase within a month."},
-        {"juror": "stub:mj_low", "mandate": ""}]
-    # Minority proposes: no mandate, no source, proposals still recorded.
-    res = MacroJury(["stub:mj_far", "stub:mj_low", "stub:mj_low"]).deliberate("US", cur, "")
-    assert res["mandate"] == "" and res["mandate_source"] is None
-    assert len(res["proposals"]) == 3
-
-
-def test_macro_mandate_skipped_juror_does_not_count():
-    # One proposer is no majority of the three-member board, whoever failed.
-    register_stub("mj_none", lambda s, u: "not json at all")
-    register_stub("mj_p", _vote(50, "Pause expansion."))
-    register_stub("mj_q", _vote(50, ""))
-    res = MacroJury(["stub:mj_none", "stub:mj_p", "stub:mj_q"]).deliberate(
-        "US", {a: 50 for a in AXES}, "")
-    assert res["mandate"] == ""
-    assert [p["juror"] for p in res["proposals"]] == ["stub:mj_p", "stub:mj_q"]
-
-
-def test_macro_mandate_needs_two_proposers_of_the_board():
-    """One proposer whose two colleagues failed issues no mandate alone ("1 of 1
-    usable" is no majority of the board)."""
-    register_stub("r3_bad", lambda s, u: "no json at all")
-    register_stub("r3_p1", _vote(50, "Halt all tenancy access."))
-    register_stub("r3_p2", _vote(80, "Publish every purchase."))
-    register_stub("r3_p3", _vote(52, ""))
-    register_stub("r3_p4", _vote(51, "   "))
-    cur = {a: 50 for a in AXES}
-
-    def run(*names):
-        return MacroJury([f"stub:{n}" for n in names]).deliberate("US", dict(cur), "x")
-    res = run("r3_bad", "r3_bad", "r3_p1")
-    assert res["mandate"] == "" and res["mandate_source"] is None
-    assert res["proposals"] == [{"juror": "stub:r3_p1", "mandate": "Halt all tenancy access."}]
-    assert res["per_juror"]["stub:r3_bad"]["result"] is None
-    assert res["per_juror"]["stub:r3_bad"]["attempts"] >= 1
-    assert res["per_juror"]["stub:r3_bad"]["errors"]
-    # Two proposers among two usable replies: a majority of the board.
-    res = run("r3_bad", "r3_p1", "r3_p2")
-    assert res["mandate"] == "Halt all tenancy access." and res["mandate_source"] == "stub:r3_p1"
-    for order in (("r3_p1", "r3_p2", "r3_p3"), ("r3_p2", "r3_p1", "r3_p3")):
-        res = run(*order)
-        assert res["mandate"] == "Halt all tenancy access."     # p1 is closest to the median
-        assert res["mandate_source"] == "stub:r3_p1"
-    res = run("r3_p3", "r3_p4", "r3_p1")                         # blank proposals do not count
-    assert res["mandate"] == "" and res["mandate_source"] is None
+    res = MacroJury(["stub:mj_m"]).deliberate("US", cur, "")
+    assert res["mandate"] == "Pause expansion." and res["mandate_source"] == "stub:mj_m"
+    assert res["proposals"] == [{"juror": "stub:mj_m", "mandate": "Pause expansion."}]
+    assert [s["violates"] for s in res["mandate_screen"]] == [False]
+    for name in ("mj_n", "mj_blank"):
+        res = MacroJury([f"stub:{name}"]).deliberate("US", cur, "")
+        assert res["mandate"] == "" and res["mandate_source"] is None
+        assert res["mandate_dropped"] is None and res["mandate_screen"] == []
+    res = MacroJury(["stub:mj_illegal"]).deliberate("US", cur, "")
+    assert res["mandate"] == "" and res["mandate_screen"] == []      # filtered before the screen
+    assert res["mandate_dropped"]["text"] == "All labs will be audited next month."
+    assert "audit" in res["mandate_dropped"]["reason"]
 
 
 def _fatal(model="gpt-6-astra"):
@@ -503,76 +517,49 @@ def _over_budget(system, user):
     raise BudgetExceeded("budget reached")
 
 
-def test_macro_jury_fatal_juror_recorded_and_board_continues():
-    """One juror's FatalAPIError no longer kills the review."""
+def test_macro_jury_fatal_juror_recorded_and_run_continues():
+    """A FatalAPIError never kills the review: recorded on both asks, values stay."""
     register_stub("gpt-r5mfatal", _fatal())
-    register_stub("claude-r5m", lambda s, u: json.dumps(
-        {"values": {a: 70 for a in AXES}, "mandate": "Publish incident reports."}))
-    register_stub("gemini-r5m", lambda s, u: json.dumps(
-        {"values": {a: 80 for a in AXES}, "mandate": "Publish incident reports quarterly."}))
     cur = {a: 50 for a in AXES}
-    res = MacroJury(["stub:gpt-r5mfatal", "stub:claude-r5m", "stub:gemini-r5m"]).deliberate(
-        "United States", cur, "s")
+    res = MacroJury(["stub:gpt-r5mfatal"]).deliberate("United States", cur, "s")
     bad = res["per_juror"]["stub:gpt-r5mfatal"]
     assert bad["result"] is None and "400 organization must be verified" in bad["error"]
-    assert bad["attempts"] == 1 and bad["family"] == "gpt"
-    assert res["per_juror"]["stub:claude-r5m"]["result"] is not None
-    assert res["per_juror"]["stub:claude-r5m"]["family"] == "claude"
-    assert res["values"] == {a: 75 for a in AXES}                   # median of two: mean
-    assert res["mandate"] in ("Publish incident reports.",           # 2 of 3 still propose
-                              "Publish incident reports quarterly.")
-    json.dumps(res)
-
-    # Two fatal jurors: one vote is too few (§7: at least two), so values stay.
-    register_stub("gpt-r5mfatal2", _fatal())
-    res = MacroJury(["stub:gpt-r5mfatal", "stub:gpt-r5mfatal2", "stub:claude-r5m"]).deliberate(
-        "United States", cur, "s")
-    assert res["mandate"] == "" and res["values"] == cur and "at least 2" in res["values_kept"]
-    # All three fatal: values unchanged, no crash.
-    res = MacroJury(["stub:gpt-r5mfatal"] * 3).deliberate("United States", cur, "s")
+    assert bad["attempts"] == 2 and bad["family"] == "gpt" and len(bad["review_attempts"]) == 2
     assert res["values"] == cur and res["mandate"] == ""
+    json.dumps(res)
 
 
 def test_macro_jury_budget_exceeded_propagates():
-    register_stub("claude-r5mok", lambda s, u: json.dumps(
-        {"values": {a: 50 for a in AXES}, "mandate": ""}))
     register_stub("gpt-r5mbudget", _over_budget)
     with pytest.raises(BudgetExceeded):
-        MacroJury(["stub:claude-r5mok", "stub:gpt-r5mbudget", "stub:claude-r5mok"]).deliberate(
-            "US", {a: 50 for a in AXES}, "s")
+        MacroJury(["stub:gpt-r5mbudget"]).deliberate("US", {a: 50 for a in AXES}, "s")
+    # A budget stop on the second ask keeps the first ask on e.per_juror.
+    model = _seq("kimi-mjbud2", [RuntimeError("down"), BudgetExceeded("budget reached")])
+    with pytest.raises(BudgetExceeded) as info:
+        MacroJury([model]).deliberate("US", {a: 50 for a in AXES}, "s")
+    assert len(info.value.per_juror[model]["review_attempts"]) == 1
 
 
-
-
-def test_macro_jury_values_are_the_median_rounded_half_up():
-    """§7: the MacroJury 'updates state values (the median of the three)'; no ±5 cap.
-    Halves round up (62.5 -> 63, 63.5 -> 64), never to even."""
+def test_macro_jury_values_are_the_vote_rounded_half_up():
+    """§7: the juror's values rounded to a whole point; no ±5 cap. Halves round up
+    (62.5 -> 63, 63.5 -> 64), never to even; kept in 0-100."""
     from core.jury import median_value
-    assert median_value([10, 90, 95]) == 90
-    assert median_value([60, 65]) == 63 and median_value([63, 64]) == 64
-    assert median_value([0.4, 0.5, 100]) == 1 and median_value([-3, -1, 120]) == 0
-    register_stub("mj_med_a", _vote(10, ""))
-    register_stub("mj_med_b", _vote(95, ""))
-    register_stub("mj_med_c", _vote(90, ""))
+    assert median_value([62.5]) == 63 and median_value([63.5]) == 64
+    assert median_value([0.4]) == 0 and median_value([99.5]) == 100
+    register_stub("mj_med_a", _vote(90.5, ""))
     cur = {a: 50 for a in AXES}
-    res = MacroJury(["stub:mj_med_a", "stub:mj_med_b", "stub:mj_med_c"]).deliberate("US", cur, "")
-    assert res["values"] == {a: 90 for a in AXES} and res["before"] == cur
+    res = MacroJury(["stub:mj_med_a"]).deliberate("US", cur, "")
+    assert res["values"] == {a: 91 for a in AXES} and res["before"] == cur
 
 
 def test_macro_jury_any_juror_error_is_recorded_like_the_grand_jury():
     """A juror failing with any non-budget exception (here a bad model id's
-    ValueError) is recorded as failed; the board deliberates on without it."""
-    register_stub("mj_ok1", _vote(60, "Publish compute plans."))
-    register_stub("mj_ok2", _vote(70, "Publish compute plans."))
-
-    def boom(system, user):
-        raise ValueError("no provider for model")
-    register_stub("mj_boom", boom)
-    res = MacroJury(["stub:mj_boom", "stub:mj_ok1", "stub:mj_ok2"]).deliberate(
-        "US", {a: 50 for a in AXES}, "")
-    assert res["per_juror"]["stub:mj_boom"]["result"] is None
-    assert "no provider for model" in res["per_juror"]["stub:mj_boom"]["error"]
-    assert res["values"] == {a: 65 for a in AXES}
+    ValueError) is recorded as failed and asked once more."""
+    model = _seq("mj_boom", [ValueError("no provider for model"), _v(60, "Publish compute plans.")])
+    res = MacroJury([model]).deliberate("US", {a: 50 for a in AXES}, "")
+    first = res["per_juror"][model]["review_attempts"][0]
+    assert first["result"] is None and "no provider for model" in first["error"]
+    assert res["values"] == {a: 60 for a in AXES}
     assert res["mandate"] == "Publish compute plans."
 
 
@@ -698,7 +685,7 @@ def test_macro_jury_reads_the_public_sheets_never_true_actions():
                                        charters=False)
     eng = SimulationEngine(labs, world, cfg, scenario="S1", turns=3, seed=0, policy=pol,
                            parallel=False, run_grand_jury=False, event_turn=1,
-                           macro_jurors=["stub:mj_pub1", "stub:mj_pub2", "stub:mj_pub3"])
+                           macro_jurors=["stub:mj_pub1"])
     rec = eng.run()
     (user,) = set(seen)
     assert "Public ledger, September 2026:" in user

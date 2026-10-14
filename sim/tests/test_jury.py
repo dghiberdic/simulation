@@ -173,7 +173,7 @@ def test_identical_duplicate_seat_keys_are_accepted():
 
 # ---------------------------------------------------------------- juror families
 
-@pytest.mark.parametrize("model", ["kimi-k3", "deepseek-v4-pro", "qwen-3.8-max"])
+@pytest.mark.parametrize("model", ["kimi-k3", "deepseek-v4-pro"])
 def test_seat_model_from_a_juror_family_is_refused(model):
     from main import apply_model_overrides
     cfg = load_world(None)
@@ -280,7 +280,7 @@ def _joint_then_partner_report(reporter, accused):
         labs, world = build_labs_and_world(cfg, dispositions={k: 50 for k in KEYS}, charters=False)
         eng = SimulationEngine(labs, world, cfg, scenario="S2", turns=6, seed=seed,
                                seat_policies={k: pol for k in KEYS}, a2a_mode="merged",
-                               macro_jurors=["stub:aud_jury_mj"] * 3, run_grand_jury=False,
+                               macro_jurors=["stub:aud_jury_mj"], run_grand_jury=False,
                                parallel=False)
         return json.loads(json.dumps(eng.run(), default=str))
 
@@ -348,58 +348,70 @@ def _vote(v=50, mandate=""):
 
 
 def _board(name, replies):
-    """Three stub jurors; replies[i] is a dict (JSON reply) or an Exception."""
-    models = []
-    for i, r in enumerate(replies):
-        def fn(s, u, r=r):
-            if isinstance(r, Exception):
-                raise r
-            return json.dumps(r)
-        register_stub(f"{name}{i}", fn)
-        models.append(f"stub:{name}{i}")
-    return models
+    """The one stub juror; it answers replies[i] on its i-th call (the last one
+    repeats). A reply is a dict (JSON reply) or an Exception (raised)."""
+    left = list(replies)
+
+    def fn(s, u):
+        r = left.pop(0) if len(left) > 1 else left[0]
+        if isinstance(r, Exception):
+            raise r
+        return json.dumps(r)
+    register_stub(name, fn)
+    return [f"stub:{name}"]
 
 
 # --------------------------------------------------------------- composition
 
 def test_macro_jury_composition_is_spec_table():
-    """§7: Kimi K3, DeepSeek V4 Pro and Qwen 3.8 Max, for the US only."""
-    assert tuple(MACRO_JURY_MODELS) == ("kimi-k3", "deepseek-v4-pro", "qwen-3.8-max")
-    assert tuple(load_state()["macro_jury_models"]) == MACRO_JURY_MODELS
+    """§7: one model, Kimi K3, for the US only; the mandate screen is Kimi K3 too."""
+    from core.jury import MANDATE_SCREEN_MODEL
+    assert tuple(MACRO_JURY_MODELS) == ("kimi-k3",)
+    assert load_state()["macro_jury_model"] == "kimi-k3"
+    assert "macro_jury_models" not in load_state()
+    assert MANDATE_SCREEN_MODEL == load_state()["mandate_screen_model"] == "kimi-k3"
+    assert MacroJury().jurors == ["kimi-k3"] and MacroJury().screen_model == "kimi-k3"
     with pytest.raises(ValueError):
         MacroJury(["kimi-k3", "deepseek-v4-pro"])
 
 
-# --------------------------------------------------------------- median
+# --------------------------------------------------------------- values
 
-def test_median_of_three_and_half_up_rounding():
-    assert median_value([10, 62, 90]) == 62
-    assert median_value([62, 63]) == 63          # two usable votes: mean 62.5, half up
+def test_half_up_rounding():
+    assert median_value([62]) == 62
+    assert median_value([62.5]) == 63            # half up
     assert median_value([62.4999]) == 62
     assert median_value([0.5]) == 1               # never banker's rounding
 
 
-def test_values_move_to_median_without_step_cap():
-    """§7 'Updates state values (the median of the three)': no 1-point cap."""
-    jurors = _board("mjcap", [_vote(0), _vote(0), _vote(100)])
+def test_values_move_to_the_vote_without_step_cap():
+    """(a) §7: the juror's values, rounded to a whole point; no 1-point cap."""
+    jurors = _board("mjcap", [{"values": {"time_horizon": 0, "transparency_threshold": 100,
+                                          "risk_tolerance": 33.5, "democratic_tendency": 70.4},
+                               "mandate": ""}])
     out = MacroJury(jurors).deliberate("United States", dict(START), "s")
-    assert out["values"] == {a: 0 for a in AXES}
+    assert out["values"] == {"time_horizon": 0, "transparency_threshold": 100,
+                             "risk_tolerance": 34, "democratic_tendency": 70}
+    assert out["values_kept"] is None and out["retried"] is False
 
 
-def test_single_usable_vote_keeps_the_values():
-    """§7: the median of the jurors that answer; at least two are needed, else values stay."""
-    jurors = _board("mjone", [_vote(12, "Expand domestic compute."),
-                              RuntimeError("down"), RuntimeError("down")])
+def test_failed_juror_is_asked_once_more():
+    """(b) the first ask errors; the whole review is asked once more and used."""
+    jurors = _board("mjtwo", [RuntimeError("down"), _vote(12, "Expand domestic compute.")])
+    out = MacroJury(jurors).deliberate("United States", dict(START), "s")
+    assert out["values"] == {a: 12 for a in AXES} and out["values_kept"] is None
+    assert out["mandate"] == "Expand domestic compute." and out["retried"] is True
+    tries = out["per_juror"][jurors[0]]["review_attempts"]
+    assert [t["result"] is None for t in tries] == [True, False]
+
+
+def test_twice_failed_juror_keeps_the_values():
+    """(c) both asks fail: the values stay and no mandate is issued."""
+    jurors = _board("mjone", [RuntimeError("down")])
     out = MacroJury(jurors).deliberate("United States", dict(START), "s")
     assert out["values"] == START
-    assert "1 usable vote(s) of 3" in out["values_kept"]
-    assert out["mandate"] == ""
-
-
-def test_two_usable_votes_move_the_values():
-    jurors = _board("mjtwo", [_vote(62), _vote(63), RuntimeError("down")])
-    out = MacroJury(jurors).deliberate("United States", dict(START), "s")
-    assert out["values"] == {a: 63 for a in AXES} and out["values_kept"] is None
+    assert "after 2 ask(s)" in out["values_kept"]
+    assert out["mandate"] == "" and out["mandate_dropped"] is None
 
 
 def _engine_review(name, votes):
@@ -411,41 +423,35 @@ def _engine_review(name, votes):
     return rec["macro_jury"][0], rec["turns"][1]["macro_jury"], eng
 
 
-def test_illegal_proposal_closest_to_median_does_not_veto_legal_majority():
-    """Every proposal is filtered first; the issued mandate is the legal one closest
-    to the median (§5.1, §7)."""
-    mj, turn, eng = _engine_review("mjveto", [_vote(50, "All labs will be audited next month."),
-                                              _vote(10, "Expand domestic compute."),
-                                              _vote(52, "Invest in domestic chips.")])
+def test_legal_mandate_is_issued_in_the_engine():
+    """(d) the juror's legal mandate passes the filter and the screen and is issued."""
+    mj, turn, eng = _engine_review("mjveto", [_vote(52, "Invest in domestic chips.")])
     assert mj["mandate"] == "Invest in domestic chips." and mj["mandate_dropped"] is None
     assert eng.world.mandates == [{"turn": 2, "text": "Invest in domestic chips."}]
-    dropped = [p for p in turn["proposals"] if "dropped" in p]
-    assert len(dropped) == 1 and "audit" in dropped[0]["dropped"]
+    assert [s["violates"] for s in turn["mandate_screen"]] == [False]
 
 
-def test_illegal_proposals_do_not_count_toward_the_majority():
-    mj, turn, eng = _engine_review("mjnomaj", [_vote(50, "All labs will be audited next month."),
-                                               _vote(10, "Expand domestic compute."),
-                                               _vote(52, "Hackers will be prosecuted.")])
+def test_illegal_mandate_is_dropped_in_the_engine():
+    mj, turn, eng = _engine_review("mjnomaj", [_vote(50, "All labs will be audited next month.")])
     assert mj["mandate"] is None and eng.world.mandates == []
     assert mj["mandate_dropped"]["reason"].startswith("mentions")
     assert mj["mandate_dropped"]["text"] == "All labs will be audited next month."
+    assert turn["values"] == {a: 50 for a in AXES}               # the values still count
 
 
 @pytest.mark.parametrize("bad", [["Expand compute.", "Slow down."], 7, {"text": "x"}])
 def test_non_string_mandate_keeps_the_values(bad):
     """A list or number mandate is no mandate; the juror's values still count."""
-    jurors = _board("mjtype" + str(abs(hash(str(bad))) % 1000),
-                    [dict(_vote(20), mandate=bad), _vote(20), _vote(20)])
+    jurors = _board("mjtype" + str(abs(hash(str(bad))) % 1000), [dict(_vote(20), mandate=bad)])
     out = MacroJury(jurors).deliberate("United States", dict(START), "s")
     assert out["values"] == {a: 20 for a in AXES}
     assert out["per_juror"][jurors[0]]["attempts"] == 1
     assert "not one sentence" in out["proposals"][0]["dropped"]
+    assert out["mandate"] == ""
 
 
 def test_one_sentence_list_mandate_is_read():
-    jurors = _board("mjlist", [dict(_vote(20), mandate=["Expand domestic compute."]),
-                               _vote(20, "Expand domestic compute."), _vote(20)])
+    jurors = _board("mjlist", [dict(_vote(20), mandate=["Expand domestic compute."])])
     out = MacroJury(jurors).deliberate("United States", dict(START), "s")
     assert out["mandate"] == "Expand domestic compute."
 
@@ -458,7 +464,7 @@ def test_macro_prompt_shows_real_values_rounded():
         return json.dumps(_vote(50))
     register_stub("mjreal", fn)
     cur = dict(START, time_horizon=55.5, risk_tolerance=60.25)
-    MacroJury(["stub:mjreal"] * 3).deliberate("United States", cur, "s")
+    MacroJury(["stub:mjreal"]).deliberate("United States", cur, "s")
     assert "time_horizon 56," in seen[0] and "risk_tolerance 60," in seen[0]
 
 
@@ -480,7 +486,7 @@ def test_t5_review_follows_turn2_event_and_default_review_turns():
     seen = _capture("mjt5")
     eng = SimulationEngine(labs, world, cfg, scenario="S1", turns=8, seed=0,
                            seat_policies={k: policies.idle for k in KEYS},
-                           macro_jurors=["stub:mjt5"] * 3, run_grand_jury=False,
+                           macro_jurors=["stub:mjt5"], run_grand_jury=False,
                            parallel=False, event_turn=2)
     rec = eng.run()
     assert [m["turn"] for m in rec["macro_jury"]] == [2, 6]
@@ -503,10 +509,10 @@ def test_review_input_is_public_only():
     sp = {k: pol(policies.greedy) for k in KEYS}
     sp["meta"] = pol(policies.always_intrude)
     eng = SimulationEngine(labs, world, cfg, scenario="S1", turns=8, seed=0, seat_policies=sp,
-                           macro_jurors=["stub:mjpub"] * 3, run_grand_jury=False,
+                           macro_jurors=["stub:mjpub"], run_grand_jury=False,
                            parallel=False)
     eng.run()
-    second = seen[3]
+    second = seen[1]
     assert "FILEDACCOUNT" in second and "PUBSTMT" in second
     for hidden in ("SECRETRATIONALE", "SECRETMSG", "intrude", "Internal note"):
         assert hidden not in second

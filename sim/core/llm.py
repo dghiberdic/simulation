@@ -8,12 +8,13 @@ Providers, chosen by an explicit `provider` argument or the model-name prefix:
   google     gemini-*        VERTEX_API_KEY             (Vertex AI Express)
   xai        grok-*          XAI_API_KEY                (OpenAI-compatible)
   muse       muse-*          MUSE_API_KEY, MUSE_BASE_URL (OpenAI-compatible)
-  moonshot   kimi-*          MOONSHOT_API_KEY           (OpenAI-compatible; Grand Jury, MacroJury)
-  deepseek   deepseek-*      DEEPSEEK_API_KEY           (OpenAI-compatible; GJ fallback, MacroJury)
-  dashscope  qwen-*          DASHSCOPE_API_KEY          (OpenAI-compatible; MacroJury)
+  moonshot   kimi-*          MOONSHOT_API_KEY           (OpenAI-compatible; Grand Jury, MacroJury,
+                                                         mandate screen)
+  deepseek   deepseek-*      DEEPSEEK_API_KEY           (OpenAI-compatible; Grand Jury fallback)
+  dashscope  qwen-*          DASHSCOPE_API_KEY          (OpenAI-compatible; supported, no juror uses it)
   stub       stub:<name>     a registered python callable (offline tests, dry runs)
 
-The three juror providers (moonshot, deepseek, dashscope; spec §7) use their
+The juror providers (moonshot, deepseek; dashscope kept but unused; spec §7) use their
 default base URLs (MOONSHOT_BASE_URL, DEEPSEEK_BASE_URL, DASHSCOPE_BASE_URL
 override them). One optional router overrides all three: with JUROR_BASE_URL
 set, every juror call goes there with JUROR_API_KEY, and JUROR_MODEL_IDS (an

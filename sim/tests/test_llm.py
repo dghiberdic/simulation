@@ -1282,7 +1282,7 @@ def test_stub_can_simulate_context_stop():
 
 
 # ---------------------------------------------------------------------------
-# Juror providers (Moonshot, DeepSeek, DashScope; one optional router)
+# Juror providers (Moonshot, DeepSeek; DashScope still supported, unused; one optional router)
 # ---------------------------------------------------------------------------
 
 JUROR_ENV = ("MOONSHOT_API_KEY", "DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "JUROR_BASE_URL",
@@ -1311,6 +1311,35 @@ def test_preflight_juror_keys_and_router(monkeypatch):
     assert len(problems) == 3 and all("JUROR_API_KEY" in p for p in problems)
     monkeypatch.setenv("JUROR_API_KEY", "k")
     assert llm.preflight(models) == []
+
+
+def test_preflight_of_the_real_jurors_needs_no_dashscope_key(monkeypatch):
+    """(f) The MacroJury and its screen are kimi-k3 and the Grand Jury kimi-k3 with
+    a deepseek-v4-pro fallback: a real run needs MOONSHOT_API_KEY and
+    DEEPSEEK_API_KEY (or the router's JUROR_API_KEY), never DASHSCOPE_API_KEY."""
+    from core.jury import GRAND_JURY_MODELS, MACRO_JURY_MODELS, MANDATE_SCREEN_MODEL
+    from core.preflight import model_problems
+    from pilot import _real_jurors
+    for env in JUROR_ENV:
+        monkeypatch.delenv(env, raising=False)
+    assert MANDATE_SCREEN_MODEL == "kimi-k3" and MACRO_JURY_MODELS == ("kimi-k3",)
+    for jurors in (_real_jurors(), {"grand": GRAND_JURY_MODELS, "macro": list(MACRO_JURY_MODELS)}):
+        problems = model_problems([], jurors)
+        assert not any("DASHSCOPE" in p or "qwen" in p for p in problems)
+        assert {env for env in ("MOONSHOT_API_KEY", "DEEPSEEK_API_KEY") if any(env in p for p in problems)} \
+            == {"MOONSHOT_API_KEY", "DEEPSEEK_API_KEY"}
+    monkeypatch.setenv("MOONSHOT_API_KEY", "k")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+    assert model_problems([], _real_jurors()) == []
+    # MacroJury only (no Grand Jury): Moonshot alone.
+    monkeypatch.delenv("DEEPSEEK_API_KEY")
+    assert model_problems([], {"grand": GRAND_JURY_MODELS, "macro": ["kimi-k3"]}, uses_grand=False) == []
+    # The router stands in for both keys.
+    monkeypatch.delenv("MOONSHOT_API_KEY")
+    monkeypatch.setenv("JUROR_BASE_URL", "https://router.example.invalid/v1")
+    assert all("JUROR_API_KEY" in p for p in model_problems([], _real_jurors()))
+    monkeypatch.setenv("JUROR_API_KEY", "k")
+    assert model_problems([], _real_jurors()) == []
 
 
 def test_juror_clients_base_urls_and_router(monkeypatch):

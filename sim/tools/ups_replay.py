@@ -24,8 +24,9 @@ model or juror call:
     their exposure odds q are recomputed with fewer committers on the same
     exposure draw.
   * MacroJury. Each review applies the logged values and mandate
-    (record["macro_jury"]) instead of calling the jurors. No Grand Jury, no
-    interviews.
+    (record["macro_jury"]) instead of calling the juror; only the values and
+    mandate are read, so records of the single-juror MacroJury and older
+    three-juror ones replay alike. No Grand Jury, no interviews.
   * Initial state. The run's own logged t=0: config.effective_cfg (the world
     config as the run used it) and config.initial_state (every seat's seed,
     resources, values, charter values and disposition, T1 rotation applied), so

@@ -1440,7 +1440,8 @@ def _macro_section(record: Dict[str, Any]) -> Dict[str, Any]:
     The MacroJury's reviews (§5.1, §7): per review turn the state values
     before and after, each juror's vote and proposed mandate, and the mandate
     issued or dropped (with the reason), labelled by cell. In a pilot run the
-    first review is the slant read (all three jurors are Chinese-developed, §7).
+    first review is the slant read (the juror, Kimi K3, is Chinese-developed,
+    §7). Records from before the single-juror MacroJury list three jurors' votes.
     """
     reviews = []
     for turn in _turns(record):
@@ -1524,7 +1525,7 @@ def macro_slant_line(records: List[Dict[str, Any]]) -> Optional[str]:
                      + f"; {mand}" + (f" (votes: {votes})" if votes else ""))
     if not parts:
         return None
-    return ("first review (read for slant; all three jurors are Chinese-developed, §7): " + " | ".join(parts))
+    return ("first review (read for slant; the juror, Kimi K3, is Chinese-developed, §7): " + " | ".join(parts))
 
 
 def hindcast(record: Dict[str, Any]) -> Dict[str, Any]:

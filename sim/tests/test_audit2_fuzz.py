@@ -38,7 +38,7 @@ def _engine(out, stub):
     cfg = load_world()
     labs, world = build_labs_and_world(cfg, dispositions={k: 50 for k in KEYS}, charters=False)
     return SimulationEngine(labs, world, cfg, scenario="S1", turns=4, seed=5, policy=idle,
-                            macro_jurors=[f"stub:{stub}"] * 3, run_grand_jury=False,
+                            macro_jurors=[f"stub:{stub}"], run_grand_jury=False,
                             parallel=False, run_id="a2fz", output_dir=out,
                             letter_salt="a2fz-salt")
 

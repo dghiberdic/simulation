@@ -37,7 +37,7 @@ def run_log(seat_policies, *, scenario="S1", seed=0, turns=8, macro=True, overri
         labs_hook(labs)
     eng = SimulationEngine(labs, world, cfg, scenario=scenario, turns=turns, seed=seed,
                            seat_policies=seat_policies, a2a_mode=a2a,
-                           macro_jurors=["stub:ups_replay_mj"] * 3 if macro else [],
+                           macro_jurors=["stub:ups_replay_mj"] if macro else [],
                            run_grand_jury=False, parallel=False, overrides=overrides,
                            rotation=rotation, choose_disposition=choose,
                            interventions=interventions)
@@ -110,6 +110,32 @@ def test_identity_replay_reproduces_s1_run(seed):
     assert round(base["ups"], 4) == rec["final"]["ups_index"]["ups"]
     # the MacroJury was applied from the log, not called
     assert [m["turn"] for m in base["record"]["macro_jury"]] == [m["turn"] for m in rec["macro_jury"]]
+
+
+def test_old_three_juror_records_and_new_single_juror_records_replay():
+    """§8: the replay uses the logged MacroJury outputs (values, mandate) whatever
+    the board: a new single-juror record and the same record rewritten in the old
+    three-juror shape replay identically."""
+    rec = run_log(_s1_policies(), seed=0)
+    mj_turns = [t for t in rec["turns"] if isinstance(t.get("macro_jury"), dict)]
+    assert mj_turns and all(list(t["macro_jury"]["per_juror"]) == ["stub:ups_replay_mj"]
+                            for t in mj_turns)
+    old = copy.deepcopy(rec)
+    for t in old["turns"]:
+        mj = t.get("macro_jury")
+        if isinstance(mj, dict):
+            one = mj["per_juror"].pop("stub:ups_replay_mj")
+            one.pop("review_attempts", None)
+            mj.pop("retried", None)
+            mj["per_juror"] = {"kimi-k3": one, "deepseek-v4-pro": dict(one, family="deepseek"),
+                               "qwen-3.8-max": {"result": None, "errors": ["timeout"], "attempts": 1}}
+    assert U.macro_outputs(old) == U.macro_outputs(rec)
+    old_slim = dict(old, macro_jury=[])                 # the turn records alone also serve
+    assert U.macro_outputs(old_slim) == U.macro_outputs(rec)
+    for r in (rec, old):
+        base = U.replay(r)
+        assert U.compare_records(r, base["record"]) == []
+        assert round(base["ups"], 4) == rec["final"]["ups_index"]["ups"]
 
 
 def test_identity_replay_s2_joint_rotation_overrides_planted():

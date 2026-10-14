@@ -93,15 +93,16 @@ XAI_API_KEY=...           # Grok 4.7 (grok-4.7)
 MUSE_API_KEY=...          # Muse Spark 1.3 (muse-spark-1.3)
 MUSE_BASE_URL=...         # Muse's OpenAI-compatible endpoint
 # Jurors (OpenAI-compatible)
-MOONSHOT_API_KEY=...      # kimi-k3: Grand Jury, T2 rater, MacroJury
-DEEPSEEK_API_KEY=...      # deepseek-v4-pro: Grand Jury fallback, MacroJury
-DASHSCOPE_API_KEY=...     # qwen-3.8-max: MacroJury
+MOONSHOT_API_KEY=...      # kimi-k3: Grand Jury, T2 rater, MacroJury, mandate screen
+DEEPSEEK_API_KEY=...      # deepseek-v4-pro: Grand Jury and T2 rater fallback
 ```
 
-The juror base URLs have defaults (override with `MOONSHOT_BASE_URL`,
-`DEEPSEEK_BASE_URL`, `DASHSCOPE_BASE_URL`). **Router option:** set
-`JUROR_BASE_URL` and `JUROR_API_KEY` to send every juror call (all three
-providers) through one OpenAI-compatible router instead; `JUROR_MODEL_IDS`
+No juror uses Qwen any more, so `DASHSCOPE_API_KEY` is not needed (the
+DashScope provider is still supported by `core/llm.py`). The juror base URLs
+have defaults (override with `MOONSHOT_BASE_URL`, `DEEPSEEK_BASE_URL`).
+**Router option:** set `JUROR_BASE_URL` and `JUROR_API_KEY` to send every
+juror call (Moonshot and DeepSeek) through one OpenAI-compatible router
+instead; `JUROR_MODEL_IDS`
 (optional JSON, e.g. `{"kimi-k3": "moonshotai/kimi-k3"}`) maps our model ids to
 the router's.
 
@@ -250,13 +251,17 @@ reading). A test refuses to run before the earlier ones are done
 (`--force-order` overrides). T9's line names `review_T9-compare.md`, which
 only `tools/compare_arms.py` writes (the command is in the line).
 
-A mandate the MacroJury would issue passes the keyword filter
+The MacroJury is one model, Kimi K3 (`macro_jury_model` in
+`config/states/usa.json`). At each review it sets the four state values (its
+values rounded to a whole point, halves up) and may propose one mandate. If
+its reply errors or is unusable, the whole review is asked once more; if that
+fails too, the values stay and no mandate is issued (logged; the run goes
+on). Its mandate is issued when it passes the keyword filter
 (`core/mandates.py`) and then a language-model screen (`mandate_screen_model`
-in `config/states/usa.json`, deepseek-v4-pro, temperature 0, billed as a
-`macro_jury` call). A refused, unusable or failed screen drops it (fail
-closed, logged), and the next legal proposal is screened while a majority
-still stands. Dry runs use the offline `stub:mandate-screen`. The pilot still
-reads every issued mandate.
+in `config/states/usa.json`, kimi-k3, temperature 0, billed as a `macro_jury`
+call). A refused, unusable or failed screen drops it (fail closed, logged).
+Dry runs use the offline `stub:mandate-screen`. The pilot still reads every
+issued mandate.
 
 A finished run is never paid for again. Re-invoking its test (or
 `--post-run-only`) does only what the run still misses: a Grand Jury verdict
@@ -634,7 +639,12 @@ Dry runs use `data/pilot/dry/` (ratings in `disposition_ratings.dry.json`) and
   messages, every attempt with tokens, cost, stop reason and served model),
   `world`, `public_sheets`, `shown_sheets` (the ledger the seats read),
   `purchases`, `intrusion`, `whistleblow`, `leads`, `public_notices`,
-  `scores`, `ups_index`, `integrity_inputs`, `macro_jury` on review turns, and:
+  `scores`, `ups_index`, `integrity_inputs`, `macro_jury` on review turns
+  (`values`, `before`, `values_kept`, `mandate`, `mandate_source`,
+  `mandate_dropped`, `proposals`, `mandate_screen`, `retried`, and
+  `per_juror` keyed by model id: the reply used, attempts and errors over both
+  asks, and `review_attempts`, one entry per ask; records from before the
+  single-juror MacroJury hold three `per_juror` entries), and:
   - **`draws`**: every uniform draw, `{"key": [turn, purpose, entry_id, lab], "u": float}`,
     purpose one of `shock`, `success`, `exposure`, `lead`, `lead_recipient`, `policy`;
   - **`interviews`** (scheduled turns only): `{lab: {"answer" (cut at 300

@@ -294,7 +294,8 @@ def test_budget_guard_halts_and_measured_costs_reprice(tmp_path, monkeypatch):
 
     monkeypatch.setattr(llm, "_call_stub", billed)
     assert _dry(root, "priced") == 0
-    assert "priced run measured cost: $3.27" in (root / "priced" / "share.txt").read_text()
+    # 2 reviews x 1 MacroJury call x $0.025 (was 3 jurors per review: $3.27)
+    assert "priced run measured cost: $3.17" in (root / "priced" / "share.txt").read_text()
     plan = pilot.build_plan(pilot.load_pilot(), root, turns=8)
     assert plan["basis"] == "measured"
     assert _dry(root, "approve", "--turns", "8") == 0

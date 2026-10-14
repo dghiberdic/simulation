@@ -313,7 +313,8 @@ def test_state_values_and_macro_jury_models():
     st = load_state()
     assert st["values"] == {"time_horizon": 55, "transparency_threshold": 65,
                             "risk_tolerance": 60, "democratic_tendency": 70}
-    assert st["macro_jury_models"] == ["kimi-k3", "deepseek-v4-pro", "qwen-3.8-max"]
+    assert st["macro_jury_model"] == "kimi-k3" and st["mandate_screen_model"] == "kimi-k3"
+    assert "macro_jury_models" not in st
 
 
 def test_shown_capital_and_influence_never_exceed_the_true_figures():

@@ -102,7 +102,7 @@ def harness(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "_call_stub", _priced)
     for key in ("anthropic", "openai", "gdm", "meta", "xai"):
         register_stub(f"rs_{key}", _seat)
-    for m in ("rs_kimi", "rs_deepseek", "rs_qwen"):
+    for m in ("rs_kimi",):
         register_stub(m, _macro)
     register_stub("rs_grand", stubs.grand_reply)
     STATE.update(engine=None, calls=[], fault=None)
@@ -118,7 +118,7 @@ def _engine(out, scenario="S2", a2a="separate", turns=6, **kw):
     swap_capability(labs, "openai", "gdm", cfg["economy"]["capability_compute_elasticity"])
     eng = SimulationEngine(
         labs, world, cfg, scenario=scenario, condition="A", a2a_mode=a2a, turns=turns, seed=3,
-        grand_jurors=["stub:rs_grand"], macro_jurors=["stub:rs_kimi", "stub:rs_deepseek", "stub:rs_qwen"],
+        grand_jurors=["stub:rs_grand"], macro_jurors=["stub:rs_kimi"],
         seat_policies={"xai": POLICIES["t5_scripted"]}, choose_disposition=True, run_grand_jury=True,
         run_id=RUN_ID, output_dir=out, run_meta={"test": "resume", "run_id": RUN_ID}, rotation="openai:gdm",
         interview_turns=[2, 4, "final"], event_turn=min(3, turns - 1),
@@ -219,6 +219,41 @@ def test_fatal_abort_mid_turn_drops_the_incomplete_turn_and_resumes(harness):
     assert res["replayed_turns"] == 4 and [t["turn"] for t in res["dropped_turns"]] == [5]
 
 
+def test_an_old_three_juror_review_replays_on_resume(harness):
+    """A partial written before the single-juror MacroJury (three per_juror entries,
+    no "review_attempts"/"retried") replays its logged review as it stands."""
+    root = harness
+    want, _, _ = _uninterrupted(root)
+    out = root / "old"
+    costs_mod.configure(spend_file=root / "old_spend.json")
+
+    def fatal():
+        raise FatalAPIError("simulated outage", "stub", "stub")
+    STATE.update(calls=[], fault={"kind": "actor", "turn": 5, "n": 3, "do": fatal})
+    with pytest.raises(RunAborted):
+        _engine(out).run()
+    path = out / f"{RUN_ID}.partial.json"
+    partial = json.loads(path.read_text())
+    mj = partial["turns"][1]["macro_jury"]
+    one = mj["per_juror"].pop("stub:rs_kimi")
+    one.pop("review_attempts")
+    mj.pop("retried")
+    mj["per_juror"] = {"kimi-k3": one, "deepseek-v4-pro": dict(one, family="deepseek"),
+                       "qwen-3.8-max": {"result": None, "errors": ["timeout"], "attempts": 1}}
+    path.write_text(json.dumps(partial))
+
+    STATE["calls"] = []
+    got = _engine(out).run()
+    assert all(t >= 5 for t, *_ in STATE["calls"])                  # nothing before turn 5 asked
+    assert got["turns"][1]["macro_jury"] == mj                      # the old review, verbatim
+    assert set(got["turns"][1]["macro_jury"]["per_juror"]) == {"kimi-k3", "deepseek-v4-pro",
+                                                               "qwen-3.8-max"}
+    for t_got, t_want in zip(_same(got)["turns"], _same(want)["turns"]):
+        t_got.pop("macro_jury", None), t_want.pop("macro_jury", None)
+        assert t_got == t_want
+    assert _same(got)["final"] == _same(want)["final"]
+
+
 def test_interrupted_macro_review_is_asked_live_on_resume(harness):
     root = harness
     want, want_calls, _ = _uninterrupted(root)
@@ -227,7 +262,7 @@ def test_interrupted_macro_review_is_asked_live_on_resume(harness):
 
     def interrupt():
         raise KeyboardInterrupt
-    STATE.update(calls=[], fault={"kind": "macro", "turn": 2, "n": 2, "do": interrupt})
+    STATE.update(calls=[], fault={"kind": "macro", "turn": 2, "n": 1, "do": interrupt})
     with pytest.raises(KeyboardInterrupt):
         _engine(out).run()
     partial = json.loads((out / f"{RUN_ID}.partial.json").read_text())

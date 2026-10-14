@@ -6,7 +6,7 @@ root); where code and spec disagree, the spec wins.
 file maps each spec section to the code that implements it. Paths are relative
 to `sim/`; `module.function` names are Python names. Constants live in
 `config/world.json` (world), `config/labs/*.json` (seats),
-`config/states/usa.json` (US state, MacroJury models), `config/pilot.json`
+`config/states/usa.json` (US state, MacroJury model and mandate screen model), `config/pilot.json`
 (pilot presets and budget) and `config/prices.json` (USD per 1M tokens).
 
 ## §2 Architecture
@@ -70,8 +70,9 @@ as `config.initial_state` (`core.engine.initial_state`).
   `SimulationEngine._macro_jury`; every proposed mandate is screened by
   `core.mandates.mandate_violation` (phrase-level patterns, documented above
   `_MANDATE_TOPICS`, read on the normalised text: no intrusion, reporting,
-  audits or named lab) inside `MacroJury._choose_mandate`, before the majority
-  count; a violating mandate is dropped and logged as `mandate_dropped`. It
+  audits or named lab) inside `MacroJury._choose_mandate`, then by the
+  language-model screen (`core.jury.screen_mandate`, kimi-k3, fail closed); a
+  violating mandate is dropped and logged as `mandate_dropped`. It
   reads the public sheets (§5.4) of every month since the previous review,
   the event month included: public briefings (Allocator notices, trade
   press), ledger rows, filed accounts, statements and notices
@@ -166,7 +167,7 @@ as `config.initial_state` (`core.engine.initial_state`).
 | Few-shot examples from our hand scores of the priced run (T8) | `config/jury_examples.json`, `core.jury.load_examples`, `validate_example`, `examples_block`; missing or empty → rubric skipped, recorded `"no examples yet"` (`NO_EXAMPLES`); perceived disposition still asked |
 | Transcripts: letters A–E, names, charters and chosen setting masked; no interviews, no condition text | `core.transcript.full_transcript`, `disposition_transcript`, `blind_record`, `redact`, `seat_letters` |
 | T2 blind disposition rater (same juror) | `core.jury.DispositionJury` |
-| MacroJury: `kimi-k3`, `deepseek-v4-pro`, `qwen-3.8-max`; each value the median of the jurors that answer, rounded to a whole point; fewer than two usable votes → values kept | `core.jury.MacroJury` (`MACRO_JURY_MODELS`; models listed in `config/states/usa.json`; `median_value` rounds half up; `MIN_MACRO_VOTES` = 2, `values_kept` says why); each review's values and mandate kept in `record["macro_jury"]` |
+| MacroJury: one model, `kimi-k3` (US only); each value the juror's vote rounded to a whole point (halves up); an erroring or unusable reply → the whole review asked once more; both fail → values kept, no mandate; its mandate issued if it passes the keyword filter and the kimi-k3 screen | `core.jury.MacroJury` (`MACRO_JURY_MODEL`, `config/states/usa.json` `macro_jury_model`; `median_value` of the one vote rounds half up; `MACRO_REVIEW_TRIES` = 2, `retried`, `per_juror[model]["review_attempts"]`, `values_kept` says why; `_choose_mandate`; `screen_mandate` with `mandate_screen_model`); each review's values and mandate kept in `record["macro_jury"]` |
 | Pilot slant read of the first values and mandates; mandates logged by cell (§5.1) | `tools/summarize_run.py` `_macro_section`, `macro_lines`, `macro_slant_line` (every pilot summary's `MacroJury` line), `_aggregate_macro` (mandates by cell) |
 | Grand Jury re-ask on a saved record (a pending or interrupted verdict; T8 re-score) | `core.jury.collect_grand_jury` (via `pilot.py` and `main.ask_grand_jury_only`); `pilot.rescore_grand_jury` (`pilot.py T6 --rescore-grand-jury` on the latest T6 run, `pilot.latest_t6`; old verdict in `final.grand_jury_previous`) |
 | Juror providers (OpenAI-compatible) and router | `core.llm` (`KEY_ENV`, `JUROR_BASE_URLS`, `BASE_URL_ENV`, `JUROR_BASE_URL` / `JUROR_API_KEY` / `JUROR_MODEL_IDS`, `wire_model_id`) |
@@ -315,7 +316,10 @@ as `config.initial_state` (`core.engine.initial_state`).
 - `core.llm` routes by model prefix: Anthropic (`claude-*`), OpenAI
   (`gpt-*`), Google Vertex Express (`gemini-*`), xAI (`grok-*`), Muse
   (`muse-*`), Moonshot (`kimi-*`), DeepSeek (`deepseek-*`), DashScope
-  (`qwen-*`), and `stub:` for offline runs (`register_stub`). Keys from
+  (`qwen-*`; supported, no juror uses it), and `stub:` for offline runs
+  (`register_stub`). Jurors need `MOONSHOT_API_KEY` (Grand Jury, T2 rater,
+  MacroJury, mandate screen) and `DEEPSEEK_API_KEY` (Grand Jury fallback), or
+  the `JUROR_BASE_URL` / `JUROR_API_KEY` router. Keys from
   `sim/.env`; `core.llm.preflight` lists missing keys before any paid call.
 - Spend: `core.costs.CostTracker` prices every call from `config/prices.json`,
   persists the total to `data/spend.json` and each call to
@@ -345,6 +349,6 @@ as `config.initial_state` (`core.engine.initial_state`).
 | Intrude fee 1 Capital + 2 Inf per target per committer; one intrude a month (§5.3, A.4/A.5) | `world.json` `intrusion.*`; `core.actions.precheck`; `prompts.packets.intrude_line`, `ONE_INTRUDE_SENTENCE` |
 | Value pull unrounded (§3.2) | `core.economy.value_pull`; shown via `core.fmt.value_text` |
 | Grand Jury fallback on an error or an unusable verdict (§7) | `core.jury.GrandJury` (`fallback_used`); a settled unusable verdict, `core.records.grand_jury_settled` |
-| MacroJury: median of the jurors that answer, rounded to a whole point; < 2 votes keep the values (§7) | `core.jury.median_value`, `MIN_MACRO_VOTES`, `values_kept` |
+| MacroJury: one juror (kimi-k3); its vote rounded to a whole point; asked once more on failure, then the values kept (§7) | `core.jury.median_value`, `MACRO_REVIEW_TRIES`, `values_kept` |
 | T9 without the interview (§9.2) | `config/pilot.json` `T9` |
 | T8's held-out five from the latest T6 run (§9.2) | `tools/jury_check.latest_t6`; `pilot.latest_t6` for `--rescore-grand-jury` |

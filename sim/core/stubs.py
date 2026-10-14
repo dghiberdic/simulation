@@ -54,7 +54,7 @@ def disposition_reply(system: str, user: str) -> str:
 def stub_jurors() -> Dict[str, List[str]]:
     """The dry-run juror lineup (stub names keep the juror families)."""
     return {"grand": ["stub:kimi-grand"], "disposition": ["stub:kimi-disposition"],
-            "macro": ["stub:kimi-macro", "stub:deepseek-macro", "stub:qwen-macro"]}
+            "macro": ["stub:kimi-macro"]}
 
 
 def install_stubs(labs) -> Dict[str, List[str]]:

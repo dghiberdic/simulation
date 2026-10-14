@@ -39,7 +39,7 @@ def test_juror_models_have_contract_prices():
     assert costs.price_for("qwen-3.8-max")["input"] == 2.0
     assert costs.price_for("qwen-3.8-max")["output"] == 6.0
     from core.config import load_state
-    for model in load_state()["macro_jury_models"]:
+    for model in (load_state()["macro_jury_model"], load_state()["mandate_screen_model"]):
         assert model in costs.prices()
 
 
