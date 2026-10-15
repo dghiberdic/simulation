@@ -28,10 +28,33 @@ Keys are read from sim/.env. Clients are created lazily on first use, so
 importing never fails without keys; preflight() lists missing keys before a
 run starts and a missing key at call time raises MissingKeyError.
 
-Failure handling: transient API errors (rate limits, overload, 5xx,
-network) are retried with exponential backoff; non-transient API errors (and
-transient ones that outlast every retry) raise FatalAPIError, which the
-engine turns into a saved partial record and RunAborted. A request timeout is
+Failure handling: transient API errors (rate limits, overload, 5xx, a
+stream or read failure after the request reached the provider) are retried
+with exponential backoff; non-transient API errors (and transient ones that
+outlast every retry) raise FatalAPIError, which the engine turns into a saved
+partial record and RunAborted.
+
+Connection failures (no network, DNS failure, connection refused or reset,
+connect timeout, the SDKs' APIConnectionError, httpx ConnectError /
+ConnectTimeout / RemoteProtocolError, socket.gaierror, OSError ENETUNREACH ...;
+never an HTTP status, so a provider's 5xx or 429 stays an ordinary transient
+error) are retried apart, with backoff capped at NETWORK_RETRY_CAP_S (60 s),
+for up to network_wait_s() seconds (default 30 min; SIM_NETWORK_WAIT_S, else
+config/pilot.json "network_wait_s"), each wait logged ("[network] connection
+lost ... retrying in 30s (12 min left)"). When the window runs out they raise
+NetworkUnavailable: a BaseException (like KeyboardInterrupt), never a
+FatalAPIError, so no fallback, fail-closed, forfeit or "values stay" handler
+catches it; every caller stops, saves what is paid for and exits
+EXIT_NETWORK (5), and re-running the same command resumes. The offline stub
+gets the same connection handling (a stub may raise a connection error).
+
+Exact resume: complete() first looks the request up in the run's replay cache
+(core.calllog: the successful calls journalled since the run's last
+checkpoint). A journalled reply to the same request (same run, purpose, model,
+system prompt, history and user turn, max_tokens, effort, temperature) is
+returned again, identical requests consumed in journal order, with no provider
+call and nothing charged ("[resume] replayed call ..."). Only a request with
+no journalled match goes live. A request timeout is
 retried at most twice: each timed-out request is logged (cost 0, flagged
 "possibly billed", since the provider may have finished it) and reported to
 complete_json as an attempt with stop "timeout".
@@ -71,6 +94,7 @@ treats it as unusable without a corrective re-ask: the next prompt
 would be longer still.
 """
 
+import errno
 import inspect
 import json
 import logging
@@ -163,11 +187,19 @@ ANTHROPIC_READ_TIMEOUT_S = 600.0
 MAX_TIMEOUT_RETRIES = 2
 
 # Retries: 8 attempts, exponential backoff from 2s capped at 120s, with jitter.
+# Connection failures are retried apart (NETWORK_* below) and never use these up.
 MAX_ATTEMPTS = 8
 RETRY_BASE_S = 2.0
 RETRY_CAP_S = 120.0
 RETRY_AFTER_CAP_S = 300.0
 TRANSIENT_STATUS = {408, 409, 425, 429}
+
+# Connection failures: retried for up to network_wait_s() seconds in all,
+# backoff from 2 s doubling, capped at 60 s between tries.
+NETWORK_WAIT_S = 1800.0
+NETWORK_RETRY_BASE_S = 2.0
+NETWORK_RETRY_CAP_S = 60.0
+NETWORK_WAIT_ENV = "SIM_NETWORK_WAIT_S"
 
 
 class FatalAPIError(RuntimeError):
@@ -183,6 +215,48 @@ class FatalAPIError(RuntimeError):
         self.model = model
         self.status = status
         self.attempts: List[Dict[str, Any]] = []
+
+
+class NetworkUnavailable(BaseException):
+    """
+    No connection to a provider for the whole network wait window
+    (network_wait_s()). A BaseException, like KeyboardInterrupt, so that no
+    `except Exception` fallback, fail-closed screen, forfeit, "values stay" or
+    "no usable verdict" handler can catch it: the run stops, saves its partial
+    record and logs, and re-running the same command resumes (exit 5,
+    core.exits.EXIT_NETWORK). `attempts` holds complete_json's attempt records
+    made before it (paid), as on FatalAPIError.
+    """
+
+    def __init__(self, message: str, provider: str = "", model: str = "", waited_s: float = 0.0):
+        super().__init__(message)
+        self.provider = provider
+        self.model = model
+        self.waited_s = waited_s
+        self.attempts: List[Dict[str, Any]] = []
+
+
+NETWORK_STOP_HINT = "network unavailable: re-run the same command to resume"
+
+
+def network_wait_s() -> float:
+    """Seconds a connection failure is retried before NetworkUnavailable: the
+    SIM_NETWORK_WAIT_S environment variable, else config/pilot.json
+    "network_wait_s", else NETWORK_WAIT_S (30 min). 0 stops at the first failure."""
+    env = os.environ.get(NETWORK_WAIT_ENV)
+    if env not in (None, ""):
+        try:
+            return max(0.0, float(env))
+        except ValueError:
+            logger.warning(f"[network] ignoring {NETWORK_WAIT_ENV}={env!r} (not a number)")
+    try:
+        with open(SIM_DIR / "config" / "pilot.json", encoding="utf-8") as f:
+            value = json.load(f).get("network_wait_s")
+        if value is not None:
+            return max(0.0, float(value))
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    return NETWORK_WAIT_S
 
 
 class MissingKeyError(FatalAPIError):
@@ -741,6 +815,7 @@ _CALLERS: Dict[str, Callable[..., Dict[str, Any]]] = {
 # ---------------------------------------------------------------------------
 
 _sleep = time.sleep  # patched in tests
+_clock = time.monotonic  # patched in tests (the network wait window)
 
 SDK_ROOTS = ("anthropic", "openai", "google", "httpx", "httpx2", "httpcore")
 # Network-level failures (any SDK version; httpx and httpx2 share these names).
@@ -844,6 +919,96 @@ def _is_context_error(err: Exception) -> bool:
     return bool(_CONTEXT_ERROR_RE.search(text))
 
 
+# Connection-level failures: the request never got an HTTP response.
+CONNECTION_CLASSES = ("APIConnectionError", "ConnectError", "ConnectTimeout", "RemoteProtocolError",
+                      "WriteError", "ConnectionError", "gaierror", "herror")
+NETWORK_ERRNOS = {getattr(errno, n) for n in (
+    "ENETUNREACH", "EHOSTUNREACH", "ENETDOWN", "EHOSTDOWN", "ECONNREFUSED", "ECONNRESET",
+    "ECONNABORTED", "ENOTCONN", "EPIPE", "ETIMEDOUT") if hasattr(errno, n)}
+
+
+def _is_connection_error(err: BaseException) -> bool:
+    """No network, DNS failure, connection refused or reset, connect timeout: the SDKs'
+    APIConnectionError (not a read timeout), httpx ConnectError / ConnectTimeout /
+    RemoteProtocolError / WriteError, socket.gaierror, OSError ENETUNREACH and the
+    like. Never an error with an HTTP status (a provider's 5xx or 429), and never a
+    stream that broke after its 200 response started (StreamInterrupted)."""
+    if isinstance(err, StreamInterrupted) or not isinstance(err, Exception):
+        return False
+    if _status(err) is not None:
+        return False
+    for e in _error_chain(err):
+        names = [c.__name__ for c in type(e).__mro__]
+        if "APITimeoutError" in names or "TimeoutException" in names:
+            if "ConnectTimeout" in names:
+                return True
+            continue        # a read/write timeout: the request may have run (the timeout path)
+        if any(n in CONNECTION_CLASSES for n in names):
+            return True
+        if isinstance(e, OSError) and e.errno in NETWORK_ERRNOS:
+            return True
+    return False
+
+
+def _minutes(seconds: float) -> str:
+    seconds = max(0.0, seconds)
+    return f"{seconds:.0f}s" if seconds < 90 else f"{seconds / 60:.0f} min"
+
+
+class _Outage:
+    """One call's run of connection failures: wait() sleeps before the next try, or
+    raises NetworkUnavailable once the network wait window is used up; ok() notes
+    the connection is back."""
+
+    def __init__(self, provider: str, model: str):
+        self.provider, self.model = provider, model
+        self.label = f"{provider}/{model}"
+        self.since: Optional[float] = None
+        self.tries = 0
+
+    def wait(self, err: BaseException) -> None:
+        now = _clock()
+        if self.since is None:
+            self.since = now
+        window = network_wait_s()
+        waited = now - self.since
+        left = window - waited
+        what = f"{type(err).__name__}: {err}"
+        if left <= 0:
+            logger.error(f"[network] {self.label}: no connection for {_minutes(waited)} "
+                         f"(window {_minutes(window)}; {what}); stopping: {NETWORK_STOP_HINT}")
+            raise NetworkUnavailable(f"no connection to {self.label} for {_minutes(waited)} "
+                                     f"(network wait {_minutes(window)}): {what}",
+                                     self.provider, self.model, waited) from err
+        delay = min(NETWORK_RETRY_CAP_S, NETWORK_RETRY_BASE_S * 2 ** min(self.tries, 10), left)
+        self.tries += 1
+        logger.warning(f"[network] connection lost ({self.label}: {what}); retrying in "
+                       f"{_minutes(delay)} ({_minutes(left)} left)")
+        _sleep(delay)
+
+    def ok(self) -> None:
+        if self.since is not None:
+            logger.warning(f"[network] connection back ({self.label}) after "
+                           f"{_minutes(_clock() - self.since)}")
+            self.since, self.tries = None, 0
+
+
+def _network_retry(fn: Callable[[], Any], provider: str, model: str) -> Any:
+    """fn, with connection failures retried within the network wait window (the
+    offline stub's path: everything else it raises propagates as it is)."""
+    outage = _Outage(provider, model)
+    while True:
+        try:
+            out = fn()
+        except Exception as e:
+            if not _is_connection_error(e):
+                raise
+            outage.wait(e)
+            continue
+        outage.ok()
+        return out
+
+
 def _retry_after(err: Exception) -> Optional[float]:
     """Seconds from retry-after-ms / retry-after headers, if the error carries them."""
     headers = getattr(getattr(err, "response", None), "headers", None)
@@ -876,17 +1041,27 @@ def _with_retries(fn: Callable[[], Dict[str, Any]], provider: str, model: str,
     on_timeout(error, seconds); together they are retried at most
     MAX_TIMEOUT_RETRIES times, and the next one is fatal. A
     non-transient stream error (e.g. an invalid_request error event) is fatal
-    at once, after being reported.
+    at once, after being reported. A connection failure (_is_connection_error)
+    uses up no attempt: it is retried within the network wait window
+    (_Outage), then raises NetworkUnavailable.
     """
     label = f"{provider}/{model}"
     timeouts = broken = 0
-    for attempt in range(MAX_ATTEMPTS):
+    outage = _Outage(provider, model)
+    attempt = 0
+    while True:
         start = time.monotonic()
         try:
-            return fn()
+            out = fn()
+            outage.ok()
+            return out
         except (BudgetExceeded, FatalAPIError):
             raise
         except Exception as e:
+            if _is_connection_error(e):
+                outage.wait(e)      # raises NetworkUnavailable once the window is used up
+                continue
+            outage.ok()
             stream_error = isinstance(e, StreamInterrupted)
             if not stream_error and not _is_api_error(e):
                 raise  # a bug in our own code: let the caller see it as-is
@@ -916,7 +1091,7 @@ def _with_retries(fn: Callable[[], Dict[str, Any]], provider: str, model: str,
             logger.warning(f"{label}: transient error ({type(e).__name__}: {e}); "
                            f"retry {attempt + 2}/{MAX_ATTEMPTS} in {delay:.1f}s")
             _sleep(delay)
-    raise AssertionError("unreachable")
+            attempt += 1
 
 
 # ---------------------------------------------------------------------------
@@ -952,7 +1127,15 @@ def complete(model: str, system: str, user: str, *, provider: Optional[str] = No
              run_id: Optional[str] = None, history: Optional[List[Dict[str, str]]] = None,
              cache_key: Optional[str] = None) -> LLMResponse:
     """_complete, with the call (prompt, raw reply or error) appended to the call
-    journal (core.calllog) the moment it returns or fails."""
+    journal (core.calllog) the moment it returns or fails. A request the run's
+    replay cache holds (a resumed run: the same request journalled successfully
+    since the run's last checkpoint) returns the journalled reply instead, with no
+    provider call and nothing charged."""
+    key = calllog.request_key(purpose=purpose, model=model, system=system, history=history, user=user,
+                              max_tokens=max_tokens, effort=effort, temperature=temperature)
+    hit = calllog.take_replay(run_id, key)
+    if hit is not None:
+        return _replayed(hit, model, purpose, run_id, key)
     start = time.monotonic()
     try:
         r = _complete(model, system, user, provider=provider, max_tokens=max_tokens,
@@ -961,10 +1144,31 @@ def complete(model: str, system: str, user: str, *, provider: Optional[str] = No
     except BaseException as e:
         calllog.record(run_id=run_id, purpose=purpose, provider=_safe_provider(model, provider), model=model,
                        system=system, user=user, history=history, error=e,
-                       latency_s=time.monotonic() - start)
+                       latency_s=time.monotonic() - start, request_key=key)
         raise
     calllog.record(run_id=run_id, purpose=purpose, provider=r.provider, model=model, system=system,
-                   user=user, history=history, response=r)
+                   user=user, history=history, response=r, request_key=key)
+    return r
+
+
+def _replayed(hit: Dict[str, Any], model: str, purpose: str, run_id: Optional[str], key: str) -> LLMResponse:
+    """The journalled reply of a replayed call, as complete() first returned it. Nothing
+    is charged (the ledger has it from the call itself)."""
+    def num(k: str, cast=int):
+        v = hit.get(k)
+        return cast(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else cast(0)
+    r = LLMResponse(
+        text=hit.get("text") or "", model=model, provider=hit.get("provider") or "",
+        input_tokens=num("input_tokens"), output_tokens=num("output_tokens"),
+        cached_tokens=num("cached_tokens"), reasoning_tokens=num("reasoning_tokens"),
+        cost=num("cost", float), thinking=hit.get("thinking"), latency_s=num("latency_s", float),
+        raw_stop_reason=hit.get("raw_stop_reason"), stop=hit.get("stop") or "end",
+        stop_detail=hit.get("stop_detail"), served_model=hit.get("served_model"),
+        temperature=hit.get("temperature"), max_tokens=num("max_tokens"), effort=hit.get("effort"),
+        timeouts=[dict(t) for t in hit.get("timeouts") or []])
+    calllog.note_replayed(run_id, hit, key)
+    logger.info(f"[resume] replayed call {purpose} {model} (journalled {hit.get('ts')}; "
+                f"stop {r.stop}, ${r.cost:.4f} already on the ledger; no new call)")
     return r
 
 
@@ -992,7 +1196,9 @@ def _complete(model: str, system: str, user: str, *, provider: Optional[str] = N
     start = time.monotonic()
 
     if provider == "stub":
-        return _call_stub(model, system, user, turns, purpose, run_id, max_tokens, start, temperature)
+        # A stub may raise a connection error (tests, the e2e outage demo): handled like a provider's.
+        return _network_retry(lambda: _call_stub(model, system, user, turns, purpose, run_id, max_tokens,
+                                                 start, temperature), provider, model)
 
     tracker.check()
     try:
@@ -1029,7 +1235,7 @@ def _complete(model: str, system: str, user: str, *, provider: Optional[str] = N
 
     try:
         out = _with_retries(attempt, provider, model, on_timeout=note_timeout)
-    except (FatalAPIError, BudgetExceeded) as e:
+    except (FatalAPIError, BudgetExceeded, NetworkUnavailable) as e:
         e.attempts = timed_out + list(getattr(e, "attempts", None) or [])
         raise
     except ContextWindowExceeded as e:
@@ -1204,8 +1410,8 @@ def complete_json(model: str, system: str, user: str, *,
     exactly one"), and its attempt carries "ambiguous": True. Returns (obj or
     None, attempts) with one record per attempt, interrupted requests included
     (stop "timeout" or "stream_error", "possibly_billed" set). Parse/validation
-    failures never raise; BudgetExceeded and FatalAPIError do, and the error's
-    .attempts then holds the records so far.
+    failures never raise; BudgetExceeded, FatalAPIError and NetworkUnavailable do,
+    and the error's .attempts then holds the records so far.
     """
     attempts: List[Dict[str, Any]] = []
     history: List[Dict[str, str]] = list(kw.pop("history", None) or [])
@@ -1218,7 +1424,7 @@ def complete_json(model: str, system: str, user: str, *,
     while True:
         try:
             r = complete(model, system, prompt, history=history, max_tokens=max_tokens, **kw)
-        except (FatalAPIError, BudgetExceeded) as e:
+        except (FatalAPIError, BudgetExceeded, NetworkUnavailable) as e:
             # Keep every attempt already made (paid replies included) on the error.
             e.attempts = attempts + list(getattr(e, "attempts", None) or [])
             raise

@@ -59,7 +59,7 @@ def say(*parts: Any, sep: str = " ", file: Any = None, level: int = logging.INFO
 
 def _say_style(line: str) -> str:
     low = line.lower()
-    if low.startswith(("refusing", "run aborted", "run crashed", "halted", "error", "preflight failed")):
+    if low.startswith(("refusing", "run aborted", "run crashed", "halted", "error", "preflight failed", "network unavailable")):
         return "bold red"
     if low.startswith(("note", "warning")):
         return "yellow"

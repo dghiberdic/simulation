@@ -22,7 +22,11 @@ length of one run:
                          versions, config hash, seed)
   <run_id>.events.jsonl  one JSON object per record, with the structured event
                          data the console renders
-  <run_id>.calls.jsonl   every model call (core.calllog)
+  <run_id>.calls.jsonl   every model call (core.calllog), with "mark" lines: each
+                         process taking the run up ("attach"), each stop ("stop":
+                         network, budget, Ctrl-C, crash) and each checkpoint; a
+                         resumed run answers the calls its interrupted attempt
+                         completed from this journal ("replayed" lines)
 
 Every file handler flushes on each record. Warnings (warnings.warn), uncaught
 exceptions (main thread and worker threads) are logged before Python reports
@@ -59,7 +63,7 @@ TAG_STYLES: Dict[str, str] = {
     "report": "yellow", "intervention": "yellow", "mandate": "yellow",
     "grand_jury": "blue", "macro_jury": "blue", "jury": "blue",
     "cost": "green", "budget": "bold green",
-    "resume": "dim", "save": "dim", "calls": "dim",
+    "resume": "cyan", "save": "dim", "calls": "dim", "network": "bold red",
 }
 LEVEL_STYLES = {"DEBUG": "dim", "INFO": "green", "WARNING": "bold yellow",
                 "ERROR": "bold red", "CRITICAL": "bold white on red"}
@@ -420,19 +424,32 @@ def _attached(paths: Dict[str, Path], run_id: str, header: Dict[str, Any]) -> It
     for h in handlers:
         h._sim_handler = "run"
         root.addHandler(h)
-    calllog.register(run_id, paths["calls"])
+    replayable = calllog.register(run_id, paths["calls"])
     resumed = paths["log"].exists() and paths["log"].stat().st_size > 0
     log = logging.getLogger("sim.run")
     log.info(f"[save] logging run {run_id} to {paths['log']}" + (" (appending: resumed)" if resumed else ""),
-             extra={"event": "run_header", "data": run_header(run_id=run_id, resumed=resumed, **header)})
+             extra={"event": "run_header", "data": run_header(run_id=run_id, resumed=resumed,
+                                                              replayable_calls=replayable, **header)})
+    calllog.mark(run_id, "attach", pid=os.getpid(), resumed=resumed, replayable=replayable,
+                 stage=header.get("stage"))
+    if replayable:
+        log.info(f"[resume] {run_id}: {replayable} call(s) the interrupted attempt completed are in the "
+                 "call journal; the same requests are answered from it (no new call, nothing charged)")
+    from core.llm import NetworkUnavailable
     try:
         yield paths
     except BaseException as e:
-        if isinstance(e, KeyboardInterrupt):
+        calllog.mark(run_id, "stop", reason=type(e).__name__, detail=f"{e}"[:500])
+        if isinstance(e, NetworkUnavailable):
+            log.warning(f"[network] {run_id} stopped: {e}; the partial record and logs are kept; "
+                        "network unavailable: re-run the same command to resume")
+        elif isinstance(e, KeyboardInterrupt):
             log.warning(f"[abort] {run_id} interrupted; the partial record and logs are kept")
         else:
             log.error(f"[abort] {run_id} stopped: {type(e).__name__}: {e}", exc_info=True)
         raise
+    else:
+        calllog.mark(run_id, "done", fence=True, stage=header.get("stage"))
     finally:
         calllog.unregister(run_id)
         for h in handlers:

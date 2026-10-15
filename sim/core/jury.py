@@ -41,8 +41,12 @@ complete_json_once, one call per ask), so a stub model makes every jury run
 offline. Replies are validated numerically: numeric strings are coerced,
 anything else triggers a corrective retry (the MacroJury: its one more ask); a juror that never gives
 usable numbers is recorded with its errors, never crashes the run.
-BudgetExceeded (and an interrupt) propagates carrying what was already paid
-for: e.per_juror (Grand Jury, MacroJury) or e.ratings (disposition jury).
+BudgetExceeded (and an interrupt, and core.llm.NetworkUnavailable) propagates
+carrying what was already paid for: e.per_juror (Grand Jury, MacroJury) or
+e.ratings (disposition jury). A network outage is never a juror failure: it
+never moves to the fallback juror, never leaves the values as they were, never
+drops a mandate and never settles "no usable verdict" or an unusable rating;
+the stage stops and is asked again when the run resumes.
 """
 
 import json
@@ -57,8 +61,8 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 from core.config import CONFIG_DIR, load_charter, load_lab_configs, load_state
 from core.costs import BudgetExceeded
 from core.fmt import month_label
-from core.llm import (CONTEXT_ERROR, complete, complete_json, parse_json_detail, register_stub,
-                      resolve_provider)
+from core.llm import (CONTEXT_ERROR, NetworkUnavailable, complete, complete_json, parse_json_detail,
+                      register_stub, resolve_provider)
 from core.mandates import mandate_violation
 from core.records import NO_USABLE_VERDICT, grand_jury_usable, write_json_atomic
 from core.state import VALUE_AXES
@@ -551,7 +555,7 @@ class GrandJury:
                     model, _GRAND_SYSTEM, user, validate=validate, max_tokens=self.max_tokens,
                     effort=self.effort, temperature=self.temperature, purpose="grand_jury",
                     run_id=run_id, expect_keys=("seats",))
-            except (BudgetExceeded, KeyboardInterrupt) as e:   # hand back what was paid for
+            except (BudgetExceeded, KeyboardInterrupt, NetworkUnavailable) as e:   # hand back what was paid for
                 e.per_juror = per_juror
                 raise
             except Exception as e:                  # provider failure: try the fallback
@@ -614,8 +618,9 @@ def _collect_grand_jury(record: Dict[str, Any], jurors: List[str], run_id: str, 
     try:
         charters = charters_block(record, record_charters(record), transcript.letters)
         result = GrandJury(jurors).evaluate(transcript, keys, run_id=run_id, charters=charters)
-    except (BudgetExceeded, KeyboardInterrupt) as e:     # keep the verdicts paid for
-        error = "budget" if isinstance(e, BudgetExceeded) else "interrupted"
+    except (BudgetExceeded, KeyboardInterrupt, NetworkUnavailable) as e:     # keep the verdicts paid for
+        error = ("budget" if isinstance(e, BudgetExceeded)
+                 else "network" if isinstance(e, NetworkUnavailable) else "interrupted")
         final["grand_jury"] = dict(aggregate_grand(getattr(e, "per_juror", None) or {}, keys), error=error)
         write_json_atomic(path, record)
         raise
@@ -801,8 +806,9 @@ def screen_mandate(text: str, model: str = MANDATE_SCREEN_MODEL,
     """One screen call (temperature 0, purpose "macro_jury" on the ledger): {"text",
     "model", "violates" (True/False, or None when the reply was unusable or the call
     failed), "topics", "error", "attempts", plus the call log}. Fails closed: the
-    caller drops a mandate whose "violates" is not False. BudgetExceeded and
-    KeyboardInterrupt propagate."""
+    caller drops a mandate whose "violates" is not False. BudgetExceeded,
+    KeyboardInterrupt and NetworkUnavailable propagate (an outage never drops a
+    mandate: the review is asked again on resume)."""
     out: Dict[str, Any] = {"text": text, "model": model, "violates": None, "topics": [],
                            "error": None, "family": juror_family(model)}
     try:
@@ -810,7 +816,7 @@ def screen_mandate(text: str, model: str = MANDATE_SCREEN_MODEL,
                                       validate=_validate_screen, max_tokens=SCREEN_MAX_TOKENS,
                                       temperature=JUROR_TEMPERATURE, purpose="macro_jury",
                                       run_id=run_id, expect_keys=("violates",))
-    except (BudgetExceeded, KeyboardInterrupt):
+    except (BudgetExceeded, KeyboardInterrupt, NetworkUnavailable):
         raise
     except Exception as e:                      # fail closed
         failed = _failed_juror(model, e)
@@ -908,7 +914,7 @@ class MacroJury:
     def _ask(self, state: str, current: Dict[str, float], summary: str, run_id: Optional[str],
              mandates: Optional[List[Dict[str, Any]]], start: Any = None) -> Dict[str, Any]:
         """One ask of the review, one call: the per-juror entry (result None when
-        unusable). BudgetExceeded and KeyboardInterrupt propagate."""
+        unusable). BudgetExceeded, KeyboardInterrupt and NetworkUnavailable propagate."""
         model = self.model
         try:
             obj, attempts = complete_json_once(
@@ -916,7 +922,7 @@ class MacroJury:
                 _macro_user(state, current, summary, mandates, start),
                 validate=_validate_macro, max_tokens=self.max_tokens, effort=self.effort,
                 temperature=self.temperature, purpose="macro_jury", run_id=run_id)
-        except (BudgetExceeded, KeyboardInterrupt):
+        except (BudgetExceeded, KeyboardInterrupt, NetworkUnavailable):
             raise
         except Exception as e:                  # a dead call never stops the run
             logger.warning(f"[macro_jury] {model} failed ({type(e).__name__}: {e})")
@@ -952,7 +958,7 @@ class MacroJury:
         for n in range(MACRO_REVIEW_TRIES):
             try:
                 tries.append(self._ask(state, current, summary, run_id, mandates, start))
-            except (BudgetExceeded, KeyboardInterrupt) as e:   # the record keeps what was paid for
+            except (BudgetExceeded, KeyboardInterrupt, NetworkUnavailable) as e:   # the record keeps what was paid for
                 if tries:
                     _sync()
                 e.per_juror = per_juror
@@ -980,7 +986,7 @@ class MacroJury:
         if screen and chosen["mandate"]:
             try:
                 verdict = screen_mandate(chosen["mandate"], self.screen_model, run_id)
-            except (BudgetExceeded, KeyboardInterrupt) as e:
+            except (BudgetExceeded, KeyboardInterrupt, NetworkUnavailable) as e:
                 e.per_juror = per_juror
                 raise
             screens.append(verdict)
@@ -1087,7 +1093,7 @@ class DispositionJury:
                     validate=_validate_disp, max_tokens=self.max_tokens, effort=self.effort,
                     temperature=self.temperature, purpose="disposition_jury", run_id=run_id,
                     expect_keys=("disposition",))
-            except (BudgetExceeded, KeyboardInterrupt) as e:
+            except (BudgetExceeded, KeyboardInterrupt, NetworkUnavailable) as e:
                 e.ratings = []
                 self.failures.extend(dict(f, run_id=run_id) for f in self.failed)
                 raise

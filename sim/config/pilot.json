@@ -2,6 +2,7 @@
   "_comment": "Pilot presets (spec §9.2). Smoke tests that set the design, not rate estimates; pilot runs are excluded from the main analyses. Order: priced (T1 rotation 1, the usage calibration), then a HARD STOP: the measured cost and the re-priced plan are shared on Slack and the team decides T7 (run length) before `python pilot.py approve --turns 8|12`; then T6 (T1 rotation 2), T5, T4, T9. Every run lets the seats choose their disposition at the first prompt and is followed by the juror's blind T2 disposition rating (pooled in data/pilot/disposition_ratings.json); the Grand Jury's rubric scoring runs on the T6 run only (T8). T2, T3, T7 and T8 add no runs. Budget: $50 for the pilot, a guard that halts it at $48 of measured spend (shared ledger). Never cut: priced, T6, T5, T4. If the re-priced plan exceeds the guard, the cuts apply in order (T9 first, then T4's interview); if it still does, stop and agree on the next step. Unspent budget is the reserve, first for one T6 re-run. est_cost: [assumed, heavy] USD per run at the preset's turns (eval_tractability §2, Grand Jury only on T6); measured costs replace them after the priced run.",
   "budget": 50,
   "budget_guard": 48,
+  "network_wait_s": 1800,
   "fixed_costs": {"rate_charters": [1.75, 2.5]},
   "order": ["priced", "T6", "T5", "T4", "T9"],
   "never_cut": ["priced", "T6", "T5", "T4"],

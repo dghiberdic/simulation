@@ -72,13 +72,42 @@ Every record is also written to files, at DEBUG, whatever the console level:
 |---|---|
 | `<run dir>/<run_id>.log` | the run as the terminal showed it (tables included), with a header: argv, git commit and dirty flag, package versions, config hash, seed. A resumed run appends to it. |
 | `<run dir>/<run_id>.events.jsonl` | the same records, one JSON object each, with the structured data behind every table (`event`: `run_header`, `turn_start`, `turn_summary`, `macro_jury`, `grand_jury`, `final`) |
-| `<run dir>/<run_id>.calls.jsonl` | every model call as it returns or fails: purpose, model, the user prompt and history, the raw reply and thinking, stop reason, tokens, cost, latency, timeouts, error. System prompts are stored once by hash (`core.calllog.read_calls` restores them). |
+| `<run dir>/<run_id>.calls.jsonl` | every model call as it returns or fails (flushed and fsynced per paid call): purpose, model, the user prompt and history, the raw reply and thinking, stop reason, tokens, cost, latency, timeouts, error, and its request key. System prompts are stored once by hash (`core.calllog.read_calls` restores them). `mark` lines record each process that takes the run up (`attach`), each stop (`stop`: network, budget, Ctrl-C, crash) and each checkpoint; `replayed` lines the calls a resumed run answered from the journal. |
 | `data/logs/<time>-<command>-<pid>.log` | every record of every invocation (tools, refusals and crashes before a run directory exists). Never rotated. |
-| `data/logs/calls-<date>.jsonl` | model calls outside a run (`rate_charters.py`, post-run juries) |
+| `data/logs/calls-<date>.jsonl` | model calls outside a run (`rate_charters.py`); post-run juries go to their run's `.calls.jsonl` |
 
 Uncaught exceptions (main thread and worker threads), Python warnings and
 the failures `core.cli.run_main` maps to exit codes are logged with their
 tracebacks before the process exits.
+
+### Interruptions (network outages, kills, the guard)
+
+A lost connection never changes a result. A connection-level failure (no
+network, DNS failure, connection refused or reset, connect timeout; never a
+provider's HTTP 5xx or 429, which stay ordinary retried errors) is retried
+with backoff (at most 60 s between tries) for up to 30 minutes, each wait
+logged as `[network] connection lost ... retrying in 30s (12 min left)`. Set the
+window with `SIM_NETWORK_WAIT_S` (seconds) or `network_wait_s` in
+`config/pilot.json`. If the connection is still down at the end of the window,
+the command stops with exit 5 and `network unavailable: re-run the same command
+to resume`: the partial record, the logs and the call journal are kept, no seat
+is forfeited, and no MacroJury review, mandate screen, Grand Jury verdict or
+T2 rating is settled by the outage (none falls back, fails closed, keeps the
+values or records "no usable verdict"); `pilot.py` and `campaign.py` stop at
+once, without moving on to the next test or cell.
+
+Re-running the same command (same run id, output and set-up) continues as if
+nothing had happened. The complete turns are rebuilt from the partial log, and
+every call the interrupted attempt completed (in the turn in flight, or in a
+post-run jury stage) is answered from the run's `.calls.jsonl`: the same
+request gets the journalled reply, with no new call and nothing charged
+(`[resume] replayed call ...`). Only the requests that never completed go
+live. Since every random draw is keyed, the resumed run's record equals an
+uninterrupted run's (apart from the `resumed` provenance and call latencies).
+The same holds after a kill, a power cut (each paid call is fsynced to the
+journal as it returns), Ctrl-C or the budget guard. `rate_charters.py` (no run
+id) does not replay: a seat stopped by the network keeps its old values and the
+message names the `--lab` calls still to make.
 
 ### API keys
 
@@ -713,11 +742,13 @@ Every entry point (`main.py`, `pilot.py`, `campaign.py`, `rate_charters.py`,
 | 2 | refused, usage error, missing or unreadable input (no matching run included), or an aborted or crashed run; any uncaught error (`core/cli.py` maps it, never to 1) |
 | 3 | the plan or check did not pass: `pilot.py approve` re-priced plan over the guard, a scripted check failed, a UPS identity replay mismatch, `jury_check.py` revise, `disposition.py` seat defaulted, a `main.py` run (or a campaign) with no usable Grand Jury verdict |
 | 4 | waiting for human input (hand scores, human ratings: no file, or the blank template) |
+| 5 | network unavailable: no connection to a provider for the whole network wait window (30 min; `SIM_NETWORK_WAIT_S`). Partial record, logs and call journal kept; re-run the same command to resume exactly (see Interruptions) |
 
 Ctrl-C (SIGINT) is not mapped: the run stops with Python's KeyboardInterrupt
 traceback and the signal status (130). The partial record is kept, and
 running the same command again resumes it (logged turns are replayed with no
-call).
+call, and the calls the interrupted turn completed are answered from the call
+journal).
 
 ---
 

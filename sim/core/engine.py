@@ -40,7 +40,15 @@ Partial records are saved after every turn; a FatalAPIError saves the partial
 and raises RunAborted; the Grand Jury never aborts a finished run (S2). On any
 exception the turn in flight is appended as {"incomplete": true, ...} with every
 paid result collected so far (a stage waits for all its calls before
-re-raising), then the partial is saved.
+re-raising), then the partial is saved. A NetworkUnavailable (core.llm: no
+connection for the whole network wait window) is a stop, like Ctrl-C: the
+partial is saved, no seat is forfeited and no review settled, and it
+propagates (exit 5). Re-running resumes: the complete turns from the partial
+log (core.resume), and every call the interrupted attempt completed from the
+call journal (core.calllog replay cache), so the resumed run is the run an
+uninterrupted one would have been. The journal gets a checkpoint mark (a
+"fence") at a fresh start, after each saved turn and when the finished record
+is saved before the Grand Jury.
 
 Everything a seat reads that persists across months carries an absolute month:
 tips, its access records (with partners), notices and report outcomes.
@@ -68,7 +76,8 @@ from core.costs import BudgetExceeded
 from core.economy import purchases_frozen
 from core.fog import FOG, describe_action, observed_actions
 from core.jury import GRAND_JURY_MODELS, GrandJury, MacroJury, aggregate_grand
-from core.llm import FatalAPIError, complete_json, continue_call
+from core import calllog
+from core.llm import FatalAPIError, NETWORK_STOP_HINT, NetworkUnavailable, complete_json, continue_call
 from core import console as monitor
 from core.logsetup import run_logging
 from core.records import write_json_atomic
@@ -376,8 +385,16 @@ class SimulationEngine:
                 self._inflight = None
                 if self._live:
                     self._save_partial()
+                    calllog.mark(self.run_id, "turn_done", fence=True, turn=turn)
                 self._emit_turn(turn_rec)
             self._finalise()
+        except NetworkUnavailable as e:         # a stop, like Ctrl-C: nothing forfeited, resumable
+            if not self._live:
+                raise
+            self._abandon_turn(e)
+            path = self._save_partial()
+            logger.error(f"[network] {e}; partial record saved at {path}; {NETWORK_STOP_HINT}")
+            raise
         except FatalAPIError as e:
             if not self._live:                  # still replaying the log: leave it as it was
                 raise
@@ -399,6 +416,7 @@ class SimulationEngine:
         if self.run_grand_jury:
             self.record["final"]["grand_jury"] = dict(GRAND_JURY_PENDING)
         self._save_final()
+        calllog.mark(self.run_id, "run_done", fence=True)
         try:
             self._grand_jury()
         finally:
@@ -410,21 +428,31 @@ class SimulationEngine:
         """Pick up <run_id>.partial.json when it is this run (core.resume): its complete
         turns are replayed from the log, with its draws, and the run goes live after
         them. A partial log of another set-up is set aside, never overwritten."""
-        if not (self.resume and self.output_dir):
+        if not self.output_dir:
             return
-        partial = load_partial(self.output_dir, self.run_id)
-        if partial is None or not partial.get("turns"):
+        partial = load_partial(self.output_dir, self.run_id) if self.resume else None
+        if partial is not None:
+            diffs = setup_diffs(partial, self.record)
+            if diffs:
+                moved = set_aside(self.output_dir, self.run_id)
+                logger.warning(f"[resume] {self.run_id}: the partial log is another set-up "
+                               f"({', '.join(diffs)}); kept as {moved.name}, starting afresh")
+                partial = None
+        if partial is None:
+            # A fresh start: a checkpoint in the call journal (nothing before it is
+            # replayed), then an empty partial log, so a stop before the first turn is
+            # saved (a kill, a power cut) still resumes with that turn's calls replayed.
+            calllog.mark(self.run_id, "start", fence=True)
+            self._save_partial()
             return
-        diffs = setup_diffs(partial, self.record)
-        if diffs:
-            moved = set_aside(self.output_dir, self.run_id)
-            logger.warning(f"[resume] {self.run_id}: the partial log is another set-up "
-                           f"({', '.join(diffs)}); kept as {moved.name}, starting afresh")
+        if partial.get("letter_salt"):
+            self.record["letter_salt"] = partial["letter_salt"]
+        if not partial.get("turns"):
+            logger.info(f"[resume] {self.run_id}: no turn logged; starting from turn 1 "
+                        f"(calls already journalled are answered from the journal)")
             return
         log = LoggedRun(partial)
         self.record["resumed"] = list(partial.get("resumed") or []) + [log.provenance()]
-        if partial.get("letter_salt"):
-            self.record["letter_salt"] = partial["letter_salt"]
         if not log.last:
             logger.info(f"[resume] {self.run_id}: no complete turn logged; starting from turn 1")
             return
@@ -797,7 +825,8 @@ class SimulationEngine:
     def _gather(self, labs: List[LabState], fn: Callable[[LabState], Any],
                 stage: str = "") -> Dict[str, Any]:
         """Run fn for each seat; concurrently when parallel, gathered in lab order.
-        Other per-seat errors forfeit that seat. Budget and FatalAPIError propagate, but
+        Other per-seat errors forfeit that seat. Budget, FatalAPIError and
+        NetworkUnavailable (never a forfeit) propagate, but
         only after every call already in flight has finished: their results are paid for,
         so they are kept for the incomplete-turn record before re-raising."""
         results: Dict[str, Any] = {}
@@ -810,7 +839,11 @@ class SimulationEngine:
                     try:
                         results[lab.key] = futures[lab.key].result()
                     except BaseException as e:
-                        error = error or e          # first failure in lab order
+                        # first failure in lab order; a network stop outranks a provider
+                        # error (the outage may be what broke it), never the budget guard
+                        if error is None or (isinstance(e, NetworkUnavailable)
+                                             and not isinstance(error, (BudgetExceeded, NetworkUnavailable))):
+                            error = e
                         results[lab.key] = self._failed(e)
         else:
             for lab in labs:
@@ -837,7 +870,7 @@ class SimulationEngine:
             return {"result": fn(lab), "error": None}
         except LoggedFailure as e:                  # a replayed turn: the call failed in the run
             return {"result": (None, []), "error": e.error}
-        except (BudgetExceeded, FatalAPIError):
+        except (BudgetExceeded, FatalAPIError, NetworkUnavailable):
             raise
         except Exception as e:                      # parse/other: forfeit, never crash the run
             logger.warning(f"[seat] {lab.key} call failed: {type(e).__name__}: {e}")
@@ -1538,7 +1571,9 @@ class SimulationEngine:
         recorded per juror by GrandJury itself; anything else that escapes is recorded
         as {"error": ...} and the run still completes. BudgetExceeded is recorded as
         {"error": "budget"} and re-raised, so the pilot stops after the run is saved;
-        an interrupt (Ctrl-C) likewise as {"error": "interrupted"}. Either way
+        an interrupt (Ctrl-C) likewise as {"error": "interrupted"}, and a network
+        stop as {"error": "network"} (never "no usable verdict": the verdict stays
+        pending and is asked again). Either way
         the verdicts already paid for (e.per_juror) are kept and aggregated, so
         --post-run-only re-asks only the jurors that are missing."""
         if not self.run_grand_jury:
@@ -1561,6 +1596,10 @@ class SimulationEngine:
             self.record["final"]["grand_jury"] = stopped(
                 e, "budget", detail=str(e),
                 attempts=[_slim(a) for a in getattr(e, "attempts", None) or []])
+            raise
+        except NetworkUnavailable as e:         # not a juror failure: asked again on resume
+            logger.error(f"[grand_jury] stopped: {e}; {NETWORK_STOP_HINT}")
+            self.record["final"]["grand_jury"] = stopped(e, "network", detail=str(e))
             raise
         except Exception as e:                  # never abort a finished run
             logger.error(f"[grand_jury] failed: {type(e).__name__}: {e}")

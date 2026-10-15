@@ -176,6 +176,9 @@ def test_kill_mid_turn_resume_equals_an_uninterrupted_run(harness, parallel):
         _engine(out, parallel=parallel).run()
     (out / f"{RUN_ID}.partial.json").write_bytes(snap["partial"])
     killed_cost = _ledger(root / "k_spend.json")
+    # the calls of turn k that completed before the kill (journalled: replayed on resume)
+    killed_k_calls = [c for c in STATE["calls"] if c[0] >= k]
+    assert killed_k_calls
     assert [t["turn"] for t in json.loads(snap["partial"])["turns"]] == [1, 2, 3]
 
     # Resume: same id, output and set-up.
@@ -189,11 +192,15 @@ def test_kill_mid_turn_resume_equals_an_uninterrupted_run(harness, parallel):
     assert got["resumed"][-1]["replayed_turns"] == 3 and got["resumed"][-1]["live_from_turn"] == 4
     assert json.loads((out / f"{RUN_ID}.json").read_text()) == json.loads(json.dumps(got, default=str))
     assert not (out / f"{RUN_ID}.partial.json").exists()
-    # No turn before k is called again; from k on, exactly the uninterrupted run's calls.
+    # No turn before k is called again; from k on, exactly the uninterrupted run's
+    # calls, those the killed attempt completed answered from the call journal
+    # (core.calllog replay): never called nor charged twice.
     assert all(t >= k for t, *_ in resumed_calls)
-    assert sorted(resumed_calls) == sorted(c for c in want_calls if c[0] >= k)
+    assert not set(resumed_calls) & set(killed_k_calls)
+    assert sorted(resumed_calls + killed_k_calls) == sorted(c for c in want_calls if c[0] >= k)
     live_cost = round(sum(PRICE * (1.0 if p == "actor" else 0.5) for t, p, *_ in want_calls if t >= k), 6)
-    assert resume_cost == pytest.approx(live_cost)
+    killed_k_cost = sum(PRICE * (1.0 if p == "actor" else 0.5) for t, p, *_ in killed_k_calls)
+    assert resume_cost + killed_k_cost == pytest.approx(live_cost)
     assert resume_cost < want_cost
 
 

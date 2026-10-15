@@ -11,6 +11,11 @@ rate_charters.py, checks/scripted_checks.py and tools/*.py).
      defaulted (T2), or a finished run has no usable Grand Jury verdict after the
      whole fallback chain (main.py, campaign.py)
   4  waiting for human input (our hand scores or human ratings are not there yet)
+  5  network unavailable: no connection to a provider for the whole network wait
+     window (core.llm.network_wait_s, default 30 min). The partial record, the
+     logs and the call journal are kept; re-running the same command resumes
+     exactly where it stopped (the calls already made are answered from the
+     journal, nothing is paid twice, and no verdict or rating is settled by it)
 """
 
 EXIT_OK = 0
@@ -18,3 +23,4 @@ EXIT_BUDGET = 1
 EXIT_REFUSED = 2
 EXIT_FAILED = 3
 EXIT_WAITING = 4
+EXIT_NETWORK = 5

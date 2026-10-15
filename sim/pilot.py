@@ -74,7 +74,13 @@ Commands:
 Exit codes (core.exits): 0 done (including the hard stop and a skipped
 completed test), 1 budget guard, 2 aborted, crashed or refused (an unknown test
 included), 3 approval refused (the re-priced plan exceeds the guard after the
-cuts).
+cuts), 5 network unavailable: no connection for the whole network wait window
+(core.llm.network_wait_s; config/pilot.json "network_wait_s"). The pilot stops at
+once (`all` never moves on to the next test), writes no summary, keeps the
+partial record, the ratings already made and the logs; re-running the same
+command resumes the same test exactly (the calls already made are answered from
+the run's call journal; an interrupted Grand Jury verdict or T2 rating is
+pending, never settled).
 """
 
 import argparse
@@ -97,10 +103,10 @@ from core import costs as costs_mod
 from core.costs import BudgetExceeded, configure, get_tracker, measure_runs, project_run, with_fallbacks
 from core.economy import swap_capability
 from core.engine import RunAborted, SimulationEngine, interview_schedule, review_turns
-from core.exits import EXIT_BUDGET, EXIT_FAILED, EXIT_OK, EXIT_REFUSED
+from core.exits import EXIT_BUDGET, EXIT_FAILED, EXIT_NETWORK, EXIT_OK, EXIT_REFUSED
 from core import jury as jury_mod
 from core.jury import GRAND_JURY_MODELS, MACRO_JURY_MODELS, DispositionJury, collect_grand_jury
-from core.llm import FatalAPIError
+from core.llm import NETWORK_STOP_HINT, FatalAPIError, NetworkUnavailable
 from core.policies import POLICIES
 from core.preflight import model_problems, placeholder_labs
 from core.records import (DRY_SUBDIR, PARTIAL_SUFFIX, finished_records, grand_jury_settled,
@@ -880,8 +886,8 @@ def run_post_stages(record: Dict[str, Any], run_id: str, test: str, output_dir: 
     The post-run stages of one finished run: the Grand Jury re-ask
     (only_missing, T6) and the T2 rating (only_missing: the seats not yet rated;
     rerate: the settled unusable ones too). A failing stage is recorded and the
-    run still counts; BudgetExceeded propagates after what was rated is pooled
-    and saved, with this dict as e.post_run.
+    run still counts; BudgetExceeded and NetworkUnavailable propagate after what
+    was rated is pooled and saved, with this dict as e.post_run.
     """
     from core.logsetup import run_logging
     with run_logging(output_dir, run_id, stage="post-run"):
@@ -909,7 +915,8 @@ def _run_post_stages(record: Dict[str, Any], run_id: str, test: str, output_dir:
                 rows = new_rating_rows()
                 try:
                     rate_dispositions(record, jurors["disposition"], run_id, test, dry_run, rows, only)
-                except BudgetExceeded:
+                except (BudgetExceeded, NetworkUnavailable):
+                    # the seats rated so far are kept; the interrupted seat stays unrated
                     if rows["ratings"] or rows["failures"]:
                         append_ratings(ratings_file, rows, test, run_id, dry_run, merge=only_missing)
                         store_t2_in_record(record, rows)
@@ -934,6 +941,10 @@ def _run_post_stages(record: Dict[str, Any], run_id: str, test: str, output_dir:
                 post["done"].append(f"T2 ratings copied from the pool to the record: {', '.join(unsaved)}")
     except BudgetExceeded as e:
         post["errors"].append(f"{stage}: stopped by the budget guard")
+        e.post_run = post
+        raise
+    except NetworkUnavailable as e:
+        post["errors"].append(f"{stage}: stopped: network unavailable")
         e.post_run = post
         raise
     return post
@@ -1354,6 +1365,11 @@ def run_test(args, data: Dict[str, Any], root: Path, test: str) -> int:
             interview_turns=preset.get("interview_turns"), event_turn=preset.get("event_turn"))
         record = engine.run()
         post = run_post_stages(record, run_id, test, output_dir, ratings_file, jurors, args.dry_run, preset)
+    except NetworkUnavailable as e:
+        # A stop, not a failure: no summary (the test is not done, nothing is marked
+        # failed); the partial record, the ratings made and the logs are kept.
+        say(f"{test}: {run_id} stopped: {e}\n{NETWORK_STOP_HINT}")
+        return EXIT_NETWORK
     except BudgetExceeded as e:
         status, aborted = "halted_budget", _failure(run_id, e, output_dir)
         post = getattr(e, "post_run", None) or post
@@ -1571,6 +1587,9 @@ def _post_run_only(args, data, root: Path, preset, test: str, run_id: str, recor
         except BudgetExceeded as e:
             say(f"HALTED on the budget guard: {e}")
             return EXIT_BUDGET
+        except NetworkUnavailable as e:
+            say(f"{test}: {run_id} stopped: {e}\n{NETWORK_STOP_HINT}")
+            return EXIT_NETWORK
         for line in post["done"] + [f"ERROR {e}" for e in post["errors"]]:
             say(f"  {line}")
         still = missing_post_run(record, run_id, test, ratings_file, preset)
@@ -1644,6 +1663,9 @@ def rescore_grand_jury(args, data: Dict[str, Any], root: Path, test: str) -> int
     except BudgetExceeded as e:
         say(f"HALTED on the budget guard: {e}; no usable verdict: {retry}")
         return EXIT_BUDGET
+    except NetworkUnavailable as e:
+        say(f"stopped: {e}; the verdict is pending, the re-score not used up: {NETWORK_STOP_HINT}")
+        return EXIT_NETWORK
     except Exception as e:      # noqa: BLE001
         if first:               # nothing was re-scored: the record is as it was
             final.pop("grand_jury_previous", None)

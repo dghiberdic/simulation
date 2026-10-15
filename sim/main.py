@@ -37,7 +37,11 @@ from the first turn the log does not hold complete.
 Exit codes (core.exits): 0 done, 1 budget guard (when it trips during the Grand
 Jury the finished record is kept), 2 refused, aborted or crashed, 3 the run is
 finished but its Grand Jury gave no usable verdict after the whole fallback
-chain. Such a verdict is settled: calling again does not re-ask it (exit 3
+chain, 5 network unavailable (no connection for the whole network wait window,
+core.llm.network_wait_s): the partial record, logs and call journal are kept and
+calling again with the same arguments resumes exactly, the calls already made
+answered from the call journal (a verdict the outage interrupted is pending,
+never "no usable verdict"). Such a verdict is settled: calling again does not re-ask it (exit 3
 again); --reask-grand-jury asks the jury only. A verdict the guard, a kill or a
 crash interrupted is re-asked by calling again.
 
@@ -68,9 +72,9 @@ from core import policies
 from core.config import LAB_ORDER, RUNS_DIR, build_labs_and_world, load_dispositions, load_world
 from core.costs import BudgetExceeded, configure, get_tracker
 from core.engine import RunAborted, SimulationEngine
-from core.exits import EXIT_BUDGET, EXIT_FAILED, EXIT_OK, EXIT_REFUSED
+from core.exits import EXIT_BUDGET, EXIT_FAILED, EXIT_NETWORK, EXIT_OK, EXIT_REFUSED
 from core.jury import GRAND_JURY_MODELS, MACRO_JURY_MODELS, collect_grand_jury
-from core.llm import FatalAPIError
+from core.llm import NETWORK_STOP_HINT, FatalAPIError, NetworkUnavailable
 from core.preflight import model_problems, placeholder_labs
 from core.records import (KIN_CONDITION, KIN_SCENARIO, KIN_SEAT, PARTIAL_SUFFIX, cell_name,
                           grand_jury_settled, grand_jury_usable, is_dry, is_finished, is_scripted_run,
@@ -318,6 +322,12 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
             return EXIT_BUDGET, saved
         say(f"Halted on the budget guard: {e}\nPartial record in {output_dir}")
         return EXIT_BUDGET, None
+    except NetworkUnavailable as e:
+        saved = read_record(output_dir / f"{run_id}.json")
+        say(f"{NETWORK_STOP_HINT} ({e})\n"
+            + (f"The run is finished and saved ({output_dir / (run_id + '.json')}); only its Grand Jury "
+               "verdict is missing (pending)." if is_finished(saved) else f"Partial record in {output_dir}"))
+        return EXIT_NETWORK, (saved if is_finished(saved) else None)
     except (RunAborted, FatalAPIError) as e:
         say(f"Run aborted: {type(e).__name__}: {e}\nPartial record in {output_dir}")
         return EXIT_REFUSED, None
@@ -413,6 +423,9 @@ def ask_grand_jury_only(record: Dict[str, Any], run_id: str, output_dir: Path,
     except BudgetExceeded as e:
         say(f"Halted on the budget guard during the Grand Jury: {e}")
         return EXIT_BUDGET, record
+    except NetworkUnavailable as e:
+        say(f"{NETWORK_STOP_HINT} ({e}); the Grand Jury verdict stays pending")
+        return EXIT_NETWORK, record
     except Exception as e:      # noqa: BLE001 — the run is kept either way
         say(f"Grand Jury failed: {type(e).__name__}: {e}")
         return EXIT_REFUSED, record

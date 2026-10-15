@@ -23,10 +23,18 @@ paid for again:
 
 The run then continues live from the first turn the log does not hold
 complete. A turn that was in flight when the run stopped ("incomplete": true)
-is run again live; it and any MacroJury review that did not finish are kept in
-record["resumed"] (provenance; their paid attempts stay on record). Apart from
-"resumed" and the call latencies, the resumed run's record equals the record
-of an uninterrupted run given the same replies.
+is run again; it and any MacroJury review that did not finish are kept in
+record["resumed"] (provenance; their paid attempts stay on record). The calls
+that turn (or review) already completed are not asked again: core.calllog's
+replay cache answers each identical request from the run's call journal, with
+no provider call and nothing charged, and only the rest go live. So, apart
+from "resumed" and the call latencies, the resumed run's record equals the
+record of an uninterrupted run (a network outage, a kill, the budget guard or
+Ctrl-C alike).
+
+A partial log with no turn (saved at a fresh start, before turn 1 finished) of
+the same set-up is a resume too: nothing is replayed from it but its letter
+salt, and the calls turn 1 completed come from the journal.
 """
 
 import copy

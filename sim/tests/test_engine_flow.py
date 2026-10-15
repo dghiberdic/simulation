@@ -74,7 +74,7 @@ def test_partial_saved_each_turn(tmp_path):
     real = eng._save_partial
     eng._save_partial = lambda: seen.append(real()) or seen[-1]
     eng.run()
-    assert len(seen) == 3                                   # a checkpoint after every turn
+    assert len(seen) == 4                   # the empty log at the start, then after every turn
     assert (tmp_path / "partial.json").exists()
     assert not (tmp_path / "partial.partial.json").exists()  # superseded by the final log
 

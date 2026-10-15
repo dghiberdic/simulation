@@ -52,7 +52,11 @@ the campaign goes on and lists it (main.py --reask-grand-jury asks again).
 
 Exit codes (core.exits): 0 done, 3 done but a run has no usable Grand Jury
 verdict, else the stopping run's code (1 budget guard, 2 refused, aborted or
-crashed).
+crashed, 5 network unavailable). A network outage (main.py exit 5) stops the
+campaign at once, never moving on to the next cell: the state file is kept and
+`run` again resumes the same run (exactly: its completed calls are answered
+from the run's call journal) or, if the outage hit its Grand Jury, asks only
+that jury.
 
 Money: the shared ledger's guard (a ledger total) is fixed when the campaign is
 first planned. --budget USD is that total, as in every other tool (default
@@ -75,7 +79,8 @@ from core.logsetup import configure_logging
 from core.config import RUNS_DIR, load_world
 from core.costs import configure, get_tracker, kin_seat_scale, project_run, with_fallbacks
 from core.engine import interview_schedule, review_turns
-from core.exits import EXIT_FAILED, EXIT_OK, EXIT_REFUSED
+from core.exits import EXIT_FAILED, EXIT_NETWORK, EXIT_OK, EXIT_REFUSED
+from core.llm import NETWORK_STOP_HINT
 from core.records import (KIN_CONDITION, KIN_SCENARIO, cell_name, finished_records, grand_jury_settled,
                           is_finished, write_json_atomic)
 
@@ -372,7 +377,8 @@ def run_campaign(plan: Dict[str, Any], runs_dir: Path, dry_run: bool, rounds: Op
             write_state(state_path, state)
             continue
         if code != 0:
-            say(f"[campaign] stopped at {run_id}'s Grand Jury (exit {code}); re-run to resume")
+            say(f"[campaign] stopped at {run_id}'s Grand Jury (exit {code}); "
+                + (NETWORK_STOP_HINT if code == EXIT_NETWORK else "re-run to resume"))
             return code
         jury_missing.remove(run_id)
         write_state(state_path, state)
@@ -395,13 +401,15 @@ def run_campaign(plan: Dict[str, Any], runs_dir: Path, dry_run: bool, rounds: Op
             jury_missing.append(a.run_id)
             write_state(state_path, state)
             say(f"[campaign] {a.run_id} is finished but its Grand Jury is missing (exit {code}); "
-                  "re-run to resume (the jury alone is asked)")
+                + (f"{NETWORK_STOP_HINT} (the jury alone is asked)" if code == EXIT_NETWORK
+                   else "re-run to resume (the jury alone is asked)"))
             return code
         if code != 0:
             if code == EXIT_REFUSED:
                 state["refused"] = a.run_id
                 write_state(state_path, state)
-            say(f"[campaign] stopped at {a.run_id} (exit {code}); re-run to resume")
+            say(f"[campaign] stopped at {a.run_id} (exit {code}); "
+                + (NETWORK_STOP_HINT if code == EXIT_NETWORK else "re-run to resume"))
             return code
         done.setdefault(c["name"], []).append(a.run_id)
         write_state(state_path, state)

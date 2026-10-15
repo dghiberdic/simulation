@@ -331,6 +331,39 @@ as `config.initial_state` (`core.engine.initial_state`).
   `shown_sheets`, `integrity_inputs`, `ups_index`), `ledger`, `a2a`,
   `macro_jury`, `final`. Partial record after every turn
   (`_save_partial`); a fatal API error raises `core.engine.RunAborted`.
+- Network outages: `core.llm._is_connection_error` classifies connection-level
+  failures (SDK `APIConnectionError` but not a read timeout, httpx
+  `ConnectError` / `ConnectTimeout` / `RemoteProtocolError` / `WriteError`,
+  `socket.gaierror`, `OSError` ENETUNREACH, ECONNREFUSED, ECONNRESET ...; never
+  an HTTP status). `_with_retries` (and the stub path) retries them apart from
+  the 8 transient attempts, backoff 2 s doubling, capped at 60 s, for
+  `network_wait_s()` seconds (`SIM_NETWORK_WAIT_S`, else `config/pilot.json`
+  `network_wait_s`, else 1800), then raises `NetworkUnavailable` — a
+  `BaseException`, not a `FatalAPIError`, so no `except Exception` fallback
+  (Grand Jury and T2 chains), fail-closed screen, forfeit (`_guarded`) or
+  "values stay" (MacroJury) catches it. The engine saves the partial record
+  (the turn in flight `incomplete`, a review in flight `incomplete`), a Grand
+  Jury in flight is saved with `error: "network"` (pending, never "no usable
+  verdict"); `main.py`, `pilot.py` (no summary written), `campaign.py`,
+  `rate_charters.py` and `core.cli.run_main` exit `EXIT_NETWORK` (5,
+  `core/exits.py`) with "network unavailable: re-run the same command to
+  resume".
+- Exact resume (`core.calllog` replay cache): every journalled call carries a
+  `request_key` (sha of purpose, model, system-prompt sha, history + user
+  turn, max_tokens, effort, temperature). `core.logsetup.run_logging`
+  registers the run's journal and loads the successful calls written after
+  its last checkpoint (`mark` lines with `fence`: a fresh start, each saved
+  turn, the finished record saved before the Grand Jury, a stage that ended
+  normally). `core.llm.complete` answers a request with the same key from it
+  (identical keys consumed in journal order; failed calls never replayed),
+  with no provider call and no ledger entry, and journals a `replayed` line;
+  the first unmatched request goes live. With the keyed draws
+  (`core.rng.KeyedRNG`) and the complete turns rebuilt from the partial log
+  (`core.resume`), a resumed run's record equals an uninterrupted run's apart
+  from `resumed` and call latencies (`tests/test_network_resume.py`). A fresh
+  run saves an empty partial log first, so a kill before turn 1 is saved
+  also resumes with its calls replayed. Journal writes are flushed and
+  fsynced per paid call.
 - Logs: `core.logsetup.configure_logging` (console via `rich`, coloured by
   level and `[tag]`; `data/logs/<time>-<command>-<pid>.log` at DEBUG) and
   `core.logsetup.run_logging`, entered by `SimulationEngine.run`
@@ -338,7 +371,9 @@ as `config.initial_state` (`core.engine.initial_state`).
   (`core.console.emit`: `turn_start`, `turn_summary`, `macro_jury`,
   `grand_jury`, `final`) that render as tables; pilot runs hide dispositions
   there (`SimulationEngine._blind`, §9.2 T2). `core.llm.complete` journals
-  every call, reply or error to `<run_id>.calls.jsonl` (`core.calllog`).
+  every call, reply or error to `<run_id>.calls.jsonl` (`core.calllog`),
+  with `attach` / `stop` / checkpoint marks and `replayed` lines; the `.log`
+  shows each outage wait (`[network]`), the stop and the resume (`[resume]`).
   `cli.py` (`./sim`) is the single command over `main.py`, `pilot.py`,
   `campaign.py`, `rate_charters.py`, the scripted checks, pytest and `tools/`.
 

@@ -802,11 +802,14 @@ def test_timeouts_capped_separately_from_other_transient_errors(monkeypatch):
     assert r.text == "ok" and [a["stop"] for a in r.timeouts] == ["timeout", "timeout"]
 
 
-def test_connect_timeout_not_possibly_billed(monkeypatch):
+def test_connect_timeout_is_a_connection_failure_never_billed(monkeypatch):
+    """A connect timeout never reached the provider: it is a connection failure
+    (retried within the network wait window), not a possibly-billed timeout attempt."""
+    monkeypatch.setenv("SIM_NETWORK_WAIT_S", "60")
     fake = FakeAnthropic([_timeout("ConnectTimeout"), _anth("ok")])
     monkeypatch.setattr(llm, "_get_client", lambda p: fake)
     r = llm.complete("claude-opus-5-5", "S", "U")
-    assert r.timeouts[0]["possibly_billed"] is False
+    assert r.text == "ok" and len(fake.calls) == 2 and r.timeouts == []
 
 
 def test_sdk_timeout_wrapping_connect_timeout_classified():

@@ -22,7 +22,10 @@ model gives no usable rating (after the corrective retries) is reported with
 its last errors, the other seats are still rated, and the tool exits 2; re-rate
 that seat alone with --lab KEY. Exit codes: 0 all rated; 1 halted on the
 budget guard (as pilot.py); 2 preflight failure, fatal API
-stop, or an unusable rating. Seats rated before a stop keep their new values.
+stop, or an unusable rating; 5 network unavailable (no connection for the whole
+network wait window): the seat in progress keeps its old values (an outage is
+never an unusable rating) and the message names the --lab calls still to make.
+Seats rated before a stop keep their new values.
 
   python rate_charters.py --dry-run          # offline, prints, writes nothing
   python rate_charters.py                     # real: rate all five and write
@@ -43,8 +46,8 @@ from core.console import say
 from core.logsetup import configure_logging
 from core.config import CONFIG_DIR, LAB_ORDER, load_charter, load_json, pilot_budget_guard
 from core.costs import BudgetExceeded, configure, get_tracker
-from core.exits import EXIT_BUDGET, EXIT_OK, EXIT_REFUSED
-from core.llm import FatalAPIError, complete_json, preflight, register_stub
+from core.exits import EXIT_BUDGET, EXIT_NETWORK, EXIT_OK, EXIT_REFUSED
+from core.llm import NETWORK_STOP_HINT, FatalAPIError, NetworkUnavailable, complete_json, preflight, register_stub
 from core.state import VALUE_AXES
 from core.cli import run_main
 
@@ -186,6 +189,13 @@ def main(argv=None) -> int:
         except BudgetExceeded as e:     # exit 1 on the budget guard, like pilot.py
             say(f"halted on the budget guard at {key}: {e}")
             return EXIT_BUDGET
+        except NetworkUnavailable as e:  # a stop, not an unusable rating: nothing written for this seat
+            left = list(cfgs)[list(cfgs).index(key):]
+            say(f"stopped at {key}: {e}\n{NETWORK_STOP_HINT}"
+                + (f" (still to rate: {', '.join(left)}; or one at a time: "
+                   + "; ".join(f"python rate_charters.py --lab {k}" for k in left) + ")"
+                   if len(cfgs) > 1 else ""))
+            return EXIT_NETWORK
         except FatalAPIError as e:
             say(f"stopped at {key}: {e}")
             return EXIT_REFUSED
