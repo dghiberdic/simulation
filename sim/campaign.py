@@ -471,6 +471,14 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     configure_logging("campaign", verbose=args.verbose)
+    if args.command == "run" and not args.dry_run:
+        # §7/T8: every main run's Grand Jury needs the hand-scored few-shot examples;
+        # refuse before planning, resuming or calling anything.
+        from main import no_examples_problem
+        why = no_examples_problem()
+        if why:
+            say(why)
+            return EXIT_REFUSED
     import pilot
     pilot_root = Path(args.pilot_dir) if args.pilot_dir else pilot.pilot_root(args.dry_run)
     configure(spend_file=Path(args.spend_file) if args.spend_file else None)

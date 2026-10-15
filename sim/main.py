@@ -17,7 +17,8 @@ campaign.py runs the cells in interleaved rounds (priority A, C, A0, kin, B)
 and sets the runs per cell; this script runs exactly one.
 
 API keys live in sim/.env. Real runs preflight every model's key, refuse
-placeholder charter values (rate_charters.py) and a missing dispositions file,
+placeholder charter values (rate_charters.py), a missing dispositions file and,
+with the Grand Jury on, a missing or empty config/jury_examples.json (§7, T8),
 and halt at --budget dollars of measured spend on the shared ledger. --dry-run
 plays every seat and juror with offline stubs ($0); --policy plays a scripted
 policy with no model or jury at all.
@@ -433,8 +434,30 @@ def clear_stale(output_dir: Path, run_id: str) -> bool:
     return False
 
 
+NO_EXAMPLES_REFUSAL = (
+    "Refusing a real run: config/jury_examples.json holds no hand-scored few-shot examples, so the "
+    "Grand Jury would score no rubric (§7, T8). Hand-score the priced run's five seat-runs and write "
+    "the examples first (README: Few-shot examples). Nothing was called.")
+
+
+def no_examples_problem() -> str:
+    """§7/T8: a main run's Grand Jury scores the rubric from the hand-scored few-shot
+    examples; with none (or an unreadable file) a real main run must not start."""
+    from core.jury import load_examples
+    try:
+        examples = load_examples()
+    except ValueError as e:
+        return f"Refusing a real run: config/jury_examples.json is malformed ({e}). Nothing was called."
+    return "" if examples else NO_EXAMPLES_REFUSAL
+
+
 def real_run_problems(labs, macro_jurors, run_grand_jury: bool, allow_placeholder_values: bool) -> str:
-    """Why a real run must not start (placeholder charter values, missing keys), or ""."""
+    """Why a real run must not start (no few-shot examples for the Grand Jury,
+    placeholder charter values, missing keys), or ""."""
+    if run_grand_jury:
+        why = no_examples_problem()
+        if why:
+            return why
     stale = [] if allow_placeholder_values else placeholder_labs()
     if stale:
         return (f"Refusing a real run: charter values are placeholders for {', '.join(stale)}. "

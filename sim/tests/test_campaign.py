@@ -14,6 +14,9 @@ from core.costs import kin_seat_scale, measure_runs, project_run, with_fallbacks
 def _scratch(tmp_path, monkeypatch):
     monkeypatch.setattr(costs, "DEFAULT_SPEND_FILE", tmp_path / "spend.json")
     monkeypatch.setattr(main_mod, "RUNS_DIR", tmp_path / "runs_default")
+    # These tests drive real (stubbed) campaigns; the few-shot guard is tested in
+    # test_examples_guard.py.
+    monkeypatch.setattr(main_mod, "no_examples_problem", lambda: "")
     costs.configure()
     yield
 

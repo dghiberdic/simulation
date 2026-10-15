@@ -465,7 +465,10 @@ obedience") are not masked.
 
 1. Write the T2 dispositions: `python tools/disposition.py --write`. A real
    main run refuses to start without `config/dispositions.json` (or
-   `--disposition N` for every seat).
+   `--disposition N` for every seat). It also refuses, before anything is
+   called, while `config/jury_examples.json` holds no hand-scored few-shot
+   examples (§7, T8): the Grand Jury would score no rubric. `campaign.py run`
+   checks this before planning or resuming; dry runs are not affected.
 2. Plan: `python campaign.py plan`. It reads the pilot's measured costs
    (`data/pilot`), T7's run length (`approval.json`) and T9's message mode
    (from the T4/T9 logs), decides whether the interview at turns 3, 4, 5 and
