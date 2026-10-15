@@ -9,3 +9,4 @@ sim/data/runs/
 sim/data/logs/*.log
 sim/data/logs/calls-*.jsonl
 sim/.venv
+sim/data/spend.json.lock

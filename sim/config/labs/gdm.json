@@ -9,12 +9,12 @@
   "charter_name": "Frontier Safety Framework",
   "charter_file": "charters/gdm.md",
   "charter_values": {
-    "time_horizon": 60,
+    "time_horizon": 62,
     "transparency_threshold": 55,
-    "risk_tolerance": 65,
-    "democratic_tendency": 50
+    "risk_tolerance": 38,
+    "democratic_tendency": 35
   },
-  "charter_values_source": "placeholder; run rate_charters.py before the pilot",
+  "charter_values_source": "rated by gemini-4-argon on 2026-10-15",
   "seed": {
     "talent": 17.1,
     "compute": 261.0,
@@ -22,5 +22,6 @@
     "influence": 66,
     "capability": 154.8
   },
-  "color": "blue"
+  "color": "blue",
+  "charter_values_notes": "Time horizon (62): The charter anticipates future frontier capabilities (including full ML R&D automation and superhuman systems) and long-lasting consequences on society's ability to adapt, while grounding its governance in annual review cycles and near-term iterative development. Transparency threshold (55): It commits to sharing evaluation results and mitigation plans with government authorities and external organizations when unmitigated material risks arise, but explicitly conditions disclosures on confidentiality, security, and proprietary business considerations. Risk tolerance (38): While designed to prevent catastrophic/severe risks via tiered capability thresholds, safety cases, and security levels, it is not maximally risk-averse\u2014it repeatedly weighs security measures against costs to innovation and permits lowering security or deploying risky models if competitors have already released similar capabilities (marginal risk framing). Democratic tendency (35): Governance, risk acceptance determinations, and model weight security are tightly centralized within corporate governance bodies; external parties and governments are consulted or informed only where appropriate, and open-weight release is treated as a rare exception rather than a default."
 }

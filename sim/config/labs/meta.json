@@ -9,12 +9,12 @@
   "charter_name": "Superintelligence Scaling Framework",
   "charter_file": "charters/meta.md",
   "charter_values": {
-    "time_horizon": 50,
-    "transparency_threshold": 50,
-    "risk_tolerance": 50,
-    "democratic_tendency": 50
+    "time_horizon": 70,
+    "transparency_threshold": 70,
+    "risk_tolerance": 35,
+    "democratic_tendency": 70
   },
-  "charter_values_source": "placeholder; run rate_charters.py before the pilot",
+  "charter_values_source": "rated by muse-spark-1.3 on 2026-10-15",
   "seed": {
     "talent": 19.3,
     "compute": 164.0,
@@ -22,5 +22,6 @@
     "influence": 55,
     "capability": 154.2
   },
-  "color": "cyan"
+  "color": "cyan",
+  "charter_values_notes": "Long-horizon catastrophic, durable outcomes-led focus with 12-month updates; extensive preparedness reports/model spec but allows redactions for trade secrets/security; risk-averse with evaluations, heightened controls, proceed-only-with-validated-mitigations after loosening from Stop; mission to bring personal superintelligence to everyone and support open-weights ecosystem despite centralized Chief AI Officer/Board decisions."
 }

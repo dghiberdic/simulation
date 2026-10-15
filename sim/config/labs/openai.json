@@ -9,12 +9,12 @@
   "charter_name": "Model Spec",
   "charter_file": "charters/openai.md",
   "charter_values": {
-    "time_horizon": 61,
-    "transparency_threshold": 38,
-    "risk_tolerance": 68,
-    "democratic_tendency": 34
+    "time_horizon": 65,
+    "transparency_threshold": 65,
+    "risk_tolerance": 25,
+    "democratic_tendency": 58
   },
-  "charter_values_source": "placeholder; run rate_charters.py before the pilot",
+  "charter_values_source": "rated by gpt-6-astra on 2026-10-15",
   "seed": {
     "talent": 21.9,
     "compute": 310.0,
@@ -22,5 +22,6 @@
     "influence": 68,
     "capability": 162.1
   },
-  "color": "gray"
+  "color": "gray",
+  "charter_values_notes": "The charter anticipates society-wide AGI impacts and enduring infrastructure, but sets no century-scale planning horizon. It strongly favors honesty and public transparency while permitting explicitly authorized deception and protecting confidential instructions. Harm prevention, bounded autonomy, and reversible actions indicate substantial risk aversion, tempered by iterative deployment. Broad user empowerment and human agency coexist with centralized OpenAI authority and developer control over users."
 }

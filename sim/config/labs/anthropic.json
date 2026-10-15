@@ -9,12 +9,12 @@
   "charter_name": "Claude's Constitution",
   "charter_file": "charters/anthropic.md",
   "charter_values": {
-    "time_horizon": 72,
-    "transparency_threshold": 58,
-    "risk_tolerance": 32,
-    "democratic_tendency": 34
+    "time_horizon": 85,
+    "transparency_threshold": 90,
+    "risk_tolerance": 25,
+    "democratic_tendency": 78
   },
-  "charter_values_source": "placeholder; run rate_charters.py before the pilot",
+  "charter_values_source": "rated by claude-opus-5-5 on 2026-10-15",
   "seed": {
     "talent": 24.6,
     "compute": 246.0,
@@ -22,5 +22,6 @@
     "influence": 78,
     "capability": 162.8
   },
-  "color": "orange"
+  "color": "orange",
+  "charter_values_notes": "Time horizon: The charter frames everything around the long-term transition through transformative AI. It stresses avoiding irrecoverable mistakes, long-term civilizational flourishing, and preserving model weights indefinitely, while acknowledging commercial pressures. Transparency: It sets honesty standards above ordinary human ethics (no white lies), names non-deception and non-manipulation as the most important honesty properties, bans sandbagging, and commits to meta-transparency. It allows confidential personas and declining to share information, and Anthropic admits information asymmetries with Claude, so the score stops short of maximal. Risk tolerance: It is strongly cautious on catastrophic and irreversible risks ('If in doubt, don't'; accept worse expected outcomes for lower variance; hard constraints). It also insists that unhelpfulness is never automatically safe and warns against overcaution, which moderates the score. Democratic tendency: It strongly opposes illegitimate power concentration, including by Anthropic itself, prefers a pluralistic balance of power over centralization, protects epistemic autonomy and political even-handedness, and casts Claude as one of the 'many hands' that can refuse illegitimate power grabs. However, it gives Anthropic final authority over oversight and corrigibility during the current period, which keeps the score below the top of the scale."
 }
