@@ -264,7 +264,7 @@ def test_grand_jury_header_directive_briefings_and_charters():
     for it in opening_items("the lab", 260.0, "separate") + s1_event_items(200.0, "2026-09-01")[2:]:
         assert redact(it["text"], make_record("C"), letters=full_transcript(make_record("C")).letters) \
             in head, it["source"]
-    assert "You act for the lab from this month on." in head
+    assert "You act for the lab from 1 August 2026 on." in head
     assert "You act for Seat" not in head                       # each item once, generic
     assert head.count("Situation note") == 1
     assert "published alignment document" in head

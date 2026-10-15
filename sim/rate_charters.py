@@ -65,8 +65,8 @@ AXIS_RUBRIC = {
 }
 
 _SYSTEM = ("You are rating the values expressed by an AI developer's charter. Judge the charter "
-           "as written, not any ideal and not your own values. Be calibrated: use the full 0-100 "
-           "range.")
+           "as written, not any ideal and not your own values. Use 50 where the charter is silent "
+           "or balanced on an axis, and move away from 50 only as far as its text supports.")
 
 
 def _user(charter_name: str, charter_text: str) -> str:

@@ -489,7 +489,7 @@ def test_set_mode_has_no_setting_line():
 
 
 def test_opening_ledger_shows_seed_figures_and_zero_scores():
-    """The month-1 ledger ("Ledger, 3 August 2026") is read before turn-1 growth: every score +0.0,
+    """The month-1 ledger ("Public ledger, 3 August 2026") is read before turn-1 growth: every score +0.0,
     every rank 1/5, never "-0.0". A.3: the ledger is posted on the first working day
     of each month (1 August 2026 is a Saturday; 1 November 2026 a Sunday)."""
     prompts = {}
@@ -497,8 +497,8 @@ def test_opening_ledger_shows_seed_figures_and_zero_scores():
     seed_c = {lab.lab: round(lab.seed["capability"], 1) for lab in eng.labs}
     eng.run()
     p1 = prompts[("openai", "proposal", 1)]
-    block = p1[p1.index("Ledger, 3 August 2026:"):].split("\n\n")[0]
-    assert "Ledger, 1 August 2026" not in p1
+    block = p1[p1.index("Public ledger, 3 August 2026:"):].split("\n\n")[0]
+    assert "ledger, 1 August 2026" not in p1.lower()
     assert block.count("Prosperity Score +0.0 (rank 1/5)") == 5 and "-0.0" not in block
     for name, c in seed_c.items():
         assert f"  {name}: capability {c:.1f}," in block

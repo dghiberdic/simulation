@@ -492,7 +492,7 @@ class SimulationEngine:
         self._inflight = {"turn": turn, "date": world.date.isoformat(), "stage": "setup"}
         self._message_attempts = {}
 
-        # The opening ledger ("Ledger, 3 August 2026") shows the seed figures, so it is
+        # The opening ledger ("Public ledger, 3 August 2026") shows the seed figures, so it is
         # read before turn-1 growth and every score reads +0.0; the seat's own
         # sheet shows its opening know-how too.
         opening = self._build_sheets() if turn == 1 else None
@@ -1347,8 +1347,7 @@ class SimulationEngine:
             turn_date=self.world.date.isoformat(), new_items=new_items,
             briefings=self._briefings[lab.key], ledger=self._ledger,
             # A.3: the Allocator posts the ledger on the first working day of each month.
-            ledger_label=(f"Ledger, {self._posted(turn)}" if turn == 1
-                          else f"Public ledger, {self._posted(turn)}"),
+            ledger_label=f"Public ledger, {self._posted(turn)}",
             allocator_status=self._allocator, directives=self._directives,
             own=self._own_sheet(lab), lab=lab.lab,
             own_record=self._last_record.get(lab.key),
