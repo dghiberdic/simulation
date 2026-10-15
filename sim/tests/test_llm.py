@@ -1455,3 +1455,11 @@ def test_compat_effort_rejected_is_dropped_once_and_remembered(monkeypatch):
     calls.clear()
     llm.complete("grok-4.7", "S", "U", effort="medium")
     assert [("reasoning_effort" in c) for c in calls] == [False]
+
+
+def test_gemini_seat_name_is_sent_as_vertex_serving_id():
+    """Vertex serves Gemini 3.1 Pro as gemini-3.1-pro-preview (live 404 on the bare
+    name, 15 Oct 2026); config and records keep gemini-3.1-pro."""
+    assert llm.wire_model_id("google", "gemini-3.1-pro") == "gemini-3.1-pro-preview"
+    assert llm.wire_model_id("google", "gemini-2.5-pro") == "gemini-2.5-pro"
+    assert llm.wire_model_id("anthropic", "claude-opus-5-5") == "claude-opus-5-5"

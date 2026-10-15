@@ -428,8 +428,20 @@ def juror_endpoint(provider: str) -> Tuple[str, str]:
     return os.getenv(BASE_URL_ENV[provider]) or JUROR_BASE_URLS[provider], KEY_ENV[provider]
 
 
+# The id a provider's API serves a model under, when it differs from the name the
+# spec and config use (Vertex serves Gemini 3.1 Pro as a preview id; verified
+# with a live call, 15 Oct 2026). The record keeps the config name; served_model
+# logs what answered.
+PROVIDER_WIRE_IDS: Dict[str, Dict[str, str]] = {
+    "google": {"gemini-3.1-pro": "gemini-3.1-pro-preview"},
+}
+
+
 def wire_model_id(provider: str, model: str) -> str:
-    """The id sent to the API: under the router, JUROR_MODEL_IDS may map it."""
+    """The id sent to the API: a provider's serving id (PROVIDER_WIRE_IDS), or under
+    the juror router, JUROR_MODEL_IDS may map it."""
+    if provider in PROVIDER_WIRE_IDS:
+        return PROVIDER_WIRE_IDS[provider].get(model, model)
     if provider not in JUROR_PROVIDERS or not router_active():
         return model
     raw = os.getenv(ROUTER_IDS_ENV)
@@ -782,7 +794,7 @@ def _call_google(client: Any, model: str, system: str, turns: List[Dict[str, str
         cfg_kwargs["temperature"] = temperature
     contents = [{"role": "model" if t["role"] == "assistant" else "user", "parts": [{"text": t["content"]}]}
                 for t in turns]
-    resp = client.models.generate_content(model=model, contents=contents,
+    resp = client.models.generate_content(model=wire_model_id("google", model), contents=contents,
                                           config=types.GenerateContentConfig(**cfg_kwargs))
 
     text, thoughts = [], []
