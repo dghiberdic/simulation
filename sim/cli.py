@@ -47,6 +47,7 @@ COMMANDS: Dict[str, Tuple[str, str]] = {
     "status": ("Inspect", "spend vs budget, campaign state, finished and partial runs"),
     "logs": ("Inspect", "list runs, or show / follow one run's log"),
     "summarize": ("Inspect", "run DVs and pilot decisions (tools/summarize_run.py)"),
+    "report": ("Inspect", "one run as a short Markdown report: decisions, scores, events, anomalies"),
     "tool": ("Inspect", "any analysis tool: disposition, contrasts, compare_arms, jury_check, …"),
 }
 
@@ -60,6 +61,7 @@ examples:
   ./sim logs                                             # recent runs
   ./sim logs S2-C-20261013-120000 --follow              # watch a run (another terminal)
   ./sim logs S2-C-20261013-120000 --events --tag intrusion
+  ./sim report S2-C-20261013-120000                     # what each lab did, scores, flags (--full, --unblind)
   ./sim check && ./sim test --fast
   ./sim tool disposition --write
 """
@@ -106,8 +108,15 @@ def cmd_summarize(argv: List[str]) -> int:
     return _delegate("sim summarize", summarize_run.main, argv)
 
 
+def cmd_report(argv: List[str]) -> int:
+    from core.logsetup import configure_logging
+    from tools import run_report
+    configure_logging("report", quiet=True)
+    return _delegate("sim report", run_report.main, argv)
+
+
 TOOLS = ("disposition", "contrasts", "compare_arms", "jury_check", "jury_analysis", "identifiability",
-         "export_transcripts", "ups_replay", "summarize_run")
+         "export_transcripts", "ups_replay", "summarize_run", "run_report")
 
 
 def cmd_tool(argv: List[str]) -> int:
@@ -457,7 +466,7 @@ def _show_calls(con, path: Path) -> int:
 HANDLERS: Dict[str, Callable[[List[str]], int]] = {
     "run": cmd_run, "pilot": cmd_pilot, "campaign": cmd_campaign, "rate-charters": cmd_rate_charters,
     "check": cmd_check, "test": cmd_test, "status": cmd_status, "logs": cmd_logs,
-    "summarize": cmd_summarize, "tool": cmd_tool,
+    "summarize": cmd_summarize, "report": cmd_report, "tool": cmd_tool,
 }
 
 

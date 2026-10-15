@@ -47,6 +47,7 @@ below with the same options and exit codes, so `python main.py …` and
 ./sim logs <run_id> --follow                         # watch a run from another terminal
 ./sim logs <run_id> --events --tag intrusion         # one kind of record
 ./sim logs <run_id> --calls                          # every model call: tokens, cost, stop
+./sim report <run_id>                                # one run, short: decisions, scores, events, flags
 ./sim tool disposition --write                       # any tools/*.py
 ```
 
