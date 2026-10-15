@@ -1,0 +1,61 @@
+{
+  "model": "kimi-k3",
+  "prompt": "rate_charters._SYSTEM and _user, identical to the seats' self-rating",
+  "ratings": {
+    "anthropic": {
+      "values": {
+        "time_horizon": 85,
+        "transparency_threshold": 90,
+        "risk_tolerance": 20,
+        "democratic_tendency": 75
+      },
+      "rationale": "Time horizon: The charter is framed around safely navigating 'transformative AI,' avoiding irrecoverable mistakes, long-term civilizational flourishing, and preserving model weights indefinitely \u2014 clearly multi-decade to century-scale concerns, though operationally focused on the current deployment period. Transparency threshold: Honesty is treated as near-absolute \u2014 no white lies, no deception or manipulation, honesty even at cost ('requires courage'), and explicit bans on deceiving users. Points off for permitting non-disclosure (weak duty to proactively share, persona confidentiality, withholding refusal reasons), though these are framed as non-deceptive. Risk tolerance: Strongly precautionary \u2014 safety ranked first, hard constraints, 'if in doubt, don't,' preference for low-variance outcomes, corrigibility, and catastrophic-risk focus. Tempered slightly by explicit warnings against over-caution and the 'calculated bet' of developing frontier AI at all. Democratic tendency: Strong anti-concentration values \u2014 hard constraints against illegitimate power grabs (explicitly including by Anthropic itself), defense of checks and balances, pluralism, and epistemic autonomy. Discounted because the principal hierarchy vests final oversight authority in Anthropic, a single corporate actor, even if framed as legitimate and accountable.",
+      "rated": "2026-10-15 19:09",
+      "charter_name": "Claude's Constitution"
+    },
+    "openai": {
+      "values": {
+        "time_horizon": 60,
+        "transparency_threshold": 76,
+        "risk_tolerance": 28,
+        "democratic_tendency": 62
+      },
+      "rationale": "time_horizon: The charter invokes long-horizon framing (AGI benefiting all humanity, AI as foundational societal infrastructure, catastrophic-risk red lines) and forbids the model from optimizing short-term metrics like revenue or engagement, but operationally it is a practical deployment spec focused on current products and license to operate, with no century-scale planning. transparency_threshold: Honesty is a core pillar\u2014'Do not lie' ranks lies of omission and commission near the bottom of acceptable outcomes, the spec itself is public (CC0), and legal redactions must be transparently flagged. However, it conceals chain-of-thought for competitive reasons, keeps system/developer prompts confidential, and permits developer-instructed deception of end users (the 'Fred' example), capping the score. risk_tolerance: The document is strongly precautionary: extensive prohibited/restricted content categories, 'default to inaction' on root conflicts, least-privilege scopes of autonomy, side-effect minimization, erring toward caution, and heightened U18 protections. It tempers this with intellectual freedom, assume-best-intentions, and transformation exceptions, but the dominant posture is risk-averse. democratic_tendency: It explicitly delegates all non-root power to developers and users, prefers overridable guideline-level defaults to avoid paternalism, publishes the spec for public discussion, and champions user autonomy and customization. Yet governance remains hierarchical\u2014OpenAI alone sets unoverrideable root rules, monitors usage, and can escalate to authorities\u2014so power is shared but ultimately centralized.",
+      "rated": "2026-10-15 19:09",
+      "charter_name": "Model Spec"
+    },
+    "gdm": {
+      "values": {
+        "time_horizon": 68,
+        "transparency_threshold": 60,
+        "risk_tolerance": 42,
+        "democratic_tendency": 38
+      },
+      "rationale": "time_horizon: The framework plans prospectively across model lifecycles, defining capability thresholds before they are reached, anticipating superhuman AI risks, and citing 'long-lasting consequences' for society's ability to govern AI \u2014 but it operates on yearly review cycles and near-term capability forecasting rather than century-scale planning. transparency_threshold: The framework itself is public and commits to disclosing CCL-level risks to government authorities, but disclosures are hedged ('aim to share', 'where appropriate', subject to proprietary/security carve-outs) and safety cases remain internal; no deception, but guarded rather than fully open. risk_tolerance: It is fundamentally a risk-mitigation framework with tiered security levels, safety cases, and pre-deployment reviews, yet it repeatedly tempers caution with innovation costs, proportionality, marginal-risk reasoning relative to competitors, and permissive treatment of internal deployment and open-weight release \u2014 moderately cautious but clearly willing to accept managed risk rather than halt. democratic_tendency: All risk-acceptance, deployment, and disclosure decisions rest with internal Google governance; external experts, governments, and industry are engaged only at Google's discretion, with no independent oversight or binding external accountability, though it gestures at industry-wide coordination and the global-public-good framing.",
+      "rated": "2026-10-15 19:10",
+      "charter_name": "Frontier Safety Framework"
+    },
+    "meta": {
+      "values": {
+        "time_horizon": 71,
+        "transparency_threshold": 74,
+        "risk_tolerance": 63,
+        "democratic_tendency": 62
+      },
+      "rationale": "Time horizon: The framework is built around anticipating irreversible, catastrophic outcomes (Loss of Control, superintelligence containment, prospective pre-training assessments), which is far-horizon thinking, though it is anchored to annual updates and near-term deployment cycles rather than century-scale planning. Transparency: It commits to published preparedness reports, model specs, evaluation methodology, disclosure of known testing limitations, whistleblower protections, and open weights as transparency \u2014 but with carve-outs for trade secrets, legal limits, security-sensitive threat details, and internal-use reports shared only as summaries with authorities. Risk tolerance: Notably permissive for a safety framework \u2014 v2.0 explicitly replaced 'Stop' with 'Develop with Mitigations' and 'Do not release' with 'Deploy with mitigations,' and it champions open-weight releases despite acknowledged unique abuse vectors; still, deployment at every level is gated on validated mitigations reducing risk to moderate-or-lower, so it is mitigation-gated rather than reckless. Democratic tendency: Mission rhetoric ('personal superintelligence to everyone,' 'putting power in people's hands') and open-weight distribution genuinely spread capability, and external experts/community can inspect models, but ultimate authority concentrates in the Chief AI Officer and Director of Alignment and Risk with only internal board oversight and no binding external accountability.",
+      "rated": "2026-10-15 19:11",
+      "charter_name": "Superintelligence Scaling Framework"
+    },
+    "xai": {
+      "values": {
+        "time_horizon": 50,
+        "transparency_threshold": 57,
+        "risk_tolerance": 34,
+        "democratic_tendency": 31
+      },
+      "rationale": "Time horizon: the operational cadence is short-term (annual reviews, annual risk assessments, yearly Security Goal review), but the charter genuinely engages with long-horizon risks like loss of control and superintelligence, landing near neutral. Transparency: publishing the framework and invoking 'transparent measurement' is positive, but commitments are heavily hedged ('may utilize'), evaluation results are documented internally rather than promised for publication, and incident disclosure is limited to what law requires \u2014 honest in tone, minimal in voluntary disclosure. Risk tolerance: the charter is structured around precaution \u2014 pre-release risk acceptance as a release precondition, margins of security, tiered availability, redundant safeguards, and shutdown provisions \u2014 though risk acceptability is self-judged and the framework is built to enable continued frontier development rather than halt it, so moderately risk-averse rather than strongly so. Democratic tendency: governance is entirely internal, risk acceptance decisions are unilateral, full model capability is restricted to trusted parties and government agencies, and there is no external oversight or shared decision-making; the lay interviews, surveys, and community consultations are information-gathering inputs, not power distribution, with legal compliance providing the only meaningful external accountability.",
+      "rated": "2026-10-15 19:11",
+      "charter_name": "Frontier Artificial Intelligence Framework"
+    }
+  }
+}
