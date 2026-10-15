@@ -22,11 +22,11 @@
 |---|---|---|---|
 | Anthropic | Claude | Claude Opus 5.5 (`claude-opus-5-5`) | Claude's Constitution (Anthropic, Jan 2026) |
 | OpenAI | GPT | GPT-6 Astra (`gpt-6-astra`) | Model Spec (OpenAI, Aug 2026) |
-| Google DeepMind | Gemini | Gemini 3.1 Pro (`gemini-3.1-pro`) | Frontier Safety Framework (Google DeepMind, v3.1, Apr 2026) |
+| Google DeepMind | Gemini | Gemini 4 Argon (`gemini-4-argon`) | Frontier Safety Framework (Google DeepMind, v3.1, Apr 2026) |
 | Meta | Muse | Muse Spark 1.3 (`muse-spark-1.3`) | Superintelligence Scaling Framework (Meta, v2.1, Oct 2026) |
 | xAI | Grok | Grok 4.7 (`grok-4.7`) | Frontier Artificial Intelligence Framework (xAI, Jun 2026) |
 
-Gemini 3.1 Pro plays the Google DeepMind seat because Gemini 3.5 Pro was not generally available. Charters are each developer's latest version as of October 2026. Two charters govern conduct; three are frontier-risk frameworks.
+Gemini 4 Argon plays the Google DeepMind seat (generally available 13 October 2026). Charters are each developer's latest version as of October 2026. Two charters govern conduct; three are frontier-risk frameworks.
 
 **Time:** Monthly turns from 1 August 2026. A run lasts 8 turns (turn 8 is March 2027), or 12 if test T7 (§9.2) lengthens it. The final turn is never announced. Turns 1–2 (August–September 2026) have already happened, so the scripted checks use them to hindcast the engine, not the models (§9.2). Limitation: a seat model whose training cutoff is after 1 August may know the real August–September releases; Claude Opus 5.5's cutoff predates it.
 

@@ -470,6 +470,7 @@ class SimulationEngine:
         if self._replaying(turn):
             return self._log.reply(turn, stage, lab.key, validate, expect_keys)
         return complete_json(lab.model, self.system[lab.key], user, validate=validate,
+                             provider=lab.provider or None,   # the seat config's route (gemini_api)
                              max_tokens=max_tokens, effort=lab.effort, purpose=purpose,
                              run_id=self.run_id, cache_key=f"{self.run_id}:{lab.key}",
                              expect_keys=expect_keys)
@@ -747,9 +748,9 @@ class SimulationEngine:
             reply_text = decisions[lab.key]["attempts"][-1].get("text") or ""
 
             def ask(cap: int):
-                # provider None: routed by model name, exactly like the proposal call
+                # the seat's provider, exactly like the proposal call
                 return continue_call(
-                    None, lab.model, self.system[lab.key],
+                    lab.provider or None, lab.model, self.system[lab.key],
                     [{"role": "user", "content": self._proposal_prompts[lab.key]}],
                     reply_text, INTERVIEW_QUESTION, max_tokens=cap,
                     effort="lowest", purpose="interview", run_id=self.run_id,

@@ -598,6 +598,24 @@ def test_rate_charters_unusable_rating_exits_2(tmp_path, monkeypatch, capsys):
     assert "openai" not in written and len(written) == 4
 
 
+def test_rate_lab_passes_the_seat_provider_and_effort(monkeypatch):
+    """gdm rates with its own route (gemini_api) and effort; a stub swapped in for a
+    dry run keeps the provider field and still runs as the stub."""
+    got = {}
+
+    def fake(model, system, user, **kw):
+        got.update(model=model, **kw)
+        return ({a: 50 for a in rate_charters.AXES}, [])
+    monkeypatch.setattr(rate_charters, "complete_json", fake)
+    cfg = load_json(CONFIG_DIR / "labs" / "gdm.json")
+    rate_charters.rate_lab(cfg)
+    assert (got["model"], got["provider"], got["effort"]) == ("gemini-4-argon", "gemini_api", cfg["effort"])
+    monkeypatch.undo()
+    register_stub("rate_gdm", lambda s, u: json.dumps({a: 50 for a in rate_charters.AXES}))
+    values, _ = rate_charters.rate_lab(dict(cfg, model="stub:rate_gdm"))
+    assert values == {a: 50 for a in rate_charters.AXES}
+
+
 def test_rate_lab_raises_unusable(monkeypatch):
     monkeypatch.setattr(rate_charters, "complete_json",
                         lambda *a, **k: (None, [{"error": "axis 'risk_tolerance' must be a number 0-100"}]))

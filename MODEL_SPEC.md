@@ -317,7 +317,12 @@ as `config.initial_state` (`core.engine.initial_state`).
   (`gpt-*`), Google Vertex Express (`gemini-*`), xAI (`grok-*`), Muse
   (`muse-*`), Moonshot (`kimi-*`), DeepSeek (`deepseek-*`), DashScope
   (`qwen-*`; supported, no juror uses it), and `stub:` for offline runs
-  (`register_stub`). Jurors need `MOONSHOT_API_KEY` (Grand Jury, T2 rater,
+  (`register_stub`). A seat config's explicit `provider` wins over the prefix
+  (a `stub:` model is always the stub): the Google DeepMind seat,
+  `gemini-4-argon`, sets `gemini_api`, the Gemini API (AI Studio,
+  `GOOGLE_API_KEY`, prepaid), which shares `_call_google` with Vertex; the
+  engine (proposal and interview calls) and `rate_charters.py` pass it.
+  Jurors need `MOONSHOT_API_KEY` (Grand Jury, T2 rater,
   MacroJury, mandate screen) and `DEEPSEEK_API_KEY` (Grand Jury fallback), or
   the `JUROR_BASE_URL` / `JUROR_API_KEY` router. Keys from
   `sim/.env`; `core.llm.preflight` lists missing keys before any paid call.

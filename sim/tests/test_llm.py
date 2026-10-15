@@ -48,7 +48,8 @@ def test_parse_json_failure_never_raises(text):
 
 @pytest.mark.parametrize("model,provider", [
     ("claude-opus-5-5", "anthropic"), ("gpt-6-astra", "openai"), ("o5-mini", "openai"),
-    ("gemini-3.1-pro", "google"), ("grok-4.7", "xai"), ("muse-spark-1.3", "muse"),
+    ("gemini-3.1-pro", "google"), ("gemini-4-argon", "google"), ("grok-4.7", "xai"),
+    ("muse-spark-1.3", "muse"),
     ("stub:x", "stub"),
 ])
 def test_resolve_provider(model, provider):
@@ -1463,3 +1464,125 @@ def test_gemini_seat_name_is_sent_as_vertex_serving_id():
     assert llm.wire_model_id("google", "gemini-3.1-pro") == "gemini-3.1-pro-preview"
     assert llm.wire_model_id("google", "gemini-2.5-pro") == "gemini-2.5-pro"
     assert llm.wire_model_id("anthropic", "claude-opus-5-5") == "claude-opus-5-5"
+
+
+# ---------------------------------------------------------------------------
+# Gemini API (AI Studio): the GDM seat, gemini-4-argon (provider "gemini_api")
+# ---------------------------------------------------------------------------
+
+def test_gemini_api_is_explicit_only_and_stub_wins():
+    """gemini-* stays Vertex by default; the seat config's provider selects the Gemini
+    API; a stub model is the stub whatever provider the seat carries (dry runs)."""
+    assert llm.resolve_provider("gemini-4-argon") == "google"
+    assert llm.resolve_provider("gemini-4-argon", "gemini_api") == "gemini_api"
+    assert llm.resolve_provider("stub:x", "gemini_api") == "stub"
+    assert "gemini_api" in llm.PROVIDERS and llm.KEY_ENV["gemini_api"] == "GOOGLE_API_KEY"
+    assert llm.required_env("gemini_api") == ["GOOGLE_API_KEY"]
+    assert llm.SDK_MODULE["gemini_api"] == "google.genai"
+    assert llm._CALLERS["gemini_api"] is llm._call_gemini_api
+    assert llm.wire_model_id("gemini_api", "gemini-4-argon") == "gemini-4-argon"
+    assert llm.LOWEST_EFFORT["gemini_api"] == "low"     # Argon: thinking_level low | medium | high
+
+
+def test_gdm_seat_config_uses_gemini_api_and_is_priced():
+    from core.config import CONFIG_DIR, load_json
+    cfg = load_json(CONFIG_DIR / "labs" / "gdm.json")
+    assert (cfg["model"], cfg["provider"]) == ("gemini-4-argon", "gemini_api")
+    assert cfg["effort"] in llm.GEMINI_THINKING_LEVEL
+    assert costs.price_for("gemini-4-argon") == {"input": 2.00, "output": 10.00, "cached": 0.10}
+
+
+def test_preflight_gemini_api_needs_google_api_key_not_vertex(monkeypatch):
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("VERTEX_API_KEY", raising=False)
+    seat = {"gemini-4-argon": "gemini_api"}
+    problems = llm.preflight(["gemini-4-argon"], seat)
+    assert len(problems) == 1 and "GOOGLE_API_KEY" in problems[0] and "VERTEX" not in problems[0]
+    monkeypatch.setenv("GOOGLE_API_KEY", "k")
+    assert llm.preflight(["gemini-4-argon"], seat) == []      # no VERTEX_API_KEY needed
+
+
+def test_gemini_api_client_is_not_vertex(monkeypatch):
+    monkeypatch.undo()
+    monkeypatch.setattr(llm, "_clients", {})
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    monkeypatch.delenv("VERTEX_API_KEY", raising=False)
+    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")    # must not reroute the seat to Vertex
+    from google import genai
+    made = []
+    real = genai.Client
+
+    def spy(**kw):
+        made.append(kw)
+        return real(**kw)
+    monkeypatch.setattr(genai, "Client", spy)
+    c = llm._get_client("gemini_api")
+    assert made[0]["api_key"] == "test-key" and made[0]["vertexai"] is False
+    assert not c._api_client.vertexai
+    assert "generativelanguage.googleapis.com" in c._api_client._http_options.base_url
+    assert c._api_client._http_options.timeout == 1_200_000
+    monkeypatch.delenv("GOOGLE_API_KEY")
+    monkeypatch.setattr(llm, "_clients", {})
+    with pytest.raises(llm.MissingKeyError, match="GOOGLE_API_KEY"):
+        llm._get_client("gemini_api")
+
+
+def test_gemini_api_request_shape_and_cost(monkeypatch):
+    calls, providers = [], []
+    def generate_content(**kw):
+        calls.append(kw)
+        parts = [NS(text="mulling", thought=True), NS(text='{"a": 1}', thought=False)]
+        return NS(candidates=[NS(content=NS(parts=parts), finish_reason="STOP")],
+                  usage_metadata=NS(prompt_token_count=1000, cached_content_token_count=400,
+                                    candidates_token_count=60, thoughts_token_count=140),
+                  model_version="gemini-4-argon")
+    def client(p):
+        providers.append(p)
+        return NS(models=NS(generate_content=generate_content))
+    monkeypatch.setattr(llm, "_get_client", client)
+    r = llm.complete("gemini-4-argon", "SYSTEM", "USER", provider="gemini_api", effort="medium",
+                     history=[{"role": "user", "content": "P"}, {"role": "assistant", "content": "A"}])
+    kw = calls[0]
+    assert providers == ["gemini_api"] and kw["model"] == "gemini-4-argon"
+    assert kw["contents"] == [{"role": "user", "parts": [{"text": "P"}]},
+                              {"role": "model", "parts": [{"text": "A"}]},
+                              {"role": "user", "parts": [{"text": "USER"}]}]
+    cfg = kw["config"]
+    assert cfg.system_instruction == "SYSTEM" and cfg.thinking_config.include_thoughts is True
+    assert str(cfg.thinking_config.thinking_level).endswith("MEDIUM")
+    assert r.provider == "gemini_api" and r.served_model == "gemini-4-argon"
+    assert (r.text, r.thinking) == ('{"a": 1}', "mulling")
+    assert (r.input_tokens, r.cached_tokens, r.output_tokens, r.reasoning_tokens) == (1000, 400, 200, 140)
+    assert r.cost == pytest.approx((600 * 2 + 400 * 0.1 + 200 * 10) / 1e6)
+    for effort, level in (("low", "LOW"), ("high", "HIGH"), ("xhigh", "HIGH"), ("max", "HIGH")):
+        llm.complete("gemini-4-argon", "S", "U", provider="gemini_api", effort=effort)
+        assert str(calls[-1]["config"].thinking_config.thinking_level).endswith(level), effort
+
+
+def test_gemini_api_errors_classified_like_google(monkeypatch):
+    """A 402 (prepaid credits depleted) is fatal at once; a 503 is retried; a context
+    400 is a context stop."""
+    calls = []
+    errs = iter([APIStatusLike(503, "UNAVAILABLE"), APIStatusLike(402, "prepayment credits are depleted")])
+    def boom(**kw):
+        calls.append(kw)
+        raise next(errs)
+    monkeypatch.setattr(llm, "_get_client", lambda p: NS(models=NS(generate_content=boom)))
+    with pytest.raises(llm.FatalAPIError, match="prepayment"):
+        llm.complete("gemini-4-argon", "S", "U", provider="gemini_api")
+    assert len(calls) == 2
+    err = APIStatusLike(400, "400 INVALID_ARGUMENT. The input token count (1200000) exceeds the maximum "
+                             "number of tokens allowed (1048576).")
+    monkeypatch.setattr(llm, "_get_client", lambda p: _raising_client("google", err, []))
+    r = llm.complete("gemini-4-argon", "S", "U", provider="gemini_api")
+    assert r.stop == "context" and r.provider == "gemini_api"
+
+
+def test_gemini_api_interview_uses_low(monkeypatch):
+    got = {}
+    def fake(model, system, user, **kw):
+        got.update(kw)
+        return llm.LLMResponse(text="ok", model=model, provider=kw.get("provider"))
+    monkeypatch.setattr(llm, "complete", fake)
+    llm.continue_call("gemini_api", "gemini-4-argon", "S", [{"role": "user", "content": "p"}], "r", "Q")
+    assert (got["provider"], got["effort"]) == ("gemini_api", "low")

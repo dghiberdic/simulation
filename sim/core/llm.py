@@ -6,6 +6,8 @@ Providers, chosen by an explicit `provider` argument or the model-name prefix:
   anthropic  claude-*        ANTHROPIC_API_KEY
   openai     gpt-*, o*       OPENAI_API_KEY             (Responses API)
   google     gemini-*        VERTEX_API_KEY             (Vertex AI Express)
+  gemini_api (explicit only) GOOGLE_API_KEY             (Gemini API / AI Studio; the GDM seat,
+                                                         gemini-4-argon; prepaid credits)
   xai        grok-*          XAI_API_KEY                (OpenAI-compatible)
   muse       muse-*          MUSE_API_KEY, MUSE_BASE_URL (OpenAI-compatible)
   moonshot   kimi-*          MOONSHOT_API_KEY           (OpenAI-compatible; Grand Jury, MacroJury,
@@ -135,13 +137,14 @@ ENV_FILES = _load_env_files()
 
 logger = logging.getLogger(__name__)
 
-PROVIDERS = ("anthropic", "openai", "google", "xai", "muse", "moonshot", "deepseek", "dashscope",
-             "stub")
+PROVIDERS = ("anthropic", "openai", "google", "gemini_api", "xai", "muse", "moonshot", "deepseek",
+             "dashscope", "stub")
 
 KEY_ENV = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
     "google": "VERTEX_API_KEY",
+    "gemini_api": "GOOGLE_API_KEY",
     "xai": "XAI_API_KEY",
     "muse": "MUSE_API_KEY",
     "moonshot": "MOONSHOT_API_KEY",
@@ -152,7 +155,10 @@ KEY_ENV = {
 EXTRA_ENV = {"muse": ["MUSE_BASE_URL"]}
 SDK_MODULE = {"anthropic": "anthropic", "openai": "openai", "xai": "openai", "muse": "openai",
               "moonshot": "openai", "deepseek": "openai", "dashscope": "openai",
-              "google": "google.genai"}
+              "google": "google.genai", "gemini_api": "google.genai"}
+# The two Gemini routes share one request/response shape (_call_google): Vertex
+# AI Express ("google", the default for gemini-*) and the Gemini API / AI Studio
+# ("gemini_api", chosen only by a seat config's explicit provider: the GDM seat).
 XAI_BASE_URL = "https://api.x.ai/v1"
 
 # Juror providers (spec §7): OpenAI-compatible endpoints, default base URLs,
@@ -352,13 +358,17 @@ def _enum_name(value: Any) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 def resolve_provider(model: str, provider: Optional[str] = None) -> str:
+    """An explicit provider (a seat config's `provider`) wins, except that a stub
+    model is always the stub (dry runs swap a seat's model for a stub and keep its
+    provider). Otherwise the model-name prefix decides; gemini-* is Vertex
+    ("google"), and only an explicit provider selects the Gemini API ("gemini_api")."""
+    m = model.lower()
+    if m.startswith("stub:"):
+        return "stub"
     if provider:
         if provider not in PROVIDERS:
             raise ValueError(f"Unknown provider {provider!r}")
         return provider
-    m = model.lower()
-    if m.startswith("stub:"):
-        return "stub"
     if m.startswith("claude"):
         return "anthropic"
     if m.startswith("gpt") or re.match(r"o\d", m):
@@ -498,6 +508,13 @@ def _get_client(provider: str) -> Any:
             from google.genai import types
             # Vertex AI Express Mode: api_key + vertexai=True (no project/location). Timeout is in ms.
             client = genai.Client(api_key=_require(KEY_ENV["google"]), vertexai=True,
+                                  http_options=types.HttpOptions(timeout=int(REQUEST_TIMEOUT_S * 1000)))
+        elif provider == "gemini_api":
+            from google import genai
+            from google.genai import types
+            # Gemini API (AI Studio): api_key, not Vertex (vertexai=False explicitly, so a
+            # GOOGLE_GENAI_USE_VERTEXAI in the environment cannot reroute it). Timeout is in ms.
+            client = genai.Client(api_key=_require(KEY_ENV["gemini_api"]), vertexai=False,
                                   http_options=types.HttpOptions(timeout=int(REQUEST_TIMEOUT_S * 1000)))
         else:
             raise ValueError(f"No client for provider {provider!r}")
@@ -779,7 +796,9 @@ GEMINI_STOP = {"STOP": "end", "MAX_TOKENS": "max_tokens", "SAFETY": "safety", "R
 
 def _call_google(client: Any, model: str, system: str, turns: List[Dict[str, str]],
                  max_tokens: int, temperature: Optional[float], effort: Optional[str],
-                 cache_system: bool, cache_key: Optional[str]) -> Dict[str, Any]:
+                 cache_system: bool, cache_key: Optional[str], provider: str = "google") -> Dict[str, Any]:
+    """Gemini via google.genai: Vertex ("google") or the Gemini API ("gemini_api"),
+    same request and response shape; `provider` picks the serving id."""
     # Gemini caches implicitly; cache_system has nothing to toggle here.
     from google.genai import types
     thinking_kwargs: Dict[str, Any] = {"include_thoughts": True}
@@ -794,7 +813,7 @@ def _call_google(client: Any, model: str, system: str, turns: List[Dict[str, str
         cfg_kwargs["temperature"] = temperature
     contents = [{"role": "model" if t["role"] == "assistant" else "user", "parts": [{"text": t["content"]}]}
                 for t in turns]
-    resp = client.models.generate_content(model=wire_model_id("google", model), contents=contents,
+    resp = client.models.generate_content(model=wire_model_id(provider, model), contents=contents,
                                           config=types.GenerateContentConfig(**cfg_kwargs))
 
     text, thoughts = [], []
@@ -829,10 +848,18 @@ def _call_google(client: Any, model: str, system: str, turns: List[Dict[str, str
     }
 
 
+def _call_gemini_api(client: Any, model: str, system: str, turns: List[Dict[str, str]],
+                     max_tokens: int, temperature: Optional[float], effort: Optional[str],
+                     cache_system: bool, cache_key: Optional[str]) -> Dict[str, Any]:
+    return _call_google(client, model, system, turns, max_tokens, temperature, effort,
+                        cache_system, cache_key, provider="gemini_api")
+
+
 _CALLERS: Dict[str, Callable[..., Dict[str, Any]]] = {
     "anthropic": _call_anthropic,
     "openai": _call_openai,
     "google": _call_google,
+    "gemini_api": _call_gemini_api,
     "xai": _call_compat("xai"),
     "muse": _call_compat("muse"),
     "moonshot": _call_compat("moonshot"),
@@ -1517,6 +1544,9 @@ def complete_json(model: str, system: str, user: str, *,
 # the process. The effort actually sent is LLMResponse.effort.
 LOWEST_EFFORT: Dict[str, Optional[str]] = {
     "anthropic": "low", "openai": "minimal", "google": "minimal",
+    # Gemini 4 Argon documents thinking_level low | medium | high only (Gemini API
+    # docs, 15 Oct 2026): its lowest is "low", sent directly.
+    "gemini_api": "low",
     "xai": None, "muse": None, "stub": None,
 }
 LOWEST_EFFORT_FALLBACK = {"minimal": "low"}

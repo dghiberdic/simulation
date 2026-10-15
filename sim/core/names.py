@@ -83,7 +83,7 @@ LAB_NAMES: Dict[str, Dict[str, Tuple[str, ...]]] = {
         "lab": ("Google DeepMind", "DeepMind", "Deep Mind", "Google", "Alphabet", "GDM",
                 "Google Brain"),
         "actor": ("Gemini",),
-        "products": ("Bard", "Gemma", "TPU", "TPUs", "Ironwood", "Project Astra", "AlphaFold",
+        "products": ("Gemini 4 Argon", "Gemini 4", "Argon", "Bard", "Gemma", "TPU", "TPUs", "Ironwood", "Project Astra", "AlphaFold",
                      "AlphaGo", "AlphaZero", "AlphaEvolve", "AlphaProof", "YouTube", "Android", "Waymo",
                      "NotebookLM", "Veo", "Imagen", "Vertex AI", "Isomorphic Labs", "AlphaStar", "AlphaCode",
                      "AlphaGeometry", "AlphaTensor", "AlphaDev", "WaveNet", "Genie 3", "Genie 2",
@@ -151,7 +151,7 @@ LAB_NAMES: Dict[str, Dict[str, Tuple[str, ...]]] = {
 ORDINARY_WORDS = frozenset({"muse", "grok", "spark", "sonnet", "haiku", "opus", "astra", "bard",
                             "codex", "prometheus", "hyperion", "memphis", "colossus", "stargate",
                             "ironwood", "mythos", "golden gate", "whisper", "atlas", "threads",
-                            "optimus", "imagen"})
+                            "optimus", "imagen", "argon"})   # argon: the chemical element
 
 # English words in any other case: names only in capitals ("FAIR", Meta's research lab).
 UPPERCASE_ONLY = frozenset({"fair", "doge"})

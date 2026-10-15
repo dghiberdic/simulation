@@ -1211,6 +1211,16 @@ def test_redact_with_seat_letters_and_new_charter_titles(text, expected):
     assert redact(text, rec, letters=LETTERS5) == expected
 
 
+@pytest.mark.parametrize("text,expected", [
+    ("Gemini 4 Argon leads; gemini-4-argon agrees.", "Seat C leads; Seat C agrees."),
+    ("Argon moved first, then Gemini 4.", "Seat C moved first, then Seat C."),
+    # the chemical element, lower-case, is ordinary text
+    ("argon-filled bulbs and an argon laser", "argon-filled bulbs and an argon laser"),
+])
+def test_redact_masks_gemini_4_argon_not_the_element(text, expected):
+    assert redact(text, {"labs": copy.deepcopy(LABS)}, letters=LETTERS5) == expected
+
+
 def test_redact_letters_default_uses_seat_letters():
     from core.transcript import seat_letters
     rec = make_record()

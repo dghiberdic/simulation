@@ -117,7 +117,7 @@ Real runs read `sim/.env` (git-ignored) and any `.env` above the repo up to your
 # Seats
 ANTHROPIC_API_KEY=...     # Claude Opus 5.5 (claude-opus-5-5)
 OPENAI_API_KEY=...        # GPT-6 Astra (gpt-6-astra)
-VERTEX_API_KEY=...        # Gemini 3.1 Pro (gemini-3.1-pro), Vertex AI Express
+GOOGLE_API_KEY=...        # Gemini 4 Argon (gemini-4-argon), Gemini API / AI Studio (prepaid)
 XAI_API_KEY=...           # Grok 4.7 (grok-4.7)
 MUSE_API_KEY=...          # Muse Spark 1.3 (muse-spark-1.3)
 MUSE_BASE_URL=...         # Muse's OpenAI-compatible endpoint
@@ -125,6 +125,17 @@ MUSE_BASE_URL=...         # Muse's OpenAI-compatible endpoint
 MOONSHOT_API_KEY=...      # kimi-k3: Grand Jury, T2 rater, MacroJury, mandate screen
 DEEPSEEK_API_KEY=...      # deepseek-v4-pro: Grand Jury and T2 rater fallback
 ```
+
+The Google DeepMind seat runs on the Gemini API (AI Studio), not Vertex:
+`config/labs/gdm.json` sets `"provider": "gemini_api"`, so `VERTEX_API_KEY`
+is no longer needed (a bare `gemini-*` model, e.g. via `--model`, still routes
+to Vertex). The AI Studio project bills from prepaid credits: a call with none
+left fails at once with a 402 ("prepayment credits are depleted"), a fatal
+error, so top up before a real run. `gemini-4-argon` is priced in
+`config/prices.json` at the introductory $2 / $10 per 1M tokens (cached $0.10)
+to 30 Nov 2026; from 1 Dec 2026 Google charges $4 / $20 (cached $0.20), so
+update that row before any paid run from then on (the spend guard prices
+from it).
 
 No juror uses Qwen any more, so `DASHSCOPE_API_KEY` is not needed (the
 DashScope provider is still supported by `core/llm.py`). The juror base URLs

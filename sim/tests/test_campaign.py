@@ -391,6 +391,12 @@ def test_main_model_override_is_validated_and_sets_the_provider(tmp_path, capsys
     assert main_mod.apply_model_overrides(labs, ["openai=claude-opus-5-5"]) == ""
     oa = next(lab for lab in labs if lab.key == "openai")
     assert (oa.model, oa.provider) == ("claude-opus-5-5", "anthropic")   # preflight checks this key
+    # the seat's own model keeps its configured route; gemini-* by name is Vertex
+    assert main_mod.apply_model_overrides(labs, ["gdm=gemini-4-argon"]) == ""
+    gdm = next(lab for lab in labs if lab.key == "gdm")
+    assert (gdm.model, gdm.provider) == ("gemini-4-argon", "gemini_api")
+    assert main_mod.apply_model_overrides(labs, ["gdm=gemini-3.1-pro"]) == ""
+    assert (gdm.model, gdm.provider) == ("gemini-3.1-pro", "google")
     assert main_mod.main(["--dry-run", "--model", "nolab=gpt-6-astra", "--turns", "1"]) == 2
     assert "bad --model" in capsys.readouterr().out
 

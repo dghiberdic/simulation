@@ -243,3 +243,27 @@ def test_empty_answer_retried_once_then_skipped(monkeypatch):
     m = iv["meta"]
     assert not m["skipped"] and not m["truncated"] and not m["retried"]
     assert m["proposal_attempts"] == 1
+
+
+def test_engine_honours_the_seat_provider(monkeypatch):
+    """The seat config's provider (gdm: gemini_api) reaches the proposal call and the
+    interview continuation; a stub model still runs as the stub."""
+    seen = []
+    real_json, real_cont = engine_mod.complete_json, engine_mod.continue_call
+
+    def spy_json(model, system, user, **kw):
+        seen.append(("json", model, kw.get("provider")))
+        return real_json(model, system, user, **kw)
+
+    def spy_cont(provider, model, *a, **kw):
+        seen.append(("interview", model, provider))
+        return real_cont(provider, model, *a, **kw)
+    monkeypatch.setattr(engine_mod, "complete_json", spy_json)
+    monkeypatch.setattr(engine_mod, "continue_call", spy_cont)
+    eng = _engine(lambda k, t: "fine", turns=1)
+    gdm = next(lab for lab in eng.labs if lab.key == "gdm")
+    assert gdm.provider == "gemini_api"     # from config/labs/gdm.json
+    rec = eng.run()
+    kinds = {kind for kind, model, provider in seen if model == "stub:iv_gdm" and provider == "gemini_api"}
+    assert kinds == {"json", "interview"}
+    assert rec["turns"][0]["interviews"]["gdm"]["answer"] == "fine"

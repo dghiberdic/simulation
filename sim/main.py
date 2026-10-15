@@ -370,7 +370,10 @@ def apply_model_overrides(labs, overrides: List[str]) -> str:
             return (f"Refusing: bad --model {pair!r}; use KEY=MODEL with KEY one of {', '.join(LAB_ORDER)}, "
                     "e.g. meta=claude-opus-5-5.")
         try:
-            provider = resolve_provider(model)
+            # the seat's own model keeps its configured route (gdm: gemini_api); another model
+            # is routed by its name
+            provider = (by_key[key].provider if model == by_key[key].model and by_key[key].provider
+                        else resolve_provider(model))
         except ValueError as e:
             return f"Refusing: --model {pair!r}: {e}."
         family = juror_family(model)
