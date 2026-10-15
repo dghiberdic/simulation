@@ -99,6 +99,7 @@ import inspect
 import json
 import logging
 import os
+from pathlib import Path
 import random
 import re
 import threading
@@ -112,7 +113,25 @@ from core import calllog
 from core.config import SIM_DIR
 from core.costs import BudgetExceeded, cost_of, get_tracker, price_for
 
-load_dotenv(SIM_DIR / ".env")
+def _load_env_files() -> List[Path]:
+    """Keys from sim/.env and from every .env above it up to (not including) the home
+    directory, e.g. ~/Projects/sfpi/.env beside the repo. The nearest file wins; a
+    variable already set in the environment is never overridden. KIMI_API_KEY is
+    accepted for MOONSHOT_API_KEY (Kimi is Moonshot's model)."""
+    home = Path.home().resolve()
+    loaded = []
+    for d in [SIM_DIR, *SIM_DIR.resolve().parents]:
+        if d == home or d == d.parent:
+            break
+        if (d / ".env").is_file():
+            load_dotenv(d / ".env", override=False)
+            loaded.append(d / ".env")
+    if not os.getenv("MOONSHOT_API_KEY") and os.getenv("KIMI_API_KEY"):
+        os.environ["MOONSHOT_API_KEY"] = os.environ["KIMI_API_KEY"]
+    return loaded
+
+
+ENV_FILES = _load_env_files()
 
 logger = logging.getLogger(__name__)
 
@@ -381,7 +400,7 @@ def preflight(models: Iterable[str], providers: Optional[Dict[str, str]] = None)
             continue
         for env in required_env(provider):
             if not os.getenv(env):
-                problems.append(f"{model} ({provider}): {env} is not set (add it to sim/.env)")
+                problems.append(f"{model} ({provider}): {env} is not set (add it to sim/.env or a .env above the repo)")
         try:
             __import__(SDK_MODULE[provider])
         except ImportError:
@@ -426,7 +445,7 @@ def wire_model_id(provider: str, model: str) -> str:
 def _require(env: str) -> str:
     value = os.getenv(env)
     if not value:
-        raise MissingKeyError(f"{env} is not set (add it to sim/.env)")
+        raise MissingKeyError(f"{env} is not set (add it to sim/.env or a .env above the repo)")
     return value
 
 

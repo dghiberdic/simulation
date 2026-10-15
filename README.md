@@ -111,7 +111,7 @@ message names the `--lab` calls still to make.
 
 ### API keys
 
-Real runs read `sim/.env` (git-ignored):
+Real runs read `sim/.env` (git-ignored) and any `.env` above the repo up to your home directory (e.g. `~/Projects/sfpi/.env`); the nearest file wins and a variable already set in the shell is kept. `KIMI_API_KEY` is accepted for `MOONSHOT_API_KEY`:
 
 ```
 # Seats
