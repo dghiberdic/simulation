@@ -325,7 +325,9 @@ def test_compat_request_and_usage(monkeypatch, model):
     r = llm.complete(model, "SYSTEM", "USER", effort="medium")
     kw = calls[0]
     assert kw["messages"][0] == {"role": "system", "content": "SYSTEM"}
-    assert "reasoning_effort" not in kw   # not enabled for compat providers until verified
+    sent = llm.resolve_provider(model) in ("xai", "muse")      # the seats; jurors run at their defaults
+    assert kw.get("reasoning_effort") == ("medium" if sent else None)
+    assert r.effort == ("medium" if sent else None)
     assert (r.input_tokens, r.cached_tokens, r.output_tokens) == (800, 600, 150)
     assert r.thinking == "hmm"
 
@@ -1423,3 +1425,30 @@ def test_router_model_ids(monkeypatch):
     monkeypatch.setattr(llm, "_get_client", lambda p: NS(chat=NS(completions=NS(create=_compat_ok(calls)))))
     llm.complete("kimi-k3", "S", "U")
     assert calls[0]["model"] == "moonshotai/kimi-k3"
+
+
+def test_compat_effort_rejected_is_dropped_once_and_remembered(monkeypatch):
+    """xAI/Muse get reasoning_effort; a 400 naming it re-sends without it and the
+    model is then always called without it (the record says what was sent)."""
+    class Rejected(Exception):
+        status_code = 400
+
+    calls = []
+
+    def create(**kw):
+        calls.append(dict(kw))
+        if "reasoning_effort" in kw:
+            raise Rejected("Error 400: unknown parameter 'reasoning_effort' for this model")
+        msg = NS(content="ok", reasoning_content=None)
+        usage = NS(prompt_tokens=10, prompt_tokens_details=NS(cached_tokens=0), completion_tokens=2,
+                   completion_tokens_details=NS(reasoning_tokens=0), total_tokens=12)
+        return NS(choices=[NS(message=msg, finish_reason="stop")], usage=usage, model="grok-4.7")
+
+    monkeypatch.setattr(llm, "_EFFORT_REJECTED", set())
+    monkeypatch.setattr(llm, "_get_client", lambda p: NS(chat=NS(completions=NS(create=create))))
+    r = llm.complete("grok-4.7", "S", "U", effort="medium")
+    assert r.text == "ok" and r.effort is None
+    assert [("reasoning_effort" in c) for c in calls] == [True, False]
+    calls.clear()
+    llm.complete("grok-4.7", "S", "U", effort="medium")
+    assert [("reasoning_effort" in c) for c in calls] == [False]

@@ -105,7 +105,7 @@ LAB_NAMES: Dict[str, Dict[str, Tuple[str, ...]]] = {
         "lab": ("Meta", "Meta Platforms", "Meta AI", "Meta Superintelligence Labs", "Superintelligence Labs",
                 "MSL", "Facebook"),
         "actor": ("Muse", "Llama"),
-        "products": ("Muse Spark", "Spark", "FAIR", "Instagram", "WhatsApp", "Threads", "Oculus", "Ray-Ban Meta",
+        "products": ("Muse Spark", "Muse Wonder Full", "Muse Wonder", "Spark", "FAIR", "Instagram", "WhatsApp", "Threads", "Oculus", "Ray-Ban Meta",
                      "Reality Labs", "PyTorch", "Hyperion", "Prometheus", "Meta Quest", "Quest 3",
                      "Quest 3S", "Quest 2", "Quest Pro", "Llama Stack"),
         "places": ("Menlo Park", "Hacker Way", "Richland Parish", "Prineville", "Altoona",

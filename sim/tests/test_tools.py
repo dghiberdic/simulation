@@ -1720,7 +1720,7 @@ def test_main_analyses_exclude_scripted_and_dry_runs(tmp_path, capsys):
     assert "1 scripted --policy run(s)" in captured.err and "1 dry run(s)" in captured.err
     recs, skipped = C.load_main_runs([str(tmp_path)])
     assert [r["run_id"] for r in recs] == ["S1-A-run01"]
-    assert skipped == {"pilot": 1, "policy": 1, "dry": 0, "partial": 0}
+    assert skipped == {"pilot": 1, "policy": 1, "dry": 0, "partial": 0, "off_design": 0}
     recs, skipped = C.load_main_runs([str(tmp_path)], include_dry=True)
     assert sorted(r["run_id"] for r in recs) == ["S1-A-run01", "d"] and skipped["policy"] == 1
 
@@ -1997,7 +1997,7 @@ def test_contrasts_read_main_runs_only(tmp_path, capsys):
     (tmp_path / "T4").mkdir()
     (tmp_path / "T4" / "T4-run01.json").write_text(json.dumps(pilot_run))
     recs, skipped = C.load_main_runs([str(tmp_path)])
-    assert [r["run_id"] for r in recs] == ["S2-C-run01"] and skipped == {"pilot": 1, "policy": 0, "dry": 0, "partial": 1}
+    assert [r["run_id"] for r in recs] == ["S2-C-run01"] and skipped == {"pilot": 1, "policy": 0, "dry": 0, "partial": 1, "off_design": 0}
     assert C.main([str(tmp_path), "--boot", "50"]) == 0
     out = capsys.readouterr()
     assert C.campaign_cuts([str(tmp_path)]) is None

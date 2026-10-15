@@ -64,7 +64,8 @@ def test_the_real_screen_calls_kimi_k3(monkeypatch):
             return {"violates": False, "topics": []}, [{"served_model": model, "temperature": 0.0}]
         return ({"values": {a: 60 for a in AXES}, "mandate": "Expand domestic compute."},
                 [{"served_model": model, "temperature": None}])
-    monkeypatch.setattr(jury_mod, "complete_json", fake)
+    monkeypatch.setattr(jury_mod, "complete_json", fake)          # the screen
+    monkeypatch.setattr(jury_mod, "complete_json_once", fake)     # the review (one call per ask)
     out = MacroJury().deliberate("United States", dict(START), "s")
     assert asked == [("kimi-k3", "macro_jury"), ("kimi-k3", "macro_jury")]
     assert out["mandate"] == "Expand domestic compute."

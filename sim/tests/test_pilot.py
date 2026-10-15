@@ -509,6 +509,7 @@ def test_main_real_run_guards(monkeypatch, capsys):
     assert main_mod.main(["--turns", "1"]) == 2
     assert "meta=140" in capsys.readouterr().out
     monkeypatch.setattr(main_mod, "load_dispositions", lambda: {k: 40 for k in LAB_KEYS})
+    monkeypatch.setattr(main_mod, "no_examples_problem", lambda: "")   # the few-shot guard: test_examples_guard.py
     monkeypatch.setattr(llm, "preflight", lambda models, providers=None: ["XAI_API_KEY missing"])
     assert main_mod.main(["--turns", "1", "--allow-placeholder-values"]) == 2
     assert "Preflight failed" in capsys.readouterr().out

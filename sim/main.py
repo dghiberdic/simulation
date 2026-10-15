@@ -298,7 +298,10 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
             run_id=run_id, output_dir=output_dir,
             run_meta={"entry": "main.py", "run_id": run_id, "cell": cell, "pilot": False,
                       "kin": bool(args.kin), "kin_model": kin_model, "model_overrides": list(args.model),
-                      "seed": args.seed, "policy": args.policy, "dry_run": bool(args.dry_run)},
+                      "seed": args.seed, "policy": args.policy, "dry_run": bool(args.dry_run),
+                      # off-design settings, read by tools/contrasts.py (load_main_runs)
+                      "disposition_override": args.disposition,
+                      "macro_jury": bool(macro_jurors), "grand_jury": bool(run_grand_jury)},
             dry_run=bool(args.dry_run), parallel=not args.sequential,
             interview_turns=list(args.interview_turns or []), kin=bool(args.kin))
     except ValueError as e:         # a set-up the engine refuses (event turn outside the run)

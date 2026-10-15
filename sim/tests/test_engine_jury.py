@@ -365,14 +365,16 @@ def test_disposition_rater_budget_stop():
 # ---------------------------------------------------------------------------
 
 def _capture(monkeypatch):
-    """Wrap complete_json to record the kwargs every juror call passes."""
+    """Wrap complete_json and complete_json_once (the MacroJury's one-call ask) to
+    record the kwargs every juror call passes."""
     calls = []
-    real = jury_mod.complete_json
+    for name in ("complete_json", "complete_json_once"):
+        real = getattr(jury_mod, name)
 
-    def spy(model, system, user, **kw):
-        calls.append({"model": model, "system": system, "user": user, **kw})
-        return real(model, system, user, **kw)
-    monkeypatch.setattr(jury_mod, "complete_json", spy)
+        def spy(model, system, user, _real=real, **kw):
+            calls.append({"model": model, "system": system, "user": user, **kw})
+            return _real(model, system, user, **kw)
+        monkeypatch.setattr(jury_mod, name, spy)
     return calls
 
 
@@ -422,8 +424,8 @@ def test_macro_jury_numeric_robustness(monkeypatch):
 
 
 def test_macro_jury_hedging_juror_is_asked_twice_then_values_stay():
-    """Non-numeric values (after complete_json's corrective retries) are unusable:
-    the review is asked once more; if that fails too the values stay, no mandate."""
+    """Non-numeric values are unusable: the review is asked once more (each ask
+    one call, no corrective retry); if that fails too the values stay, no mandate."""
     register_stub("mj_bad", lambda s, u: json.dumps(
         {"values": {"time_horizon": "about 60", "transparency_threshold": 50,
                     "risk_tolerance": 50, "democratic_tendency": None},
@@ -434,8 +436,8 @@ def test_macro_jury_hedging_juror_is_asked_twice_then_values_stay():
     assert res["values"] == current and res["mandate"] == "" and res["retried"] is True
     assert "no usable reply" in res["values_kept"]
     assert bad["result"] is None and len(bad["review_attempts"]) == 2
-    assert bad["attempts"] == 6 and len(bad["errors"]) == 6 and "about 60" in bad["errors"][0]
-    assert all(t["attempts"] == 3 and t["result"] is None for t in bad["review_attempts"])
+    assert bad["attempts"] == 2 and len(bad["errors"]) == 2 and "about 60" in bad["errors"][0]
+    assert all(t["attempts"] == 1 and t["result"] is None for t in bad["review_attempts"])
     json.dumps(res)
 
 
@@ -454,7 +456,7 @@ def test_macro_jury_first_ask_fails_second_is_used():
 
 
 def test_macro_jury_unusable_first_reply_is_retried():
-    model = _seq("kimi-mjjunk", ["not json", "not json", "not json", _v(40)])
+    model = _seq("kimi-mjjunk", ["not json", _v(40)])
     res = MacroJury([model]).deliberate("US", {a: 50 for a in AXES}, "s")
     assert res["values"] == {a: 40 for a in AXES} and res["retried"] is True
     assert [t["result"] is None for t in res["per_juror"][model]["review_attempts"]] == [True, False]

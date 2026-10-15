@@ -100,6 +100,7 @@ def rate_lab(lab_cfg: dict, run_id: str = "rate_charters"):
     obj, attempts = complete_json(
         lab_cfg["model"], _SYSTEM, _user(lab_cfg["charter_name"], text),
         validate=_validate, max_tokens=MAX_TOKENS, cache_system=False,
+        effort=lab_cfg.get("effort"),   # the seat's own setting
         purpose="charter_rating", run_id=run_id)
     if obj is None:
         errors = [str(a.get("error")) for a in attempts if isinstance(a, dict) and a.get("error")]

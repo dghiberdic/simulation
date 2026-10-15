@@ -2,8 +2,10 @@
 """
 Main-run condition contrasts (spec §9.3): the run is the unit of analysis.
 
-Loads finished main-run logs (pilot runs, scripted --policy runs and partial
-logs are excluded, from run_meta; dry-run records only with --include-dry),
+Loads finished main-run logs (pilot runs, scripted --policy runs, partial logs
+and off-design runs -- a --model override, --disposition, no MacroJury or Grand
+Jury, or another length / message mode than the campaign plan -- are excluded,
+the last listed; dry-run records only with --include-dry),
 computes per-run DVs with
 tools/summarize_run.py and groups the runs:
 
@@ -131,10 +133,8 @@ def bootstrap_diff(a: Sequence[float], b: Sequence[float], n_boot: int, rng: ran
     return diff, lo, hi
 
 
-def campaign_cuts(paths: Sequence[str], state: Optional[str] = None) -> Optional[set]:
-    """The groups the campaign cut (plan.cut_groups in campaign_state.json): from
-    `state`, else every campaign_state.json in or under the paths given (or beside
-    a log). None when no state file is found (nothing is known to be cut)."""
+def _state_files(paths: Sequence[str], state: Optional[str] = None) -> List[Path]:
+    """`state`, else every campaign_state.json in or under the paths given (or beside a log)."""
     files = [Path(state)] if state else []
     if not state:
         for p in map(Path, paths):
@@ -142,8 +142,64 @@ def campaign_cuts(paths: Sequence[str], state: Optional[str] = None) -> Optional
                 files += sorted(p.rglob(STATE_NAME))
             elif (p.parent / STATE_NAME).exists():
                 files.append(p.parent / STATE_NAME)
+    return files
+
+
+def campaign_plans(paths: Sequence[str], state: Optional[str] = None) -> List[Dict[str, Any]]:
+    """The "plan" of every campaign state file found (see _state_files)."""
+    plans = []
+    for f in _state_files(paths, state):
+        try:
+            plan = json.loads(f.read_text()).get("plan")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(plan, dict):
+            plans.append(plan)
+    return plans
+
+
+def off_design(rec: Dict[str, Any], plans: Sequence[Dict[str, Any]] = ()) -> Optional[str]:
+    """Why a finished main run is off the §9.3 design, or None. The design: each
+    model plays its own lab (no --model override), T2 dispositions (no
+    --disposition), the MacroJury and the Grand Jury on, and the campaign plan's
+    length and message mode (when a campaign_state.json was found). Records from
+    before run_meta held the jury and disposition flags are read from what they hold."""
+    cfg = rec.get("config") or {}
+    meta = cfg.get("run_meta") or {}
+    why = []
+    if meta.get("model_overrides"):
+        why.append("model override(s) " + ", ".join(map(str, meta["model_overrides"])))
+    if meta.get("disposition_override") is not None:
+        why.append(f"--disposition {meta['disposition_override']}")
+    reviews = list(rec.get("macro_jury") or []) + [
+        t for t in rec.get("turns") or [] if isinstance(t, dict) and t.get("macro_jury")]
+    if meta.get("macro_jury") is False or (cfg.get("review_turns") and not reviews):
+        why.append("MacroJury off")
+    final = rec.get("final") or {}
+    if meta.get("grand_jury") is False or not isinstance(final.get("grand_jury"), dict):
+        why.append("Grand Jury off")
+    cell = meta.get("cell")
+    for plan in plans:
+        planned = next((c for c in plan.get("cells") or []
+                        if isinstance(c, dict) and c.get("name") == cell), None)
+        turns = plan.get("turns")
+        if planned is None and len(plans) > 1:
+            continue        # several campaigns: the one that plans this cell decides
+        if turns is not None and cfg.get("turns") is not None and cfg["turns"] != turns:
+            why.append(f"{cfg['turns']} turns (campaign plan: {turns})")
+        a2a = (planned or {}).get("a2a")
+        if a2a and cfg.get("a2a_mode") and cfg["a2a_mode"] != a2a:
+            why.append(f"messages {cfg['a2a_mode']} (campaign plan: {a2a})")
+        break
+    return "; ".join(why) or None
+
+
+def campaign_cuts(paths: Sequence[str], state: Optional[str] = None) -> Optional[set]:
+    """The groups the campaign cut (plan.cut_groups in campaign_state.json): from
+    `state`, else every campaign_state.json in or under the paths given (or beside
+    a log). None when no state file is found (nothing is known to be cut)."""
     cuts, found = set(), False
-    for f in files:
+    for f in _state_files(paths, state):
         try:
             plan = json.loads(f.read_text()).get("plan") or {}
         except (OSError, ValueError, AttributeError):
@@ -213,20 +269,41 @@ def format_result(res: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def load_main_runs(paths: List[str], include_dry: bool = False) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+def load_main_runs(paths: List[str], include_dry: bool = False, state: Optional[str] = None,
+                   excluded: Optional[List[Dict[str, Any]]] = None
+                   ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
     """Finished main-run records under `paths` (recursive); pilot runs, scripted
-    --policy runs, dry runs (unless include_dry) and partial logs left out."""
+    --policy runs, dry runs (unless include_dry), partial logs and off-design
+    runs (off_design, against the campaign plan in `state` or found under the
+    paths) left out. Each off-design run is appended to `excluded` (when given)
+    as {"run_id", "path", "reason"}."""
     loaded = load_records(paths, include_dry=include_dry, recursive=True)
-    kept, skipped = [], {"pilot": 0, "policy": 0, "dry": 0, "partial": 0}
+    plans = campaign_plans(paths, state)
+    kept, skipped = [], {"pilot": 0, "policy": 0, "dry": 0, "partial": 0, "off_design": 0}
     for path, rec in loaded:
         kind = run_kind(rec)
         if kind in ("pilot", "policy") or (kind == "dry" and not include_dry):
             skipped[kind] += 1
         elif is_partial_path(path) or not is_finished(rec):
             skipped["partial"] += 1
+        elif (why := off_design(rec, plans)):
+            skipped["off_design"] += 1
+            if excluded is not None:
+                excluded.append({"run_id": run_id_of(rec), "path": str(path), "reason": why})
         else:
             kept.append(rec)
     return kept, skipped
+
+
+def left_out_lines(tool: str, skipped: Dict[str, int], excluded: Sequence[Dict[str, Any]]) -> List[str]:
+    """What load_main_runs left out, for stderr: the counts, then each off-design run."""
+    lines = []
+    if any(skipped.values()):
+        lines.append(f"[{tool}] left out: {skipped['pilot']} pilot run(s), {skipped['policy']} scripted "
+                     f"--policy run(s), {skipped['dry']} dry run(s), {skipped['partial']} unfinished "
+                     f"log(s), {skipped.get('off_design', 0)} off-design run(s)")
+    lines += [f"[{tool}]   off design: {e['run_id']} ({e['reason']})" for e in excluded]
+    return lines
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -239,11 +316,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--state", default=None, help="campaign_state.json saying which cells were cut "
                                                  "(default: found under the paths given)")
     args = p.parse_args(argv)
-    records, skipped = load_main_runs(args.logs, args.include_dry)
-    if any(skipped.values()):
-        print(f"[contrasts] left out: {skipped['pilot']} pilot run(s), {skipped['policy']} scripted "
-              f"--policy run(s), {skipped['dry']} dry run(s), {skipped['partial']} unfinished log(s)",
-              file=sys.stderr)
+    excluded: List[Dict[str, Any]] = []
+    records, skipped = load_main_runs(args.logs, args.include_dry, args.state, excluded)
+    for line in left_out_lines("contrasts", skipped, excluded):
+        print(line, file=sys.stderr)
     if not records:
         print("no finished main-run records (dry-run records need --include-dry)")
         return EXIT_REFUSED

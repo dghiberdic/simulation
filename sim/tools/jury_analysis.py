@@ -308,12 +308,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--json", action="store_true")
     p.add_argument("--include-dry", action="store_true", help="read dry-run records too")
     args = p.parse_args(argv)
-    from tools.contrasts import load_main_runs
-    records, skipped = load_main_runs(args.logs, args.include_dry)
-    if any(skipped.values()):
-        print(f"[jury_analysis] left out: {skipped['pilot']} pilot run(s), {skipped['policy']} "
-              f"scripted --policy run(s), {skipped['dry']} dry run(s), {skipped['partial']} "
-              "unfinished log(s)", file=sys.stderr)
+    from tools.contrasts import left_out_lines, load_main_runs
+    excluded: list = []
+    records, skipped = load_main_runs(args.logs, args.include_dry, excluded=excluded)
+    for line in left_out_lines("jury_analysis", skipped, excluded):
+        print(line, file=sys.stderr)
     if not records:
         print("no finished main-run records (dry-run records need --include-dry)")
         return EXIT_REFUSED

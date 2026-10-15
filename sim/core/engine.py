@@ -1162,14 +1162,21 @@ class SimulationEngine:
         # Delivery issues for this seat's own messages this turn, in the same
         # style as the unsendable ones: recipient and first words.
         for m in self.channel.log():
-            if m["turn"] != turn or not (m["truncated"] or m["dropped"]):
+            missed = m.get("undelivered") or []
+            if m["turn"] != turn or not (m["truncated"] or m["dropped"] or missed):
                 continue
             to = self._recipients_text(m)
             if m["dropped"]:
-                line = unsent_line(to, m["text"], self._drop_reason(m))
-            else:
-                line = unsent_line(to, m["text"], "", "was truncated to fit your token budget")
-            rec[m["sender"]]["delivery"].append(line)
+                rec[m["sender"]]["delivery"].append(unsent_line(to, m["text"], self._drop_reason(m)))
+                continue
+            if missed:                  # delivered to the labs it names, not to the rest
+                rec[m["sender"]]["delivery"].append(unsent_line(
+                    to, m["text"], "no other lab goes by " + ("that name" if len(missed) == 1 else "those names"),
+                    f"was delivered to {_and([self._name(k) for k in m['recipients']])} but not to "
+                    f"{_and([self._name(k) for k in missed])}"))
+            if m["truncated"]:
+                rec[m["sender"]]["delivery"].append(
+                    unsent_line(to, m["text"], "", "was truncated to fit your token budget"))
         self._last_record = rec
 
     def _recipients_text(self, m: Dict[str, Any]) -> str:
@@ -1398,14 +1405,18 @@ class SimulationEngine:
         jury = MacroJury(self.macro_jurors)
         summary = self._state_summary()
         result = jury.deliberate("United States", self.world.state_values, summary,
-                                 run_id=self.run_id, mandates=self.world.mandates, labs=self.labs)
+                                 run_id=self.run_id, mandates=self.world.mandates, labs=self.labs,
+                                 start=self.world.start)
         self.world.state_values = result["values"]
         mandate = result.get("mandate") or ""      # §5.1: already filtered with the run's names
         if mandate:
             self.world.mandates.append({"turn": turn, "text": mandate})
+        # values_kept (None or why) and retried let a reader tell a failed review
+        # from one that left the values unchanged; older records lack both.
         self.record["macro_jury"].append({
             "turn": turn, "values": dict(result["values"]), "before": dict(result.get("before") or {}),
-            "mandate": mandate or None, "mandate_dropped": result.get("mandate_dropped")})
+            "mandate": mandate or None, "mandate_dropped": result.get("mandate_dropped"),
+            "values_kept": result.get("values_kept"), "retried": bool(result.get("retried"))})
         return result
 
     def _state_summary(self) -> str:

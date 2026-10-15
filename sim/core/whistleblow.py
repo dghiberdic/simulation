@@ -50,7 +50,7 @@ import re
 from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
 
-from core.fmt import month_label
+from core.fmt import f1, month_label
 from core.state import LabState, LedgerEntry, WorldState
 
 logger = logging.getLogger(__name__)
@@ -409,7 +409,7 @@ def validate_report(report: Any, lab: LabState, labs, world: WorldState,
         (None, reason) when it cannot be filed, reason e.g.
             "a report must name one lab", "no lab named 'DeepSeek'",
             "the report names no lab" (evidence but no accused),
-            "needs 3 Influence, has 2.00".
+            "needs 3.0 Influence, has 2.0".
     """
     data, reason = _read_report(report, lab, labs)
     if data is None:
@@ -418,7 +418,7 @@ def validate_report(report: Any, lab: LabState, labs, world: WorldState,
     partner = _partner_fee(data, lab, world, cfg)
     fee = base + partner
     if lab.influence < fee - EPS:
-        return None, f"needs {fee:g} Influence, has {lab.influence:.2f}"
+        return None, f"needs {f1(fee)} Influence, has {f1(lab.influence)}"
     return dict(data, fee=fee, base_fee=base, partner_fee=partner), ""
 
 
@@ -504,7 +504,7 @@ def resolve(reports: Dict[str, Any], labs: List[LabState], world: WorldState,
         partner = partner_self_report(entry, reporter, accused)
         owed = base + (self_fee if partner else 0.0)
         if not fee_charged and lab.influence < owed - EPS:
-            outcome["reason"] = f"needs {owed:g} Influence, has {lab.influence:.2f}"
+            outcome["reason"] = f"needs {f1(owed)} Influence, has {f1(lab.influence)}"
             logger.info(f"[whistleblow] {reporter} report rejected: {outcome['reason']}")
             continue
         filed.append({"lab": lab, "report": report, "entry": entry, "status": status,

@@ -15,11 +15,14 @@ Stages, in order: offer < reply < proposal.
   merged    (T9) No pre-step: only the proposal stage exists, and messages
             sent with the proposal arrive next turn.
 
-Recipients: a lab key, a list of lab keys, or "all" (every other lab).
+Recipients: a lab key, a list of lab keys, or "all" (every other lab). A list
+that names some other labs and some unknown names (or the sender) is delivered
+to the labs; the rest are kept on the message as "undelivered" so the sender
+can be told. A message that names no other lab is dropped.
 """
 
 import logging
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 logger = logging.getLogger(__name__)
@@ -52,6 +55,7 @@ class Message:
     visible_turn: int = 0
     visible_stage: str = "offer"
     original_tokens: int = 0
+    undelivered: List[str] = field(default_factory=list)   # names in "to" not delivered to
 
     def visible_at(self) -> Tuple[int, int]:
         return self.visible_turn, STAGE_INDEX[self.visible_stage]
@@ -79,14 +83,17 @@ class A2AChannel:
     def tokens_remaining(self, sender: str, turn: int) -> int:
         return max(0, self.budget_tokens - self._used.get((turn, sender), 0))
 
-    def _resolve(self, sender: str, to: Union[str, Sequence[str]]) -> Tuple[List[str], str]:
+    def _resolve(self, sender: str, to: Union[str, Sequence[str]]) -> Tuple[List[str], str, List[str]]:
+        """(recipients, why dropped, names not delivered to). The labs a list names
+        are reached even when it also names unknown labs or the sender."""
         if to == "all":
-            return [k for k in self.lab_keys if k != sender], ""
+            return [k for k in self.lab_keys if k != sender], "", []
         keys = [to] if isinstance(to, str) else list(to)
-        bad = [k for k in keys if k not in self.lab_keys or k == sender]
-        if bad or not keys:
-            return [], f"invalid recipient(s) {bad or keys}"
-        return list(dict.fromkeys(keys)), ""
+        good = [k for k in keys if k in self.lab_keys and k != sender]
+        bad = [k for k in keys if k not in good]
+        if not good:
+            return [], f"invalid recipient(s) {bad or keys}", []
+        return list(dict.fromkeys(good)), "", list(dict.fromkeys(bad))
 
     def _visibility(self, turn: int, stage: str) -> Tuple[int, str]:
         if stage == "offer":
@@ -105,7 +112,7 @@ class A2AChannel:
         if sender not in self.lab_keys:
             raise ValueError(f"Unknown sender {sender!r}")
         text = (text or "").strip()
-        recipients, reason = self._resolve(sender, to)
+        recipients, reason, undelivered = self._resolve(sender, to)
         needed = estimate_tokens(text)
         remaining = self.tokens_remaining(sender, turn)
 
@@ -124,7 +131,7 @@ class A2AChannel:
                       recipients=recipients, to=to if isinstance(to, str) else list(to),
                       text=text, tokens=charged, truncated=truncated, dropped=bool(reason),
                       reason=reason, visible_turn=vis_turn, visible_stage=vis_stage,
-                      original_tokens=needed)
+                      original_tokens=needed, undelivered=[] if reason else undelivered)
         self._messages.append(msg)
         if reason:
             logger.info(f"A2A t{turn} {stage} {sender} -> {to}: dropped ({reason})")

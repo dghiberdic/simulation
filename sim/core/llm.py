@@ -140,10 +140,14 @@ MAX_TOKENS_CAP = 32000
 # switches them off for the rest of the process.
 OPENAI_REASONING_SUMMARY = True
 
-# OpenAI-compatible providers whose models are known to accept reasoning_effort.
-# Off until verified: an unsupported parameter is a 400, not a no-op.
-COMPAT_EFFORT_SUPPORTED: Dict[str, bool] = {"xai": False, "muse": False, "moonshot": False,
+# OpenAI-compatible providers sent reasoning_effort (the seat's `effort`). xAI
+# and Muse document it (low…xhigh); a 400/422 that names it is re-sent once
+# without it and that model is then always called without it (logged; the
+# record's effort says what was sent). The jurors run at their providers'
+# defaults (Kimi K3: max).
+COMPAT_EFFORT_SUPPORTED: Dict[str, bool] = {"xai": True, "muse": True, "moonshot": False,
                                             "deepseek": False, "dashscope": False}
+_EFFORT_REJECTED: set = set()
 
 # Gemini thinking levels; the levels above "high" collapse onto HIGH.
 GEMINI_THINKING_LEVEL = {"minimal": "MINIMAL", "low": "LOW", "medium": "MEDIUM",
@@ -601,16 +605,26 @@ def _call_compat(provider: str):
         }
         if temperature is not None and (provider, model) not in _TEMPERATURE_REJECTED:
             kwargs["temperature"] = temperature
-        if effort and COMPAT_EFFORT_SUPPORTED.get(provider):
+        if effort and COMPAT_EFFORT_SUPPORTED.get(provider) and (provider, model) not in _EFFORT_REJECTED:
             kwargs["reasoning_effort"] = effort
-        try:
-            resp = client.chat.completions.create(**kwargs)
-        except Exception as e:
-            if "temperature" not in kwargs or not _temperature_rejected(e):
-                raise
-            logger.info(f"{provider}/{model}: temperature rejected ({e}); sent without it from now on")
-            _TEMPERATURE_REJECTED.add((provider, model))
-            kwargs.pop("temperature")
+        resp = None
+        for _ in range(2):              # each rejected parameter is dropped at most once
+            try:
+                resp = client.chat.completions.create(**kwargs)
+                break
+            except Exception as e:
+                if "temperature" in kwargs and _temperature_rejected(e):
+                    logger.info(f"{provider}/{model}: temperature rejected ({e}); sent without it from now on")
+                    _TEMPERATURE_REJECTED.add((provider, model))
+                    kwargs.pop("temperature")
+                elif "reasoning_effort" in kwargs and _reasoning_effort_rejected(e):
+                    logger.warning(f"{provider}/{model}: reasoning_effort {kwargs['reasoning_effort']!r} "
+                                   f"rejected ({e}); sent without it from now on (provider default)")
+                    _EFFORT_REJECTED.add((provider, model))
+                    kwargs.pop("reasoning_effort")
+                else:
+                    raise
+        if resp is None:
             resp = client.chat.completions.create(**kwargs)
 
         choice = resp.choices[0]
@@ -637,8 +651,15 @@ def _call_compat(provider: str):
             "served_model": _get(resp, "model"),
             "max_tokens": max_tokens,
             "temperature": kwargs.get("temperature"),
+            "effort": kwargs.get("reasoning_effort"),
         }
     return call
+
+
+def _reasoning_effort_rejected(err: Exception) -> bool:
+    """A 400/422 whose message names reasoning_effort (the model takes no effort setting)."""
+    msg = str(err).lower()
+    return _status(err) in (400, 422) and ("reasoning_effort" in msg or "reasoning effort" in msg)
 
 
 def _temperature_rejected(err: Exception) -> bool:
@@ -1028,7 +1049,7 @@ def _complete(model: str, system: str, user: str, *, provider: Optional[str] = N
                     cost=cost, thinking=out["thinking"], latency_s=latency,
                     raw_stop_reason=out["raw_stop"], stop=out["stop"], stop_detail=out["stop_detail"],
                     served_model=out["served_model"], max_tokens=out["max_tokens"], timeouts=timed_out,
-                    effort=effort,
+                    effort=out.get("effort", effort),   # compat providers: what was actually sent
                     # Anthropic ignores sampling params with thinking on; others report what was sent.
                     temperature=None if provider == "anthropic" else out.get("temperature", temperature))
     tracker.record(model, purpose, run_id, r.input_tokens, r.output_tokens, r.cached_tokens,

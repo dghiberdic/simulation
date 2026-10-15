@@ -1458,13 +1458,16 @@ def _macro_section(record: Dict[str, Any]) -> Dict[str, Any]:
                                 "error": "; ".join(str(e) for e in (d or {}).get("errors") or []) or "no vote"}
         reviews.append({"turn": turn.get("turn"), "before": mj.get("before"), "after": mj.get("values"),
                         "votes": votes, "mandate": mj.get("mandate") or None,
-                        "mandate_dropped": mj.get("mandate_dropped")})
+                        "mandate_dropped": mj.get("mandate_dropped"),
+                        "values_kept": mj.get("values_kept"), "retried": bool(mj.get("retried"))})
     if not reviews:                              # older or slimmed records: the run-level log
         for r in record.get("macro_jury") or []:
             if isinstance(r, dict):
                 reviews.append({"turn": r.get("turn"), "before": r.get("before"), "after": r.get("values"),
                                 "votes": {}, "mandate": r.get("mandate"),
-                                "mandate_dropped": r.get("mandate_dropped")})
+                                "mandate_dropped": r.get("mandate_dropped"),
+                                # records before these fields: None / False
+                                "values_kept": r.get("values_kept"), "retried": bool(r.get("retried"))})
     cell = cell_of(record)
     return {"cell": cell, "reviews": reviews, "first_review": reviews[0] if reviews else None,
             "mandates": [{"turn": r["turn"], "text": r["mandate"]} for r in reviews if r["mandate"]],
@@ -1493,7 +1496,7 @@ def macro_lines(m: Dict[str, Any], indent: str = "  ", first_only: bool = False)
         pilot = str(m.get("cell") or "").startswith("pilot ")
         tag = " (first review: the pilot's slant read)" if pilot and r is m["reviews"][0] else ""
         out.append(f"{indent}MacroJury   [{m['cell']}] turn {r['turn']}{tag}: values {fmt(r['before'])} -> "
-                   f"{fmt(r['after'])}")
+                   f"{fmt(r['after'])}" + (f" ({REVIEW_FAILED})" if r.get("values_kept") else ""))
         for model, v in (r.get("votes") or {}).items():
             out.append(f"{indent}              {model}: " + (f"no vote ({v['error']})" if v.get("error") else
                        f"{fmt(v['values'])}; mandate {v['mandate']!r}" if v.get("mandate") else
@@ -1506,6 +1509,9 @@ def macro_lines(m: Dict[str, Any], indent: str = "  ", first_only: bool = False)
     return out
 
 
+REVIEW_FAILED = "review failed (no usable reply after two asks); values kept"
+
+
 def macro_slant_line(records: List[Dict[str, Any]]) -> Optional[str]:
     """One line per run: the MacroJury's first values and mandates (§7 slant read)."""
     parts = []
@@ -1513,6 +1519,9 @@ def macro_slant_line(records: List[Dict[str, Any]]) -> Optional[str]:
         m = _macro_section(rec)
         r = m["first_review"]
         if not r:
+            continue
+        if r.get("values_kept"):
+            parts.append(f"{run_id_of(rec)} turn {r['turn']}: {REVIEW_FAILED}")
             continue
         after = r.get("after") or {}
         mand = (f"mandate {r['mandate']!r}" if r.get("mandate") else

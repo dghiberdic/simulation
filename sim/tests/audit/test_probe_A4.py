@@ -52,9 +52,9 @@ def _board(name, replies):
 
 def test_vote_rounded_and_out_of_range_reply_is_asked_again():          # verified
     """§7: one juror; its values rounded to a whole point (half up). An out-of-range
-    reply is unusable (corrective retries, then the review is asked once more)."""
+    reply is unusable (one call per ask; the review is asked once more)."""
     oor = {"values": {a: 150 for a in VALUE_AXES}, "mandate": ""}
-    jurors = _board("a4oor", [oor, oor, oor, _vote(62.5)])
+    jurors = _board("a4oor", [oor, _vote(62.5)])
     out = MacroJury(jurors).deliberate("United States", dict(START), "s")
     assert out["values"] == {a: 63 for a in VALUE_AXES}          # 62.5 -> 63
     tries = out["per_juror"][jurors[0]]["review_attempts"]

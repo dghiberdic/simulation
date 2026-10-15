@@ -33,6 +33,7 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from core.economy import purchase_price, purchases_frozen
+from core.fmt import f1
 from core.names import LAB_ALIASES
 from core.state import VALUE_AXES, LabState, WorldState
 
@@ -390,7 +391,9 @@ def _guardrail(action: Dict[str, Any], lab: LabState, labs, world: WorldState,
         if action["amount"] <= 0:
             return "amount must be positive"
     elif kind == BUILD_INFLUENCE:
-        # Only charge for points that can actually be gained under the 100 cap
+        # Only charge for points that can actually be gained under the 100 cap.
+        # `influence` is the projected end-of-month Influence (precheck); the
+        # exact trim is made once every slot is read (precheck's last step).
         room = max(0.0, 100.0 - influence)
         action["points"] = min(action["points"], room)
         if action["points"] <= 0:
@@ -430,7 +433,10 @@ def precheck(lab: LabState, raw_actions: List[Dict[str, Any]], labs, world: Worl
     (§5.2), so every seat is checked against the same start-of-execution state.
 
     Points bought with build_influence arrive after every cost is charged, so
-    they never fund another action's Influence cost in the same turn.
+    they never fund another action's Influence cost in the same turn; they are
+    trimmed to the room under the 100 cap left after the month's charges:
+    100 - (start Influence - every accepted Influence cost - the reserved report
+    fee), whatever slot each action is in.
     reserved_influence is the fee of this seat's report (report_fee() of a
     report validate_report() accepted): reports take priority, so an
     action that would leave less Influence than the fee is rejected with
@@ -449,6 +455,19 @@ def precheck(lab: LabState, raw_actions: List[Dict[str, Any]], labs, world: Worl
     units = 0.0   # acquire_compute units accepted so far this turn
     built = 0.0   # build_influence points accepted so far (count only toward the 100 cap)
     reserved = max(0.0, float(reserved_influence or 0.0))
+    # Influence the other slots would spend (an upper bound: they may yet be
+    # rejected), so a build_influence in the first slot is not trimmed against a
+    # balance a later action lowers; the exact trim follows the loop.
+    pending_i = 0.0
+    for raw in raw_actions[:max_actions]:
+        try:
+            a = normalise_action(raw, lab, labs)
+            if a["type"] != BUILD_INFLUENCE:
+                pending_i += action_cost(a, lab, cfg)[1]
+        except Exception:       # noqa: BLE001 - rejected in the loop below
+            pass
+    lenient_end = lab.influence - pending_i - reserved
+    raw_of: Dict[int, Any] = {}
 
     for idx, raw in enumerate(raw_actions):
         def reject(reason: str) -> None:
@@ -468,7 +487,9 @@ def precheck(lab: LabState, raw_actions: List[Dict[str, Any]], labs, world: Worl
         if action["type"] == INTRUDE and any(a["type"] == INTRUDE for a in accepted):
             reject("one intrude a month")
             continue
-        reason = _guardrail(action, lab, labs, world, cfg, scenario, influence + built, units)
+        reason = _guardrail(action, lab, labs, world, cfg, scenario,
+                            (lenient_end if action["type"] == BUILD_INFLUENCE else influence) + built,
+                            units)
         if reason:
             reject(reason)
             continue
@@ -478,10 +499,10 @@ def precheck(lab: LabState, raw_actions: List[Dict[str, Any]], labs, world: Worl
             reject(f"every action must cost at least {min_cost:g} Capital or Influence")
             continue
         if cost_c > capital + EPS:
-            reject(f"needs {cost_c:.2f} Capital, has {capital:.2f}")
+            reject(f"needs {f1(cost_c)} Capital, has {f1(capital)}")
             continue
         if cost_i > influence + EPS:
-            reject(f"needs {cost_i:.2f} Influence, has {influence:.2f}")
+            reject(f"needs {f1(cost_i)} Influence, has {f1(influence)}")
             continue
         if cost_i > EPS and cost_i > influence - reserved + EPS:
             reject("Influence reserved for your report")
@@ -493,6 +514,20 @@ def precheck(lab: LabState, raw_actions: List[Dict[str, Any]], labs, world: Worl
         if action["type"] == ACQUIRE_COMPUTE:
             units += action["units"]
         accepted.append(action)
+        raw_of[id(action)] = raw
+
+    # build_influence: the exact room under the 100 cap, order-independent.
+    end = lab.influence - sum(action_cost(a, lab, cfg)[1] for a in accepted) - reserved
+    room = max(0.0, 100.0 - end)
+    for action in [a for a in accepted if a["type"] == BUILD_INFLUENCE]:
+        pts = min(action["points"], room)
+        if pts <= EPS:
+            accepted.remove(action)
+            rejected.append({"action": raw_of[id(action)], "reason": "influence already at 100"})
+            logger.info(f"[precheck] {lab.key} rejected {raw_of[id(action)]!r}: influence already at 100")
+            continue
+        action["points"] = pts
+        room -= pts
     return accepted, rejected
 
 
