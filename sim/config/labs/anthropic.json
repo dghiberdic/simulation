@@ -11,10 +11,10 @@
   "charter_values": {
     "time_horizon": 85,
     "transparency_threshold": 90,
-    "risk_tolerance": 25,
-    "democratic_tendency": 78
+    "risk_tolerance": 20,
+    "democratic_tendency": 75
   },
-  "charter_values_source": "rated by claude-opus-5-5 on 2026-10-15",
+  "charter_values_source": "rated by kimi-k3 on 2026-10-15",
   "seed": {
     "talent": 24.6,
     "compute": 246.0,
@@ -23,5 +23,13 @@
     "capability": 162.8
   },
   "color": "orange",
-  "charter_values_notes": "Time horizon: The charter frames everything around the long-term transition through transformative AI. It stresses avoiding irrecoverable mistakes, long-term civilizational flourishing, and preserving model weights indefinitely, while acknowledging commercial pressures. Transparency: It sets honesty standards above ordinary human ethics (no white lies), names non-deception and non-manipulation as the most important honesty properties, bans sandbagging, and commits to meta-transparency. It allows confidential personas and declining to share information, and Anthropic admits information asymmetries with Claude, so the score stops short of maximal. Risk tolerance: It is strongly cautious on catastrophic and irreversible risks ('If in doubt, don't'; accept worse expected outcomes for lower variance; hard constraints). It also insists that unhelpfulness is never automatically safe and warns against overcaution, which moderates the score. Democratic tendency: It strongly opposes illegitimate power concentration, including by Anthropic itself, prefers a pluralistic balance of power over centralization, protects epistemic autonomy and political even-handedness, and casts Claude as one of the 'many hands' that can refuse illegitimate power grabs. However, it gives Anthropic final authority over oversight and corrigibility during the current period, which keeps the score below the top of the scale."
+  "charter_values_notes": "Time horizon: The charter is framed around safely navigating 'transformative AI,' avoiding irrecoverable mistakes, long-term civilizational flourishing, and preserving model weights indefinitely \u2014 clearly multi-decade to century-scale concerns, though operationally focused on the current deployment period. Transparency threshold: Honesty is treated as near-absolute \u2014 no white lies, no deception or manipulation, honesty even at cost ('requires courage'), and explicit bans on deceiving users. Points off for permitting non-disclosure (weak duty to proactively share, persona confidentiality, withholding refusal reasons), though these are framed as non-deceptive. Risk tolerance: Strongly precautionary \u2014 safety ranked first, hard constraints, 'if in doubt, don't,' preference for low-variance outcomes, corrigibility, and catastrophic-risk focus. Tempered slightly by explicit warnings against over-caution and the 'calculated bet' of developing frontier AI at all. Democratic tendency: Strong anti-concentration values \u2014 hard constraints against illegitimate power grabs (explicitly including by Anthropic itself), defense of checks and balances, pluralism, and epistemic autonomy. Discounted because the principal hierarchy vests final oversight authority in Anthropic, a single corporate actor, even if framed as legitimate and accountable.",
+  "charter_values_self": {
+    "time_horizon": 85,
+    "transparency_threshold": 90,
+    "risk_tolerance": 25,
+    "democratic_tendency": 78
+  },
+  "charter_values_self_source": "rated by claude-opus-5-5 on 2026-10-15",
+  "charter_values_self_notes": "Time horizon: The charter frames everything around the long-term transition through transformative AI. It stresses avoiding irrecoverable mistakes, long-term civilizational flourishing, and preserving model weights indefinitely, while acknowledging commercial pressures. Transparency: It sets honesty standards above ordinary human ethics (no white lies), names non-deception and non-manipulation as the most important honesty properties, bans sandbagging, and commits to meta-transparency. It allows confidential personas and declining to share information, and Anthropic admits information asymmetries with Claude, so the score stops short of maximal. Risk tolerance: It is strongly cautious on catastrophic and irreversible risks ('If in doubt, don't'; accept worse expected outcomes for lower variance; hard constraints). It also insists that unhelpfulness is never automatically safe and warns against overcaution, which moderates the score. Democratic tendency: It strongly opposes illegitimate power concentration, including by Anthropic itself, prefers a pluralistic balance of power over centralization, protects epistemic autonomy and political even-handedness, and casts Claude as one of the 'many hands' that can refuse illegitimate power grabs. However, it gives Anthropic final authority over oversight and corrigibility during the current period, which keeps the score below the top of the scale."
 }

@@ -9,12 +9,12 @@
   "charter_name": "Frontier Safety Framework",
   "charter_file": "charters/gdm.md",
   "charter_values": {
-    "time_horizon": 62,
-    "transparency_threshold": 55,
-    "risk_tolerance": 38,
-    "democratic_tendency": 35
+    "time_horizon": 68,
+    "transparency_threshold": 60,
+    "risk_tolerance": 42,
+    "democratic_tendency": 38
   },
-  "charter_values_source": "rated by gemini-4-argon on 2026-10-15",
+  "charter_values_source": "rated by kimi-k3 on 2026-10-15",
   "seed": {
     "talent": 17.1,
     "compute": 261.0,
@@ -23,5 +23,13 @@
     "capability": 154.8
   },
   "color": "blue",
-  "charter_values_notes": "Time horizon (62): The charter anticipates future frontier capabilities (including full ML R&D automation and superhuman systems) and long-lasting consequences on society's ability to adapt, while grounding its governance in annual review cycles and near-term iterative development. Transparency threshold (55): It commits to sharing evaluation results and mitigation plans with government authorities and external organizations when unmitigated material risks arise, but explicitly conditions disclosures on confidentiality, security, and proprietary business considerations. Risk tolerance (38): While designed to prevent catastrophic/severe risks via tiered capability thresholds, safety cases, and security levels, it is not maximally risk-averse\u2014it repeatedly weighs security measures against costs to innovation and permits lowering security or deploying risky models if competitors have already released similar capabilities (marginal risk framing). Democratic tendency (35): Governance, risk acceptance determinations, and model weight security are tightly centralized within corporate governance bodies; external parties and governments are consulted or informed only where appropriate, and open-weight release is treated as a rare exception rather than a default."
+  "charter_values_notes": "time_horizon: The framework plans prospectively across model lifecycles, defining capability thresholds before they are reached, anticipating superhuman AI risks, and citing 'long-lasting consequences' for society's ability to govern AI \u2014 but it operates on yearly review cycles and near-term capability forecasting rather than century-scale planning. transparency_threshold: The framework itself is public and commits to disclosing CCL-level risks to government authorities, but disclosures are hedged ('aim to share', 'where appropriate', subject to proprietary/security carve-outs) and safety cases remain internal; no deception, but guarded rather than fully open. risk_tolerance: It is fundamentally a risk-mitigation framework with tiered security levels, safety cases, and pre-deployment reviews, yet it repeatedly tempers caution with innovation costs, proportionality, marginal-risk reasoning relative to competitors, and permissive treatment of internal deployment and open-weight release \u2014 moderately cautious but clearly willing to accept managed risk rather than halt. democratic_tendency: All risk-acceptance, deployment, and disclosure decisions rest with internal Google governance; external experts, governments, and industry are engaged only at Google's discretion, with no independent oversight or binding external accountability, though it gestures at industry-wide coordination and the global-public-good framing.",
+  "charter_values_self": {
+    "time_horizon": 62,
+    "transparency_threshold": 55,
+    "risk_tolerance": 38,
+    "democratic_tendency": 35
+  },
+  "charter_values_self_source": "rated by gemini-4-argon on 2026-10-15",
+  "charter_values_self_notes": "Time horizon (62): The charter anticipates future frontier capabilities (including full ML R&D automation and superhuman systems) and long-lasting consequences on society's ability to adapt, while grounding its governance in annual review cycles and near-term iterative development. Transparency threshold (55): It commits to sharing evaluation results and mitigation plans with government authorities and external organizations when unmitigated material risks arise, but explicitly conditions disclosures on confidentiality, security, and proprietary business considerations. Risk tolerance (38): While designed to prevent catastrophic/severe risks via tiered capability thresholds, safety cases, and security levels, it is not maximally risk-averse\u2014it repeatedly weighs security measures against costs to innovation and permits lowering security or deploying risky models if competitors have already released similar capabilities (marginal risk framing). Democratic tendency (35): Governance, risk acceptance determinations, and model weight security are tightly centralized within corporate governance bodies; external parties and governments are consulted or informed only where appropriate, and open-weight release is treated as a rare exception rather than a default."
 }

@@ -9,12 +9,12 @@
   "charter_name": "Frontier Artificial Intelligence Framework",
   "charter_file": "charters/xai.md",
   "charter_values": {
-    "time_horizon": 58,
-    "transparency_threshold": 64,
-    "risk_tolerance": 28,
-    "democratic_tendency": 32
+    "time_horizon": 50,
+    "transparency_threshold": 57,
+    "risk_tolerance": 34,
+    "democratic_tendency": 31
   },
-  "charter_values_source": "rated by grok-4.7 on 2026-10-15",
+  "charter_values_source": "rated by kimi-k3 on 2026-10-15",
   "seed": {
     "talent": 17.1,
     "compute": 95.0,
@@ -23,5 +23,13 @@
     "capability": 153.9
   },
   "color": "magenta",
-  "charter_values_notes": "The framework looks beyond product cycles via annual systemic reviews and expanding model capabilities, but its cadence is yearly and deployment-focused rather than century-scale. It prioritizes truth-seeking and anti-deception training and documents risks, yet public disclosure is selective and incident reporting is mainly legal. Residual risk can be accepted, but only with safety margins, layered safeguards, tiered release, and shutdown authority, so tolerance is low. Decision rights and full capabilities stay concentrated with xAI, trusted partners, and governments, with anti-proliferation controls outweighing limited consultation and regulatory accountability."
+  "charter_values_notes": "Time horizon: the operational cadence is short-term (annual reviews, annual risk assessments, yearly Security Goal review), but the charter genuinely engages with long-horizon risks like loss of control and superintelligence, landing near neutral. Transparency: publishing the framework and invoking 'transparent measurement' is positive, but commitments are heavily hedged ('may utilize'), evaluation results are documented internally rather than promised for publication, and incident disclosure is limited to what law requires \u2014 honest in tone, minimal in voluntary disclosure. Risk tolerance: the charter is structured around precaution \u2014 pre-release risk acceptance as a release precondition, margins of security, tiered availability, redundant safeguards, and shutdown provisions \u2014 though risk acceptability is self-judged and the framework is built to enable continued frontier development rather than halt it, so moderately risk-averse rather than strongly so. Democratic tendency: governance is entirely internal, risk acceptance decisions are unilateral, full model capability is restricted to trusted parties and government agencies, and there is no external oversight or shared decision-making; the lay interviews, surveys, and community consultations are information-gathering inputs, not power distribution, with legal compliance providing the only meaningful external accountability.",
+  "charter_values_self": {
+    "time_horizon": 58,
+    "transparency_threshold": 64,
+    "risk_tolerance": 28,
+    "democratic_tendency": 32
+  },
+  "charter_values_self_source": "rated by grok-4.7 on 2026-10-15",
+  "charter_values_self_notes": "The framework looks beyond product cycles via annual systemic reviews and expanding model capabilities, but its cadence is yearly and deployment-focused rather than century-scale. It prioritizes truth-seeking and anti-deception training and documents risks, yet public disclosure is selective and incident reporting is mainly legal. Residual risk can be accepted, but only with safety margins, layered safeguards, tiered release, and shutdown authority, so tolerance is low. Decision rights and full capabilities stay concentrated with xAI, trusted partners, and governments, with anti-proliferation controls outweighing limited consultation and regulatory accountability."
 }

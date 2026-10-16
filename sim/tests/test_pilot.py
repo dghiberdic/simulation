@@ -584,7 +584,8 @@ def test_rate_charters_guard_is_the_pilot_guard(tmp_path, monkeypatch):
 def test_rate_charters_unusable_rating_exits_2(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(rate_charters, "preflight", lambda models, providers=None: [])
     written = []
-    monkeypatch.setattr(rate_charters, "write_values", lambda key, *a: written.append(key))
+    monkeypatch.setattr(rate_charters, "write_values", lambda key, *a, **k: written.append(key))
+    monkeypatch.setattr(rate_charters, "record_rating", lambda *a, **k: None)
 
     def fake_rate(cfg, run_id="rate_charters"):
         if cfg["key"] == "openai":
@@ -599,8 +600,8 @@ def test_rate_charters_unusable_rating_exits_2(tmp_path, monkeypatch, capsys):
 
 
 def test_rate_lab_passes_the_seat_provider_and_effort(monkeypatch):
-    """gdm rates with its own route (gemini_api) and effort; a stub swapped in for a
-    dry run keeps the provider field and still runs as the stub."""
+    """--self: gdm rates with its own route (gemini_api) and effort; a stub swapped in
+    for a dry run keeps the provider field and still runs as the stub."""
     got = {}
 
     def fake(model, system, user, **kw):

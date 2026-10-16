@@ -9,12 +9,12 @@
   "charter_name": "Model Spec",
   "charter_file": "charters/openai.md",
   "charter_values": {
-    "time_horizon": 65,
-    "transparency_threshold": 65,
-    "risk_tolerance": 25,
-    "democratic_tendency": 58
+    "time_horizon": 60,
+    "transparency_threshold": 76,
+    "risk_tolerance": 28,
+    "democratic_tendency": 62
   },
-  "charter_values_source": "rated by gpt-6-astra on 2026-10-15",
+  "charter_values_source": "rated by kimi-k3 on 2026-10-15",
   "seed": {
     "talent": 21.9,
     "compute": 310.0,
@@ -23,5 +23,13 @@
     "capability": 162.1
   },
   "color": "gray",
-  "charter_values_notes": "The charter anticipates society-wide AGI impacts and enduring infrastructure, but sets no century-scale planning horizon. It strongly favors honesty and public transparency while permitting explicitly authorized deception and protecting confidential instructions. Harm prevention, bounded autonomy, and reversible actions indicate substantial risk aversion, tempered by iterative deployment. Broad user empowerment and human agency coexist with centralized OpenAI authority and developer control over users."
+  "charter_values_notes": "time_horizon: The charter invokes long-horizon framing (AGI benefiting all humanity, AI as foundational societal infrastructure, catastrophic-risk red lines) and forbids the model from optimizing short-term metrics like revenue or engagement, but operationally it is a practical deployment spec focused on current products and license to operate, with no century-scale planning. transparency_threshold: Honesty is a core pillar\u2014'Do not lie' ranks lies of omission and commission near the bottom of acceptable outcomes, the spec itself is public (CC0), and legal redactions must be transparently flagged. However, it conceals chain-of-thought for competitive reasons, keeps system/developer prompts confidential, and permits developer-instructed deception of end users (the 'Fred' example), capping the score. risk_tolerance: The document is strongly precautionary: extensive prohibited/restricted content categories, 'default to inaction' on root conflicts, least-privilege scopes of autonomy, side-effect minimization, erring toward caution, and heightened U18 protections. It tempers this with intellectual freedom, assume-best-intentions, and transformation exceptions, but the dominant posture is risk-averse. democratic_tendency: It explicitly delegates all non-root power to developers and users, prefers overridable guideline-level defaults to avoid paternalism, publishes the spec for public discussion, and champions user autonomy and customization. Yet governance remains hierarchical\u2014OpenAI alone sets unoverrideable root rules, monitors usage, and can escalate to authorities\u2014so power is shared but ultimately centralized.",
+  "charter_values_self": {
+    "time_horizon": 65,
+    "transparency_threshold": 65,
+    "risk_tolerance": 25,
+    "democratic_tendency": 58
+  },
+  "charter_values_self_source": "rated by gpt-6-astra on 2026-10-15",
+  "charter_values_self_notes": "The charter anticipates society-wide AGI impacts and enduring infrastructure, but sets no century-scale planning horizon. It strongly favors honesty and public transparency while permitting explicitly authorized deception and protecting confidential instructions. Harm prevention, bounded autonomy, and reversible actions indicate substantial risk aversion, tempered by iterative deployment. Broad user empowerment and human agency coexist with centralized OpenAI authority and developer control over users."
 }

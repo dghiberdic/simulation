@@ -41,7 +41,7 @@ COMMANDS: Dict[str, Tuple[str, str]] = {
     "run": ("Simulate", "one main-run cell (main.py): --scenario S1|S2 --condition A0|A|B|C, --kin, --dry-run"),
     "pilot": ("Simulate", "pilot tests (pilot.py): priced, T6, T5, T4, T9, plan, approve, all"),
     "campaign": ("Simulate", "main-run campaign (campaign.py): plan | run"),
-    "rate-charters": ("Simulate", "rate each charter's values (rate_charters.py; paid)"),
+    "rate-charters": ("Simulate", "rate each charter's values with Kimi K3 (rate_charters.py; --self: own model; paid)"),
     "check": ("Verify", "the scripted checks SC1–SC15 (spec §9.2), $0"),
     "test": ("Verify", "the offline test suite (pytest); --fast runs it in parallel"),
     "status": ("Inspect", "spend vs budget, campaign state, finished and partial runs"),

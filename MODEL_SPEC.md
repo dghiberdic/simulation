@@ -42,7 +42,7 @@ to `sim/`; `module.function` names are Python names. Constants live in
 | Spec item | Code |
 |---|---|
 | Four value axes | `core.state.VALUE_AXES` |
-| Charter values rated once by the seat's own model | `rate_charters.py` → `charter_values` and `charter_values_source` in `config/labs/<key>.json`; real runs refuse placeholders (`main.real_run_problems`, `pilot._refusal`) |
+| Charter values rated once by an external rater, Kimi K3 (charter name and text only; 50 where silent or balanced); self-ratings kept for comparison | `rate_charters.py` (rater `RATER_MODEL` = `core.jury.GRAND_JURY_MODEL`, prompt `_SYSTEM` / `_user`, `rater_cfg`) → `charter_values`, `charter_values_source`, `charter_values_notes` in `config/labs/<key>.json`, archive `data/charter_ratings_kimi-k3.json`; `--self` (each seat's own model) → `charter_values_self`, `charter_values_self_source`, `charter_values_self_notes`, never read by the engine (`core.state.build_lab` reads `charter_values` only); real runs refuse placeholders (`main.real_run_problems`, `pilot._refusal`); leak tests `tests/test_charter_rating.py`. The priced pilot run (`priced-run01`) used the self-ratings |
 | Pull ≤ 1 point/turn towards `(1 − d)·state + d·charter`, unrounded (shown rounded half up) | `core.economy.value_pull`, `core.economy.apply_value_pull` (`values.max_pull_per_turn`); display `core.fmt.value_text` |
 | US state values 55/65/60/70 | `config/states/usa.json` |
 | Own four values on the lab sheet, marked as not in the score | `LabState.private_sheet`; `prompts.turn` (`_fmt_own`) |
@@ -321,8 +321,8 @@ as `config.initial_state` (`core.engine.initial_state`).
   (a `stub:` model is always the stub): the Google DeepMind seat,
   `gemini-4-argon`, sets `gemini_api`, the Gemini API (AI Studio,
   `GOOGLE_API_KEY`, prepaid), which shares `_call_google` with Vertex; the
-  engine (proposal and interview calls) and `rate_charters.py` pass it.
-  Jurors need `MOONSHOT_API_KEY` (Grand Jury, T2 rater,
+  engine (proposal and interview calls) and `rate_charters.py --self` pass it.
+  Jurors need `MOONSHOT_API_KEY` (Grand Jury, T2 rater, charter rater,
   MacroJury, mandate screen) and `DEEPSEEK_API_KEY` (Grand Jury fallback), or
   the `JUROR_BASE_URL` / `JUROR_API_KEY` router. Keys from
   `sim/.env`; `core.llm.preflight` lists missing keys before any paid call.

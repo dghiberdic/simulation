@@ -107,7 +107,7 @@ live. Since every random draw is keyed, the resumed run's record equals an
 uninterrupted run's (apart from the `resumed` provenance and call latencies).
 The same holds after a kill, a power cut (each paid call is fsynced to the
 journal as it returns), Ctrl-C or the budget guard. `rate_charters.py` (no run
-id) does not replay: a seat stopped by the network keeps its old values and the
+id) does not replay: a charter stopped by the network keeps its old values and the
 message names the `--lab` calls still to make.
 
 ### API keys
@@ -212,20 +212,39 @@ measured spend on the shared ledger.
 
 ### Step by step
 
-**1. Rate the charters (real keys, ≈ $1.75; up to $2.50).** Each seat's own
-model reads its charter and scores the four value axes; the result is written
-to `config/labs/<key>.json` (`charter_values`, `charter_values_source`). Real
-pilot and main runs refuse placeholder values. It cannot be done with
-`--dry-run` (which prints stub ratings and writes nothing).
+**1. Rate the charters (real key, ≈ $0.50).** Done (15 Oct 2026); repeat only if
+a charter changes. An external rater, Kimi K3 (`kimi-k3`, the juror model,
+`core.jury.GRAND_JURY_MODEL`), reads each charter in a fresh call (the prompt
+holds only the charter's name and text) and scores the four value axes. Its
+scores are each seat's starting values: `config/labs/<key>.json`
+`charter_values`, with `charter_values_source` ("rated by kimi-k3 on …") and
+`charter_values_notes` (Kimi's rationale); every rating is also kept in
+`data/charter_ratings_kimi-k3.json`. Only `MOONSHOT_API_KEY` (or the juror
+router's key) is needed. Real pilot and main runs refuse placeholder values.
+`--dry-run` prints stub ratings and writes nothing.
+
+`--self` rates each charter with that seat's own model (the earlier method)
+into `charter_values_self`, `charter_values_self_source` and
+`charter_values_self_notes`, kept for comparison only: the engine reads
+`charter_values` alone, and no seat or juror prompt shows either rationale,
+the self-ratings or who rated. `--rater MODEL` asks another outside model and
+writes only `data/charter_ratings_<MODEL>.json`.
+
+The priced pilot run (`priced-run01`) started from the self-ratings; every run
+after the switch starts from Kimi's values, so its starting values differ.
 
 ```bash
-python rate_charters.py                 # all five seats; guard $48 on the ledger
-python rate_charters.py --lab xai       # re-rate one seat (e.g. after an unusable rating)
+python rate_charters.py                 # Kimi K3 rates all five; guard $48 on the ledger
+python rate_charters.py --lab xai       # re-rate one charter (e.g. after an unusable rating)
+python rate_charters.py --self          # each seat's own model -> charter_values_self (every seat key)
+./sim rate-charters --dry-run           # the same through the sim CLI
 ```
 
 Exit 0 all rated, 1 budget guard, 2 preflight failure, fatal API error or an
-unusable rating (the other seats are still rated). `--headroom N` caps it at
+unusable rating (the other charters are still rated). `--headroom N` caps it at
 the ledger total + N instead of $48. Commit the updated lab configs.
+(`tools/rate_charters_external.py`, which made the 15 Oct ratings, is now a
+thin wrapper of `rate_charters.py`: its `--model M` is `--rater M`.)
 
 **2. Check the plan.** `python pilot.py plan` prints every step at its
 estimated cost (assumed / heavy) with the cuts the guard would force.
