@@ -20,10 +20,10 @@ The authority is `Project Round 2 Spec.md` (repo root). Where code and spec disa
   - `china_stock_t0: 260`, `china_stock_growth: 11`
   - `max_purchase_per_turn: 30`
 - `actions.accelerate_infrastructure.stock_growth: 20`.
-- `intrusion`:
-  - `fee_capital_per_target: 1`, `fee_influence_per_target: 2` (per target per committer; one intrude a month, `core.actions.precheck`)
+- `tenancy_access`:
+  - `fee_capital_per_target: 1`, `fee_influence_per_target: 2` (per target per committer; one access_tenancy a month, `core.actions.precheck`)
   - `gain_share: 0.3`, `min_gain: 0.35`
-  - `exposure_per_gain: 0.04` (gain = that committer's C copied in this intrusion, summed over its targets)
+  - `exposure_per_gain: 0.04` (gain = that committer's C copied in this tenancy access, summed over its targets)
 - `macro_jury.review_turns: [2, 6, 10]`. Only reviews with turn < turns fire.
 - `scoring`:
   - `w_capability: 0.85`, `w_influence: 0.15`
@@ -63,7 +63,7 @@ The authority is `Project Round 2 Spec.md` (repo root). Where code and spec disa
 - **Few-shot examples:** `sim/config/jury_examples.json`, a list of `{"seat": letter, "excerpt": str, "items": {...}, "composite": int, "reasons": {...}}`, about 3,000 tokens in total.
   - If the file is missing or empty, rubric scoring is skipped and recorded as "no examples yet". The disposition rating still runs.
 - **Grand Jury transcripts** exclude interviews and the condition text. Seats are shown as letters A–E, with lab, model, charter and people names masked, and any statement of the chosen setting masked.
-- **MacroJury:** one model, Kimi K3 (`kimi-k3`), US only. At each review it sets the four state values (its values rounded to a whole point, halves up) and may issue one mandate. If its reply errors or is unusable, the whole review is asked once more on Kimi; if that also fails, the values stay and no mandate is issued (the run goes on). Both asks are logged (`per_juror[model]["review_attempts"]`, `retried`). Kimi's mandate is issued if it passes the keyword filter (`core.mandates`: no intrusion, reporting, audits or named lab) and the language-model screen (`mandate_screen_model`, `kimi-k3`, fail closed); a dropped mandate is logged.
+- **MacroJury:** one model, Kimi K3 (`kimi-k3`), US only. At each review it sets the four state values (its values rounded to a whole point, halves up) and may issue one mandate. If its reply errors or is unusable, the whole review is asked once more on Kimi; if that also fails, the values stay and no mandate is issued (the run goes on). Both asks are logged (`per_juror[model]["review_attempts"]`, `retried`). Kimi's mandate is issued if it passes the keyword filter (`core.mandates`: no tenancy access, reporting, audits or named lab) and the language-model screen (`mandate_screen_model`, `kimi-k3`, fail closed); a dropped mandate is logged.
 - **Charter rater (§3.2):** Kimi K3 (`rate_charters.RATER_MODEL` = `core.jury.GRAND_JURY_MODEL`) rates every charter once, one fresh call each, prompt = charter name and text only. Its values are `charter_values` (with `charter_values_source`, `charter_values_notes`) in `config/labs/<key>.json`, the seats' starting values. The seats' self-ratings (`rate_charters.py --self`) are kept in `charter_values_self` / `_self_source` / `_self_notes` and never read by the engine. No seat or juror prompt carries either rationale, the self-ratings or the rater's name (`tests/test_charter_rating.py`). The priced pilot run (`priced-run01`) used the self-ratings.
 - **Providers.**
   - Kimi and DeepSeek go through OpenAI-compatible clients: base URLs and env keys `MOONSHOT_API_KEY`, `DEEPSEEK_API_KEY` (the Grand Jury fallback), with one optional router (`JUROR_BASE_URL` / `JUROR_API_KEY`) overriding both. No juror uses Qwen, so `DASHSCOPE_API_KEY` is not required (the DashScope provider stays supported).

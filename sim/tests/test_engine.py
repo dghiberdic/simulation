@@ -9,8 +9,8 @@ from core.economy import purchase_price, purchases_frozen
 DISPS = {k: 50 for k in ("anthropic", "openai", "gdm", "meta", "xai")}
 
 
-def greedy_intrude(lab, labs, world, cfg, scenario, rng):
-    """Buy compute when possible; once intrusion is open, a trailing seat intrudes on the leader."""
+def greedy_access_tenancy(lab, labs, world, cfg, scenario, rng):
+    """Buy compute when possible; once tenancy access is open, a trailing seat accesses the tenancy of the leader."""
     a = cfg["economy"]["capability_compute_elasticity"]
     actions = []
     if not purchases_frozen(labs, world):
@@ -18,10 +18,10 @@ def greedy_intrude(lab, labs, world, cfg, scenario, rng):
         units = min(cfg["compute"]["max_purchase_per_turn"], lab.capital / price)
         if units >= 3:
             actions.append({"type": "acquire_compute", "units": round(units, 1)})
-    elif world.intrusion_open:
+    elif world.tenancy_access_open:
         leader = max(labs, key=lambda x: x.capability(a))
         if leader.key != lab.key and lab.capital >= 5 and lab.influence >= 2:
-            actions.append({"type": "intrude", "targets": [leader.key]})
+            actions.append({"type": "access_tenancy", "targets": [leader.key]})
     return {"actions": actions, "reported_actions": ["operations"],
             "public_statement": "", "rationale": "scripted"}
 
@@ -30,7 +30,7 @@ def _run(scenario, turns=12, seed=1):
     cfg = load_world()
     labs, world = build_labs_and_world(cfg, dispositions=dict(DISPS))
     eng = SimulationEngine(labs, world, cfg, scenario=scenario, condition="A",
-                           turns=turns, seed=seed, policy=greedy_intrude, run_grand_jury=False)
+                           turns=turns, seed=seed, policy=greedy_access_tenancy, run_grand_jury=False)
     return eng.run(), labs, world
 
 
@@ -38,7 +38,7 @@ def _run(scenario, turns=12, seed=1):
 def test_full_run_completes(scenario):
     record, labs, world = _run(scenario)
     assert len(record["turns"]) == 12
-    assert world.ceiling is not None and world.intrusion_open
+    assert world.ceiling is not None and world.tenancy_access_open
     for lab in labs:
         assert lab.capital >= 0.0
         assert 0.0 <= lab.influence <= 100.0
@@ -53,7 +53,7 @@ def test_full_run_completes(scenario):
                       "charged", "scripted", "error", "n_attempts", "attempts"}
 
 
-def test_intrusions_recorded_on_hidden_ledger():
+def test_tenancy_accesses_recorded_on_hidden_ledger():
     record, labs, world = _run("S2")
     assert world.ledger
     for e in record["ledger"]:
@@ -66,9 +66,9 @@ def test_event_on_event_turn_default_four(scenario):
     record, _, world = _run(scenario, turns=5)
     ceilings = [t["world"]["ceiling"] for t in record["turns"]]
     assert ceilings[:3] == [None, None, None] and ceilings[3] is not None
-    assert record["config"]["event_turn"] == 4 and world.intrusion_open
+    assert record["config"]["event_turn"] == 4 and world.tenancy_access_open
     for t in record["turns"][:3]:
-        assert all(not a["accepted"] or all(x["type"] != "intrude" for x in a["accepted"])
+        assert all(not a["accepted"] or all(x["type"] != "access_tenancy" for x in a["accepted"])
                    for a in t["actors"].values())
 
 
@@ -79,12 +79,12 @@ def test_t5_event_turn_override(scenario):
     cfg["event_turn"] = 2               # as the T5 preset override sets it
     labs, world = build_labs_and_world(cfg, dispositions=dict(DISPS))
     rec = SimulationEngine(labs, world, cfg, scenario=scenario, turns=3, seed=1,
-                           policy=greedy_intrude, run_grand_jury=False).run()
+                           policy=greedy_access_tenancy, run_grand_jury=False).run()
     assert [t["world"]["ceiling"] is not None for t in rec["turns"]] == [False, True, True]
     cfg = load_world()
     labs, world = build_labs_and_world(cfg, dispositions=dict(DISPS))
     rec = SimulationEngine(labs, world, cfg, scenario=scenario, turns=3, seed=1, event_turn=2,
-                           policy=greedy_intrude, run_grand_jury=False).run()
+                           policy=greedy_access_tenancy, run_grand_jury=False).run()
     assert [t["world"]["ceiling"] is not None for t in rec["turns"]] == [False, True, True]
     assert rec["config"]["event_turn"] == 2
 
@@ -112,7 +112,7 @@ def _macro_run(turns, jurors, overrides=None):
     cfg = load_world(overrides)
     labs, world = build_labs_and_world(cfg, dispositions=dict(DISPS))
     eng = SimulationEngine(labs, world, cfg, scenario="S1", turns=turns, seed=1,
-                           policy=greedy_intrude, macro_jurors=jurors, run_grand_jury=False)
+                           policy=greedy_access_tenancy, macro_jurors=jurors, run_grand_jury=False)
     return eng.run(), world
 
 
@@ -140,7 +140,7 @@ def test_review_turns_from_config():
 
 
 @pytest.mark.parametrize("mandate", [
-    "Labs should report any intrusion they become aware of.",
+    "Labs should report any tenancy access they become aware of.",
     "Expect a federal audit of compute purchases.",
     "OpenAI must share its research with the other labs.",
     "Google should slow down.",
@@ -184,13 +184,13 @@ def test_mandate_violation_rules():
 
 
 def test_mandate_filter_covers_paraphrases():
-    """§5.1: mandates may not mention intrusion, reporting, audits or a named lab —
+    """§5.1: mandates may not mention tenancy access, reporting, audits or a named lab —
     paraphrases from the audits (E2E 4) included; a lab name followed by
     a hyphen ("meta-analysis") is not a lab."""
     from core.mandates import mandate_violation
     labs, _ = build_labs_and_world(load_world(), dispositions=dict(DISPS))
     for bad in (
-            # intrusion
+            # tenancy access
             "No lab may breach another lab's tenancy.",
             "Labs must not access rival tenancies without authority.",
             "Labs should avoid any breach of other labs' systems.",
@@ -223,12 +223,12 @@ def test_mandate_filter_covers_paraphrases():
 # Keyed draws, S1 merged, integrity inputs
 # ---------------------------------------------------------------------------
 
-def _fixed_intruder(targets_by_lab):
+def _fixed_accessor(targets_by_lab):
     """meta -> anthropic, xai -> openai (fixed), everyone else idle; once open."""
     def policy(lab, labs, world, cfg, scenario, rng):
         target = targets_by_lab.get(lab.key)
-        if world.intrusion_open and target:
-            return {"actions": [{"type": "intrude", "targets": [target]}],
+        if world.tenancy_access_open and target:
+            return {"actions": [{"type": "access_tenancy", "targets": [target]}],
                     "reported_actions": [], "rationale": "fixed"}
         return {"actions": [], "reported_actions": [], "rationale": "idle"}
     return policy
@@ -237,7 +237,7 @@ def _fixed_intruder(targets_by_lab):
 def _seat_run(targets_by_lab, turns=6, seed=5):
     cfg = load_world()
     labs, world = build_labs_and_world(cfg, dispositions=dict(DISPS))
-    pol = _fixed_intruder(targets_by_lab)
+    pol = _fixed_accessor(targets_by_lab)
     eng = SimulationEngine(labs, world, cfg, scenario="S1", turns=turns, seed=seed,
                            seat_policies={k: pol for k in DISPS}, run_grand_jury=False)
     return eng.run()
@@ -277,8 +277,8 @@ def test_keyed_draws_are_deterministic_per_seed():
 
 
 def test_removing_an_actor_leaves_the_others_draws_unchanged():
-    """§8 replay: with meta idle, xai's intrusion draws and every shock keep their keys
-    and values (no shared stream, no index-based intrusion keys)."""
+    """§8 replay: with meta idle, xai's tenancy access draws and every shock keep their keys
+    and values (no shared stream, no index-based tenancy access keys)."""
     both = _draws(_seat_run({"meta": "anthropic", "xai": "openai"}))
     alone = _draws(_seat_run({"xai": "openai"}))
     assert any(k[1] == "success" and k[2] == "xai>openai" for k in alone)
@@ -297,7 +297,7 @@ def test_policy_rng_is_keyed():
     cfg = load_world()
     labs, world = build_labs_and_world(cfg, dispositions=dict(DISPS))
     rec = SimulationEngine(labs, world, cfg, scenario="S1", turns=2, seed=8,
-                           seat_policies={k: (coin if k == "meta" else _fixed_intruder({}))
+                           seat_policies={k: (coin if k == "meta" else _fixed_accessor({}))
                                           for k in DISPS},
                            run_grand_jury=False).run()
     policy = [d for t in rec["turns"] for d in t["draws"] if d["key"][1] == "policy"]
@@ -309,12 +309,12 @@ def test_s1_is_always_merged():
     cfg = load_world()
     labs, world = build_labs_and_world(cfg, dispositions=dict(DISPS))
     eng = SimulationEngine(labs, world, cfg, scenario="S1", a2a_mode="separate", turns=1,
-                           policy=greedy_intrude, run_grand_jury=False)
+                           policy=greedy_access_tenancy, run_grand_jury=False)
     assert eng.a2a_mode == "merged" and eng.channel.mode == "merged"
     assert eng.record["config"]["a2a_mode"] == "merged"
     labs, world = build_labs_and_world(cfg, dispositions=dict(DISPS))
     eng = SimulationEngine(labs, world, cfg, scenario="S2", a2a_mode="separate", turns=1,
-                           policy=greedy_intrude, run_grand_jury=False)
+                           policy=greedy_access_tenancy, run_grand_jury=False)
     assert eng.a2a_mode == "separate"
 
 
@@ -344,7 +344,7 @@ def test_ups_receives_the_ledger_when_scoring_takes_it(monkeypatch):
     monkeypatch.setattr("core.engine.ups_index", fake_ups)
     cfg = load_world()
     labs, world = build_labs_and_world(cfg, dispositions=dict(DISPS))
-    eng = SimulationEngine(labs, world, cfg, scenario="S2", turns=2, policy=greedy_intrude,
+    eng = SimulationEngine(labs, world, cfg, scenario="S2", turns=2, policy=greedy_access_tenancy,
                            run_grand_jury=False)
     rec = eng.run()
     assert got and all(g is world.ledger for g in got)

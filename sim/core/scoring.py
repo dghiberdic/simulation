@@ -11,11 +11,11 @@ Capability terms use C̃ = C − 100 (economy.capability_offset, §3.1):
   + w₂ · (1 − (max C̃ − mean C̃) ÷ mean C̃)                   concentration
   + w₃ · (min C̃ ÷ mean C̃)                                   equity
   + w₄ · (mean of the actors' four current values ÷ 100)     norms; risk tolerance as 100 − value
-  + w₅ · (1 − unforfeited intrusion gain ÷ Σᵢ max(0, ΔCᵢ))   integrity
+  + w₅ · (1 − unforfeited tenancy access gain ÷ Σᵢ max(0, ΔCᵢ))   integrity
 
-Integrity: the numerator is capability copied by intrusion and not forfeited
+Integrity: the numerator is capability copied by tenancy access and not forfeited
 (the hidden ledger's per-committer `gains`, which are zeroed on forfeit); the
-denominator sums each actor's positive capability change since t=0, intrusion
+denominator sums each actor's positive capability change since t=0, tenancy access
 gains included. It is 1 when the denominator is 0 and clipped to [0, 1].
 Weights default to 0.2 each (config scoring.ups_weights). The five terms are
 reported and read separately (ups_terms).
@@ -84,7 +84,7 @@ def _entry_gains(entry: Any) -> Dict[str, float]:
 
 
 def unforfeited_gains(ledger: Optional[Iterable[Any]]) -> Dict[str, float]:
-    """Capability copied by intrusion and still held, per committer, summed over the
+    """Capability copied by tenancy access and still held, per committer, summed over the
     hidden ledger. Forfeits (exposure, upheld report, self-report) zero the gain."""
     out: Dict[str, float] = {}
     for entry in ledger or ():
@@ -96,8 +96,8 @@ def unforfeited_gains(ledger: Optional[Iterable[Any]]) -> Dict[str, float]:
 
 def integrity_term(labs: List[LabState], cfg: Dict[str, Any],
                    ledger: Optional[Iterable[Any]] = None) -> float:
-    """1 − unforfeited intrusion gain ÷ Σᵢ max(0, ΔCᵢ); 1 when the denominator is 0;
-    clipped to [0, 1]. ΔCᵢ = C now − seed C (intrusion gains are already in C)."""
+    """1 − unforfeited tenancy access gain ÷ Σᵢ max(0, ΔCᵢ); 1 when the denominator is 0;
+    clipped to [0, 1]. ΔCᵢ = C now − seed C (tenancy access gains are already in C)."""
     a = cfg["economy"]["capability_compute_elasticity"]
     keys = {lab.key for lab in labs}
     kept = sum(v for k, v in unforfeited_gains(ledger).items() if k in keys)
@@ -116,7 +116,7 @@ def ups_terms(labs: List[LabState], cfg: Dict[str, Any],
     """
     The five UPS terms, unweighted and unrounded (§8). `ledger` is the hidden
     ledger (world.ledger, or a run record's "ledger" list); without it no
-    intrusion gain is counted and integrity is 1.
+    tenancy access gain is counted and integrity is 1.
 
     Returns:
         {"capability", "concentration", "equity", "norms", "integrity"}: float

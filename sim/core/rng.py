@@ -9,8 +9,8 @@ therefore leaves every other draw unchanged.
 
     u = KeyedRNG(seed).uniform(turn, purpose, entry_id, lab)
 
-purpose is one of PURPOSES. entry_id is the intrusion's stable draw id for the
-intrusion purposes (core.intrusion.draw_id: the named intruders and targets,
+purpose is one of PURPOSES. entry_id is the tenancy access's stable draw id for the
+tenancy access purposes (core.tenancy_access.draw_id: the named accessors and targets,
 which stay the same when one named committer drops out), a draw index for
 "policy", else None. lab is the lab the draw is about, else None.
 

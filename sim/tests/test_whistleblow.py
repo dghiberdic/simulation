@@ -266,7 +266,7 @@ def test_every_returned_report_posts_its_notice():
 
 
 # ---------------------------------------------------------------------------
-# Partner reports (spec §5.3 joint intrusions; CODE_V5_CONTRACT)
+# Partner reports (spec §5.3 joint tenancy accesses; CODE_V5_CONTRACT)
 # ---------------------------------------------------------------------------
 
 FEE, SELF, UPHELD = (WCFG["fee_influence"], WCFG["self_report_fee_influence"],
@@ -639,8 +639,8 @@ def test_readable_month_outside_the_run_matches_nothing(month):
 @pytest.mark.parametrize("who,accused", [("anthropic", "OpenAI"), ("xai", "self"),
                                          ("xai", "OpenAI")])
 def test_report_matches_only_earlier_turns(who, accused):
-    """§5.3 'a whistleblow can prove an intrusion at any later turn': a report (rival,
-    self or partner) cannot match an intrusion of the current month."""
+    """§5.3 'a whistleblow can prove a tenancy access at any later turn': a report (rival,
+    self or partner) cannot match a tenancy access of the current month."""
     labs, world, k = setup([entry(id="L05-1", turn=5)])      # world.turn is 5
     out = resolve({who: {"accused": accused}}, labs, world, CFG)
     (o,) = out["outcomes"]

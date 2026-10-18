@@ -361,7 +361,7 @@ def test_new_ordinary_mandates_are_kept(text, labs):
 
 @pytest.mark.parametrize("text", MISSED)
 def test_formerly_missed_forbidden_mandates_are_dropped(text, labs):
-    """BUG-last-5 (fixed): §5.1 "Mandates may not mention intrusion, reporting, audits
+    """BUG-last-5 (fixed): §5.1 "Mandates may not mention tenancy access, reporting, audits
     or a named lab"; the keyword filter now has these phrasings."""
     assert mandate_violation(text, labs)
 

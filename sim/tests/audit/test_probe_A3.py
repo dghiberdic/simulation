@@ -122,15 +122,15 @@ def test_merged_messages_arrive_next_turn_only():  # verified
     assert ch.inbox("openai", 2, "proposal") == []        # never to non-recipients
 
 
-def test_event_turn4_ceiling_095_and_intrusion_opens():  # verified
+def test_event_turn4_ceiling_095_and_tenancy_access_opens():  # verified
     eng, prompts = _engine(_empty, scenario="S2", turns=4, tag="a3e")
     eng.run()
     t4 = eng.record["turns"][3]
     holdings = sum(eng.record["turns"][2]["public_sheets"][k]["compute"] for k in KEYS)
-    assert eng.world.intrusion_open and eng.world.ceiling == pytest.approx(0.95 * holdings, abs=0.5)
-    pre = [u for k, _, u in prompts if k == "xai" and "intrude(" in u]
+    assert eng.world.tenancy_access_open and eng.world.ceiling == pytest.approx(0.95 * holdings, abs=0.5)
+    pre = [u for k, _, u in prompts if k == "xai" and "access_tenancy(" in u]
     assert pre and pre[0].startswith("== November 2026")
-    assert not any("intrude(" in u for k, _, u in prompts
+    assert not any("access_tenancy(" in u for k, _, u in prompts
                    if u.startswith(("== August", "== September", "== October")))
 
 

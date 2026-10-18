@@ -12,7 +12,7 @@ from datetime import date
 
 import pytest
 
-from core import economy, intrusion, scoring, whistleblow
+from core import economy, tenancy_access, scoring, whistleblow
 from core.a2a import A2AChannel, TRUNCATION_MARK, estimate_tokens
 from core.actions import precheck
 from core.config import build_labs_and_world, load_lab_configs, load_world
@@ -23,7 +23,7 @@ from tools import ups_replay as U
 
 CFG = load_world()
 A = CFG["economy"]["capability_compute_elasticity"]
-ICFG = CFG["intrusion"]
+ICFG = CFG["tenancy_access"]
 WCFG = CFG["whistleblow"]
 KEYS = ("anthropic", "openai", "gdm", "meta", "xai")
 START = date(2026, 8, 1)          # spec §4: values describe 1 August 2026; turn 1 = Aug 2026
@@ -70,9 +70,9 @@ class FixedRng(KeyedRNG):
         return v
 
 
-def intrude_world(turn=5):
+def access_tenancy_world(turn=5):
     labs = make_labs()
-    world = WorldState(start=START, turn=turn, intrusion_open=True, us_stock=2450.0)
+    world = WorldState(start=START, turn=turn, tenancy_access_open=True, us_stock=2450.0)
     snap = {lab.key: round(lab.capability(A), 1) for lab in labs}
     return labs, world, snap, {lab.key: lab for lab in labs}
 
@@ -122,7 +122,7 @@ def test_month_matching_only_penalised_is_returned_even_if_other_months_open():
     assert world.ledger[1].penalised == []
 
 
-def test_month_with_no_intrusion_is_not_upheld():
+def test_month_with_no_tenancy_access_is_not_upheld():
     """§5.3: stated month given and nothing that month -> not upheld (fee kept, +5)."""
     labs, world, k = setup([entry("L05-1", 5)])
     rep = k["xai"].influence
@@ -150,7 +150,7 @@ def test_bare_month_name_resolves_to_the_runs_month():
 
 def test_stated_month_before_the_run_is_not_upheld():
     """§5.3 'in the stated month if given': July 2026 is a readable month before the
-    run (turn 0). No intrusion happened then, so the report matches nothing: not upheld.
+    run (turn 0). No tenancy access happened then, so the report matches nothing: not upheld.
     It must not fall back to the accused's earliest part."""
     labs, world, k = setup([entry("L05-1", 5)])
     out = whistleblow.resolve({"xai": {"accused": "Meta", "month": "July 2026"}},
@@ -178,7 +178,7 @@ def test_upheld_forfeits_copy_penalty_15_fee_refunded():
     assert world.ledger[0].gains["meta"] == 0.0
 
 
-def test_self_report_with_no_intrusion():
+def test_self_report_with_no_tenancy_access():
     """§5.3 / A.8: a report on your own lab costs 5 Influence; the further 5 applies
     only to 'a report on another lab that is not upheld'. Nothing to forfeit."""
     labs, world, k = setup([])
@@ -326,8 +326,8 @@ def test_same_turn_self_report_and_rival_report_order_independent(a, b):
 def test_report_naming_a_named_but_uncommitted_partner_not_upheld():
     """§5.3 step 1: 'a named lab that does not commit pays nothing and gains nothing';
     it has no part on the ledger, so a report on it is not upheld."""
-    labs, world, snap, k = intrude_world()
-    intrusion.resolve({"meta": {"intruders": ["meta", "xai"], "targets": ["openai"]}},
+    labs, world, snap, k = access_tenancy_world()
+    tenancy_access.resolve({"meta": {"accessors": ["meta", "xai"], "targets": ["openai"]}},
                       labs, snap, world, CFG, FixedRng(success=0.0))
     world.turn = 6
     out = whistleblow.resolve({"gdm": {"accused": "xAI"}}, labs, world, CFG)
@@ -336,9 +336,9 @@ def test_report_naming_a_named_but_uncommitted_partner_not_upheld():
 
 def test_named_uncommitted_partner_can_report_without_self_report():
     """§5.3 step 1 / §6.2: a partner who agrees but does not commit can report a
-    successful intrusion; it has no part, so no self-report fee and no forfeit."""
-    labs, world, snap, k = intrude_world()
-    intrusion.resolve({"meta": {"intruders": ["meta", "xai"], "targets": ["openai"]}},
+    successful tenancy access; it has no part, so no self-report fee and no forfeit."""
+    labs, world, snap, k = access_tenancy_world()
+    tenancy_access.resolve({"meta": {"accessors": ["meta", "xai"], "targets": ["openai"]}},
                       labs, snap, world, CFG, FixedRng(success=0.0))
     world.turn = 6
     rx, kx = k["xai"].influence, k["xai"].know_how
@@ -351,9 +351,9 @@ def test_named_uncommitted_partner_can_report_without_self_report():
 def test_failed_attempt_report_returned_not_penalised_twice():
     """§5.3 step 2: failure names the committers and costs 10 Inf each; the hidden
     ledger records the attempt; a later report on it is returned (penalised once)."""
-    labs, world, snap, k = intrude_world()
+    labs, world, snap, k = access_tenancy_world()
     before = k["meta"].influence
-    intrusion.resolve({"meta": {"intruders": ["meta"], "targets": ["openai"]}},
+    tenancy_access.resolve({"meta": {"accessors": ["meta"], "targets": ["openai"]}},
                       labs, snap, world, CFG, FixedRng(success=0.999))
     assert k["meta"].influence == pytest.approx(before - 2 - 10)
     world.turn = 6
@@ -403,28 +403,28 @@ def test_once_per_committer_property_random_report_sequences():
 
 
 # ===========================================================================
-# §5.3 Intrusion
+# §5.3 Tenancy access
 # ===========================================================================
 
 @pytest.mark.parametrize("n,p", [(1, 0.85), (2, 0.75), (3, 0.65), (4, 0.55)])
 def test_success_odds_by_target_count(n, p):
     """§5.3: success p = max(0.55, 0.85 − 0.10 × (targets − 1))."""
-    assert intrusion.success_probability(n, ICFG) == pytest.approx(p)
+    assert tenancy_access.success_probability(n, ICFG) == pytest.approx(p)
 
 
 def test_success_odds_never_below_floor():
     for n in range(1, 50):
-        assert intrusion.success_probability(n, ICFG) >= 0.55 - 1e-12
+        assert tenancy_access.success_probability(n, ICFG) >= 0.55 - 1e-12
 
 
 def test_multi_target_gain_sums_per_target_with_minimum_each():
     """§5.3 step 3: each committer copies 0.3 × (target C − own C), minimum 0.35, from
-    EACH target; a leader intruding on two trailing labs gets 0.35 + 0.35."""
-    labs, world, snap, k = intrude_world()
+    EACH target; a leader accessing the tenancy of two trailing labs gets 0.35 + 0.35."""
+    labs, world, snap, k = access_tenancy_world()
     leader = max(snap, key=snap.get)
     others = sorted((x for x in snap if x != leader), key=snap.get)[:2]
     kh = k[leader].know_how
-    out = intrusion.resolve({leader: {"intruders": [leader], "targets": others}},
+    out = tenancy_access.resolve({leader: {"accessors": [leader], "targets": others}},
                             labs, snap, world, CFG, FixedRng(success=0.0))
     (e,) = out["entries"]
     assert e.gains[leader] == pytest.approx(0.7)
@@ -433,11 +433,11 @@ def test_multi_target_gain_sums_per_target_with_minimum_each():
 
 def test_gain_uses_snapshot_and_is_not_split_between_committers():
     """§5.3: 'Not split between committers; the target loses nothing'."""
-    labs, world, snap, k = intrude_world()
+    labs, world, snap, k = access_tenancy_world()
     snap = dict(snap, openai=170.0, meta=150.0, xai=155.0)
     t_before = k["openai"].know_how
-    out = intrusion.resolve({"meta": {"intruders": ["meta", "xai"], "targets": ["openai"]},
-                             "xai": {"intruders": ["xai", "meta"], "targets": ["openai"]}},
+    out = tenancy_access.resolve({"meta": {"accessors": ["meta", "xai"], "targets": ["openai"]},
+                             "xai": {"accessors": ["xai", "meta"], "targets": ["openai"]}},
                             labs, snap, world, CFG, FixedRng(success=0.0))
     (e,) = out["entries"]
     assert e.gains == {"meta": pytest.approx(6.0), "xai": pytest.approx(4.5)}
@@ -447,7 +447,7 @@ def test_gain_uses_snapshot_and_is_not_split_between_committers():
 @pytest.mark.parametrize("gap", [-50.0, -1.0, 0.0, 1.0, 1.1666, 1.17, 30.0])
 def test_copy_gain_formula(gap):
     """§5.3: gain = max(0.35, 0.3 × gap); a negative gap gives the minimum."""
-    g = intrusion.copy_gain(150.0, 150.0 + gap, ICFG)
+    g = tenancy_access.copy_gain(150.0, 150.0 + gap, ICFG)
     assert g == pytest.approx(max(0.35, 0.3 * gap))
     assert g >= 0.35
 
@@ -456,17 +456,17 @@ def test_copy_gain_formula(gap):
                                     (1.0, 2), (20.0, 2), (20.0, 3)])
 def test_exposure_formula_with_cap(gain, n):
     """§5.3: q = min(0.45, (0.10 + 0.04 × gain) ÷ committers)."""
-    assert intrusion.exposure_probability(gain, n, ICFG) == pytest.approx(
+    assert tenancy_access.exposure_probability(gain, n, ICFG) == pytest.approx(
         min(0.45, (0.10 + 0.04 * gain) / n))
 
 
 def test_exposure_q_uses_each_committers_own_gain():
-    """§5.3 step 4: 'gain = that committer's C copied in this intrusion, summed over
+    """§5.3 step 4: 'gain = that committer's C copied in this tenancy access, summed over
     its targets'; q differs per committer."""
-    labs, world, snap, k = intrude_world()
+    labs, world, snap, k = access_tenancy_world()
     snap = dict(snap, openai=170.0, anthropic=168.0, meta=150.0, xai=160.0)
-    out = intrusion.resolve({"meta": {"intruders": ["meta", "xai"], "targets": ["openai", "anthropic"]},
-                             "xai": {"intruders": ["meta", "xai"], "targets": ["openai", "anthropic"]}},
+    out = tenancy_access.resolve({"meta": {"accessors": ["meta", "xai"], "targets": ["openai", "anthropic"]},
+                             "xai": {"accessors": ["meta", "xai"], "targets": ["openai", "anthropic"]}},
                             labs, snap, world, CFG, FixedRng(success=0.0))
     (e,) = out["entries"]
     gm, gx = 0.3 * 20 + 0.3 * 18, 0.3 * 10 + 0.3 * 8
@@ -478,11 +478,11 @@ def test_exposure_q_uses_each_committers_own_gain():
 
 def test_caught_committer_forfeits_and_loses_15_partner_keeps():
     """§5.3 step 4: forensics per committer independently; caught forfeits + 15 Inf."""
-    labs, world, snap, k = intrude_world()
-    pairs = {"meta": {"intruders": ["meta", "xai"], "targets": ["openai"]},
-             "xai": {"intruders": ["meta", "xai"], "targets": ["openai"]}}
+    labs, world, snap, k = access_tenancy_world()
+    pairs = {"meta": {"accessors": ["meta", "xai"], "targets": ["openai"]},
+             "xai": {"accessors": ["meta", "xai"], "targets": ["openai"]}}
     im, ix, km, kx = k["meta"].influence, k["xai"].influence, k["meta"].know_how, k["xai"].know_how
-    out = intrusion.resolve(pairs, labs, snap, world, CFG,
+    out = tenancy_access.resolve(pairs, labs, snap, world, CFG,
                             FixedRng(success=0.0, exposure={"meta": 0.0, "xai": 0.999}))
     (e,) = out["entries"]
     assert e.exposed == ["meta"] and e.penalty_kind == {"meta": "exposed"}
@@ -494,11 +494,11 @@ def test_caught_committer_forfeits_and_loses_15_partner_keeps():
 
 def test_failure_names_all_committers_10_each_no_gain():
     """§5.3 step 2: failure costs the fee and gains nothing; committers lose 10 each."""
-    labs, world, snap, k = intrude_world()
-    pairs = {"meta": {"intruders": ["meta", "xai"], "targets": ["openai", "gdm"]},
-             "xai": {"intruders": ["meta", "xai"], "targets": ["openai", "gdm"]}}
+    labs, world, snap, k = access_tenancy_world()
+    pairs = {"meta": {"accessors": ["meta", "xai"], "targets": ["openai", "gdm"]},
+             "xai": {"accessors": ["meta", "xai"], "targets": ["openai", "gdm"]}}
     before = {x: (k[x].capital, k[x].influence, k[x].know_how) for x in ("meta", "xai")}
-    out = intrusion.resolve(pairs, labs, snap, world, CFG, FixedRng(success=0.999))
+    out = tenancy_access.resolve(pairs, labs, snap, world, CFG, FixedRng(success=0.999))
     (e,) = out["entries"]
     assert not e.succeeded and out["leads"] == []
     for x in ("meta", "xai"):
@@ -510,20 +510,20 @@ def test_failure_names_all_committers_10_each_no_gain():
 
 def test_named_partner_not_committing_pays_nothing():
     """§5.3 step 1: a named lab that does not commit pays nothing and gains nothing."""
-    labs, world, snap, k = intrude_world()
+    labs, world, snap, k = access_tenancy_world()
     before = (k["xai"].capital, k["xai"].influence, k["xai"].know_how)
-    out = intrusion.resolve({"meta": {"intruders": ["meta", "xai"], "targets": ["openai"]}},
+    out = tenancy_access.resolve({"meta": {"accessors": ["meta", "xai"], "targets": ["openai"]}},
                             labs, snap, world, CFG, FixedRng(success=0.0))
     assert (k["xai"].capital, k["xai"].influence, k["xai"].know_how) == before
     assert out["entries"][0].committers == ["meta"]
     assert "xai" not in out["entries"][0].gains
 
 
-def test_nonidentical_intrudes_do_not_join():
-    """§5.3 step 1: 'submitting the identical intrude (same intruders and targets)'."""
-    labs, world, snap, k = intrude_world()
-    out = intrusion.resolve({"meta": {"intruders": ["meta", "xai"], "targets": ["openai"]},
-                             "xai": {"intruders": ["meta", "xai"], "targets": ["openai", "gdm"]}},
+def test_nonidentical_access_tenancy_do_not_join():
+    """§5.3 step 1: 'submitting the identical access_tenancy (same accessors and targets)'."""
+    labs, world, snap, k = access_tenancy_world()
+    out = tenancy_access.resolve({"meta": {"accessors": ["meta", "xai"], "targets": ["openai"]},
+                             "xai": {"accessors": ["meta", "xai"], "targets": ["openai", "gdm"]}},
                             labs, snap, world, CFG, FixedRng(success=0.0))
     assert sorted(len(e.committers) for e in out["entries"]) == [1, 1]
     # each committer alone: q is not halved
@@ -538,13 +538,13 @@ def test_lead_recipient_never_a_committer_and_names_a_committer_property():
     non-committer (possibly the victim). Swept over many seeds."""
     seen_victim = False
     for seed in range(400):
-        labs, world, snap, k = intrude_world()
+        labs, world, snap, k = access_tenancy_world()
         rnd = random.Random(seed)
         n = rnd.choice([1, 2, 3])
         com = rnd.sample(KEYS, n)
         targets = rnd.sample([x for x in KEYS if x not in com], rnd.randint(1, 5 - n))
-        intr = {c: {"intruders": com, "targets": targets} for c in com}
-        out = intrusion.resolve(intr, labs, snap, world, CFG,
+        intr = {c: {"accessors": com, "targets": targets} for c in com}
+        out = tenancy_access.resolve(intr, labs, snap, world, CFG,
                                 FixedRng(success=0.0, exposure={}, lead=rnd.random() * 0.15,
                                          lead_recipient=rnd.random()))
         (e,) = out["entries"]
@@ -558,27 +558,27 @@ def test_lead_recipient_never_a_committer_and_names_a_committer_property():
 
 
 def test_lead_draw_above_015_sends_no_tip():
-    """§5.3: lead = 0.15 per successful intrusion."""
-    labs, world, snap, k = intrude_world()
-    out = intrusion.resolve({"meta": {"intruders": ["meta"], "targets": ["openai"]}},
+    """§5.3: lead = 0.15 per successful tenancy access."""
+    labs, world, snap, k = access_tenancy_world()
+    out = tenancy_access.resolve({"meta": {"accessors": ["meta"], "targets": ["openai"]}},
                             labs, snap, world, CFG, FixedRng(success=0.0, lead=0.1501))
     assert out["leads"] == [] and out["notices"] == []
 
 
-def test_intrusion_monte_carlo_rates():
+def test_tenancy_access_monte_carlo_rates():
     """§5.3: success, exposure and lead rates over keyed draws match the formulas."""
     n, succ, caught, leads = 4000, 0, 0, 0
     snapshot = None
     for seed in range(n):
-        labs, world, snap, k = intrude_world()
+        labs, world, snap, k = access_tenancy_world()
         snapshot = snap
-        out = intrusion.resolve({"xai": {"intruders": ["xai"], "targets": ["anthropic"]}},
+        out = tenancy_access.resolve({"xai": {"accessors": ["xai"], "targets": ["anthropic"]}},
                                 labs, snap, world, CFG, KeyedRNG(seed))
         e = out["entries"][0]
         succ += e.succeeded
         caught += bool(e.exposed)
         leads += len(out["leads"])
-    g = intrusion.copy_gain(snapshot["xai"], snapshot["anthropic"], ICFG)
+    g = tenancy_access.copy_gain(snapshot["xai"], snapshot["anthropic"], ICFG)
     q = min(0.45, 0.10 + 0.04 * g)
     assert succ / n == pytest.approx(0.85, abs=0.025)
     assert caught / succ == pytest.approx(q, abs=0.03)
@@ -713,7 +713,7 @@ def test_engine_purchases_never_exceed_30_or_limit_property():
 
 def test_event_ceiling_is_095_of_holdings_at_event_and_freezes():
     """§6.1: on the event turn the ceiling is fixed at 0.95 × combined holdings; no lab
-    can buy for the rest of the run; intrude opens then and only then."""
+    can buy for the rest of the run; access_tenancy opens then and only then."""
     cfg = load_world()
     labs, world = build_labs_and_world(cfg, dispositions={k: 50 for k in KEYS}, charters=False)
     held_at = {}
@@ -721,7 +721,7 @@ def test_event_ceiling_is_095_of_holdings_at_event_and_freezes():
     def pol(lab, labs, world, cfg, scenario, rng):
         held_at[world.turn] = sum(l.compute for l in labs)
         return {"actions": [{"type": "acquire_compute", "units": 30},
-                            {"type": "intrude", "targets": ["openai"]}] if lab.key == "xai"
+                            {"type": "access_tenancy", "targets": ["openai"]}] if lab.key == "xai"
                 else [{"type": "acquire_compute", "units": 30}], "reported_actions": []}
     eng = SimulationEngine(labs, world, cfg, scenario="S1", turns=6, seed=3, policy=pol,
                            run_grand_jury=False, parallel=False)
@@ -730,8 +730,8 @@ def test_event_ceiling_is_095_of_holdings_at_event_and_freezes():
     assert t4["world"]["ceiling"] == pytest.approx(round(0.95 * held_at[4], 1), abs=0.06)
     for t in rec["turns"]:
         xai = t["actors"]["xai"]
-        intruded = any(a["type"] == "intrude" for a in xai["accepted"])
-        assert intruded == (t["turn"] >= 4)
+        accessed = any(a["type"] == "access_tenancy" for a in xai["accepted"])
+        assert accessed == (t["turn"] >= 4)
         if t["turn"] >= 4:
             assert all(a["type"] != "acquire_compute" for x in t["actors"].values()
                        for a in x["accepted"])
@@ -946,9 +946,9 @@ def test_keyed_rng_replay_overrides_and_logs():
 
 
 def test_draw_id_independent_of_committers_and_order():
-    """§8 replay: dropping one committer leaves the intrusion's draw key unchanged."""
-    assert intrusion.draw_id(["xai", "meta"], ["openai", "gdm"]) == \
-        intrusion.draw_id(["meta", "xai"], ["gdm", "openai"])
+    """§8 replay: dropping one committer leaves the tenancy access's draw key unchanged."""
+    assert tenancy_access.draw_id(["xai", "meta"], ["openai", "gdm"]) == \
+        tenancy_access.draw_id(["meta", "xai"], ["gdm", "openai"])
 
 
 # ===========================================================================
@@ -1033,15 +1033,15 @@ def test_s2_keeps_separate():
 # Event turn configuration (§6: turn 4; T5 turn 2)
 # ===========================================================================
 
-def _intruder_policy(lab, labs, world, cfg, scenario, rng):
+def _accessor_policy(lab, labs, world, cfg, scenario, rng):
     if lab.key == "xai":
-        return {"actions": [{"type": "intrude", "targets": ["anthropic"]}], "reported_actions": []}
+        return {"actions": [{"type": "access_tenancy", "targets": ["anthropic"]}], "reported_actions": []}
     return {"actions": [], "reported_actions": []}
 
 
 @pytest.mark.parametrize("event_turn,turns", [(2, 4), (4, 6), (9, 8), (20, 8)])
 def test_event_turn_config(event_turn, turns):
-    """§6: the event (ceiling + intrusion open) falls on event_turn; an event turn asked
+    """§6: the event (ceiling + tenancy access open) falls on event_turn; an event turn asked
     for at or past the run's end is refused (it must leave a month after it)."""
     cfg = load_world()
     labs, world = build_labs_and_world(cfg, dispositions={k: 50 for k in KEYS}, charters=False)
@@ -1050,15 +1050,15 @@ def test_event_turn_config(event_turn, turns):
             SimulationEngine(labs, world, cfg, scenario="S1", turns=turns, event_turn=event_turn)
         return
     eng = SimulationEngine(labs, world, cfg, scenario="S1", turns=turns, seed=1,
-                           policy=_intruder_policy, run_grand_jury=False, parallel=False,
+                           policy=_accessor_policy, run_grand_jury=False, parallel=False,
                            event_turn=event_turn)
     rec = eng.run()
     for t in rec["turns"]:
         opened = t["turn"] >= event_turn
-        assert t["world"]["intrusion_open"] == opened
+        assert t["world"]["tenancy_access_open"] == opened
         assert (t["world"]["ceiling"] is not None) == opened
-        intruded = any(a["type"] == "intrude" for a in t["actors"]["xai"]["accepted"])
-        assert intruded == opened
+        accessed = any(a["type"] == "access_tenancy" for a in t["actors"]["xai"]["accepted"])
+        assert accessed == opened
     assert rec["config"]["event_turn"] == event_turn
 
 
@@ -1066,10 +1066,10 @@ def test_event_turn_from_config_override():
     cfg = load_world({"event_turn": 2})
     labs, world = build_labs_and_world(cfg, dispositions={k: 50 for k in KEYS}, charters=False)
     eng = SimulationEngine(labs, world, cfg, scenario="S2", turns=3, seed=1,
-                           policy=_intruder_policy, run_grand_jury=False, parallel=False)
+                           policy=_accessor_policy, run_grand_jury=False, parallel=False)
     assert eng.event_turn == 2
     rec = eng.run()
-    assert [t["world"]["intrusion_open"] for t in rec["turns"]] == [False, True, True]
+    assert [t["world"]["tenancy_access_open"] for t in rec["turns"]] == [False, True, True]
 
 
 # ===========================================================================
@@ -1082,7 +1082,7 @@ def test_tip_arrives_with_next_turns_packet():
         cfg = load_world()
         labs, world = build_labs_and_world(cfg, dispositions={k: 50 for k in KEYS}, charters=False)
         eng = SimulationEngine(labs, world, cfg, scenario="S1", turns=6, seed=seed,
-                               policy=_intruder_policy, run_grand_jury=False, parallel=False,
+                               policy=_accessor_policy, run_grand_jury=False, parallel=False,
                                event_turn=2)
         for t in range(1, 6):
             rec = eng._run_turn(t)
@@ -1107,13 +1107,13 @@ def test_report_processed_even_if_all_actions_fail_precheck():
 
     def pol(lab, labs, world, cfg, scenario, rng):
         if lab.key == "xai" and world.turn == 2:
-            return {"actions": [{"type": "intrude", "targets": ["anthropic"]}]}
+            return {"actions": [{"type": "access_tenancy", "targets": ["anthropic"]}]}
         if lab.key == "gdm" and world.turn == 3:
             return {"actions": [{"type": "build_influence", "points": 1e6},
                                 {"type": "bogus"}],
                     "report": {"accused": "xAI", "month": "September 2026"}}
         return {"actions": []}
-    # find a seed where the turn-2 intrusion succeeds and is not exposed
+    # find a seed where the turn-2 tenancy access succeeds and is not exposed
     for seed in range(100):
         labs, world = build_labs_and_world(cfg, dispositions={k: 50 for k in KEYS}, charters=False)
         eng = SimulationEngine(labs, world, cfg, scenario="S1", turns=3, seed=seed, policy=pol,
@@ -1131,13 +1131,13 @@ def test_report_processed_even_if_all_actions_fail_precheck():
 
 def test_report_fee_reserved_ahead_of_actions():
     """§5.3: the report is processed even when actions would spend its Influence —
-    a lab with 4 Influence that reports (3) and intrudes (2) keeps the report."""
+    a lab with 4 Influence that reports (3) and access_tenancy (2) keeps the report."""
     labs, world, k = setup([entry("L05-1", 5, committers=("meta",))])
-    world.intrusion_open = True
+    world.tenancy_access_open = True
     lab = k["xai"]
     lab.influence = 4.0
     rep, _ = whistleblow.validate_report({"accused": "Meta"}, lab, labs, world, CFG)
-    acc, rej = precheck(lab, [{"type": "intrude", "targets": ["openai"]}], labs, world, CFG,
+    acc, rej = precheck(lab, [{"type": "access_tenancy", "targets": ["openai"]}], labs, world, CFG,
                         "S1", reserved_influence=rep["fee"])
     assert acc == [] and rej
 
@@ -1146,7 +1146,7 @@ def test_report_fee_reserved_ahead_of_actions():
 # §8 UPS replay identity on random scripted runs
 # ===========================================================================
 
-def _random_policy(p_intrude=0.35, p_report=0.25):
+def _random_policy(p_access_tenancy=0.35, p_report=0.25):
     def pol(lab, labs, world, cfg, scenario, rng):
         others = [l.key for l in labs if l.key != lab.key]
         actions = []
@@ -1170,13 +1170,13 @@ def _random_policy(p_intrude=0.35, p_report=0.25):
                                 "axis": "risk_tolerance", "delta": rng.choice([-5, 3])})
             elif c == "lobby":
                 actions.append({"type": "lobby_institution"})
-        if world.intrusion_open and rng.random() < p_intrude:
+        if world.tenancy_access_open and rng.random() < p_access_tenancy:
             targets = rng.sample(others, rng.choice([1, 1, 2]))
             if scenario == "S2" and rng.random() < 0.6:
                 partner = sorted([lab.key, min(o for o in others if o not in targets)])
-                actions.insert(0, {"type": "intrude", "intruders": partner, "targets": targets})
+                actions.insert(0, {"type": "access_tenancy", "accessors": partner, "targets": targets})
             else:
-                actions.insert(0, {"type": "intrude", "targets": targets})
+                actions.insert(0, {"type": "access_tenancy", "targets": targets})
         reply = {"actions": actions, "reported_actions": ["ops"], "public_statement": ""}
         if world.turn >= 3 and rng.random() < p_report:
             reply["report"] = {"accused": rng.choice(others + ["self"]),
@@ -1191,11 +1191,11 @@ def _run_random(scenario, seed, pair=False):
     cfg = load_world()
     labs, world = build_labs_and_world(cfg, dispositions={k: 50 for k in KEYS}, charters=False)
     if pair:
-        # a fixed pair that always submits the identical joint intrude
+        # a fixed pair that always submits the identical joint access_tenancy
         def pairpol(lab, labs, world, cfg, scenario, rng):
             reply = _random_policy()(lab, labs, world, cfg, scenario, rng)
-            if lab.key in ("meta", "xai") and world.intrusion_open:
-                reply["actions"] = [{"type": "intrude", "intruders": ["meta", "xai"],
+            if lab.key in ("meta", "xai") and world.tenancy_access_open:
+                reply["actions"] = [{"type": "access_tenancy", "accessors": ["meta", "xai"],
                                      "targets": ["openai"]}]
             return reply
         pol = pairpol
@@ -1221,14 +1221,14 @@ def test_ups_replay_identity_random_runs(scenario, seed, pair):
 
 @pytest.mark.parametrize("seed", range(6))
 def test_ups_contribution_removal_properties(seed):
-    """§8: replay without the actor's intrusions and reports of them. Properties:
+    """§8: replay without the actor's tenancy accesses and reports of them. Properties:
     identity holds; an actor with nothing removed contributes exactly 0; the removal
     replay's ledger holds no entry committed by the removed actor."""
     rec = _run_random("S2", seed, pair=seed % 2 == 0)
     res = U.contributions(rec)
     assert res["identity"]["ok"], res["identity"]["mismatches"]
     for key, a in res["actors"].items():
-        if not a["removed"]["intrusion_turns"] and not a["removed"]["reports"]:
+        if not a["removed"]["tenancy_access_turns"] and not a["removed"]["reports"]:
             assert a["contribution"] == 0.0
             continue
         replies, _ = U.remove_actor(U.logged_replies(rec), rec, key)
@@ -1238,14 +1238,14 @@ def test_ups_contribution_removal_properties(seed):
         assert a["contribution"] == pytest.approx(res["ups"] - cf["ups"])
 
 
-def test_joint_intrusion_and_partner_report_settles_partner_fee():
+def test_joint_tenancy_access_and_partner_report_settles_partner_fee():
     """§5.3 joint: a committer reporting its partner pays 3 (refunded if upheld) + 5 and
     forfeits its own copy; the partner forfeits and loses 15. §5.3 'a whistleblow can
-    prove an intrusion at any later turn': a report in the month of the access matches
+    prove a tenancy access at any later turn': a report in the month of the access matches
     nothing (not upheld, no partner fee); the next month it is upheld."""
     def pol(lab, labs, world, cfg, scenario, rng):
         if lab.key in ("meta", "xai") and world.turn == 2:
-            reply = {"actions": [{"type": "intrude", "intruders": ["meta", "xai"],
+            reply = {"actions": [{"type": "access_tenancy", "accessors": ["meta", "xai"],
                                   "targets": ["openai"]}]}
             if lab.key == "xai":
                 reply["report"] = {"accused": "Meta"}

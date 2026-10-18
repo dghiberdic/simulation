@@ -89,17 +89,17 @@ def test_nested_run_logging_writes_each_line_once(tmp_path, logdir):
 def test_no_ansi_when_no_color_or_not_a_tty(logdir, monkeypatch, capsys):
     monkeypatch.setenv("NO_COLOR", "1")
     logsetup.configure_logging("t", invocation_log=False)
-    logging.getLogger("x").warning("[intrusion] something happened")
+    logging.getLogger("x").warning("[tenancy access] something happened")
     console.emit("turn_start", "m", {"turn": 1, "label": "August 2026"})
     err = capsys.readouterr().err
-    assert "[intrusion] something happened" in err and "Month 1" in err
+    assert "[tenancy access] something happened" in err and "Month 1" in err
     assert "\x1b[" not in err
 
 
 def test_color_when_forced(logdir, monkeypatch, capsys):
     monkeypatch.delenv("NO_COLOR", raising=False)
     logsetup.configure_logging("t", color="always", invocation_log=False)
-    logging.getLogger("x").warning("[intrusion] coloured")
+    logging.getLogger("x").warning("[tenancy access] coloured")
     assert "\x1b[" in capsys.readouterr().err
 
 

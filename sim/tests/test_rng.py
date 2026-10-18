@@ -35,7 +35,7 @@ def test_keys_and_seeds_are_independent():
 
 
 def test_drawing_other_keys_does_not_shift_a_draw():
-    """No shared stream: extra draws (another actor's intrusion) change nothing else."""
+    """No shared stream: extra draws (another actor's tenancy access) change nothing else."""
     r1, r2 = KeyedRNG(9), KeyedRNG(9)
     for t in range(1, 5):
         r2.uniform(t, "success", "xai>openai")

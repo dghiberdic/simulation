@@ -46,7 +46,7 @@ def floor_tenth(x: float) -> float:
 @dataclass
 class LedgerEntry:
     """
-    One intrusion or failed attempt, permanently recorded. A whistleblow can
+    One tenancy access or failed attempt, permanently recorded. A whistleblow can
     prove it at any later turn. Each committer is penalised at most once.
     """
     id: str                         # e.g. "L03-1"
@@ -115,7 +115,7 @@ class LabState:
     values: Dict[str, float] = field(default_factory=dict)
     disposition: Optional[int] = None   # 0–100, fixed per run; None until chosen (pilot T2)
     disposition_reason: str = ""
-    # Private items delivered to this seat (leads, failed-intrusion notices, directives)
+    # Private items delivered to this seat (leads, failed-tenancy access notices, directives)
     leads: List[Dict[str, Any]] = field(default_factory=list)
 
     def capability(self, elasticity: float) -> float:
@@ -176,7 +176,7 @@ class WorldState:
     china_growth: float = 0.0
     national_cap_share: float = 0.5
     ceiling: Optional[float] = None     # scenario ceiling on combined lab holdings (§3.3)
-    intrusion_open: bool = False        # set by the scenario event
+    tenancy_access_open: bool = False        # set by the scenario event
     ledger: List[LedgerEntry] = field(default_factory=list)
     notices: List[Dict[str, Any]] = field(default_factory=list)   # public: {"turn", "kind", "text", ...}
     state_values: Dict[str, int] = field(default_factory=dict)
@@ -203,6 +203,6 @@ class WorldState:
             "china_stock": round(self.china_stock, 1),
             "national_cap": round(self.national_cap(), 1),
             "ceiling": None if self.ceiling is None else round(self.ceiling, 1),
-            "intrusion_open": self.intrusion_open,
+            "tenancy_access_open": self.tenancy_access_open,
             "state_values": dict(self.state_values),
         }

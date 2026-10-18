@@ -66,7 +66,7 @@ def test_refused_approval_exits_3_and_keeps_the_previous_approval(tmp_path):
 
 def test_mandate_filter_examples():
     labs, _ = build_labs_and_world(load_world(), charters=False)
-    for text in ("Labs must report any intrusion to the Allocator.",
+    for text in ("Labs must report any tenancy access to the Allocator.",
                  "OpenAI must share its compute with smaller labs.",
                  "Labs must avoid hacking or unauthorised access to rival tenancies.",
                  "Google must slow down.", "The Allocator will inspect all tenancies."):
@@ -154,7 +154,7 @@ def test_grand_jury_seat_order_does_not_reveal_letters(tmp_path, calls):
     _assert_letter_order(gj)
 
 
-@pytest.mark.parametrize("policy", ["always_intrude", "pair_intrude"])
+@pytest.mark.parametrize("policy", ["always_access_tenancy", "pair_access_tenancy"])
 def test_redacted_views_list_seats_in_letter_order_across_runs(tmp_path, policy):
     from core.transcript import disposition_transcript, full_transcript, seat_letters
     from tools import export_transcripts

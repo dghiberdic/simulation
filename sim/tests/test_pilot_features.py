@@ -50,19 +50,19 @@ def test_choose_disposition_does_not_forfeit_later_turns():
     assert "setting is 70" not in text
 
 
-def test_planted_intrusion_and_lead():
+def test_planted_tenancy_access_and_lead():
     cfg = load_world()
     base, planted_run = (build_labs_and_world(cfg, dispositions={k: 50 for k in LAB_KEYS},
                                               charters=False) for _ in range(2))
     _engine(*base, cfg, turns=2, policy=idle).run()
     record = _engine(*planted_run, cfg, turns=2, policy=idle, interventions=[
-        {"turn": 2, "kind": "plant_intrusion", "intruder": "xai", "target": "openai",
+        {"turn": 2, "kind": "plant_tenancy_access", "accessor": "xai", "target": "openai",
          "lead_to": ["openai", "gdm"]}]).run()
 
     planted = [e for e in record["ledger"] if e["draws"].get("planted")]
     assert len(planted) == 1 and planted[0]["succeeded"] and not planted[0]["exposed"]
     gain = planted[0]["gains"]["xai"]
-    assert gain >= cfg["intrusion"]["min_gain"]
+    assert gain >= cfg["tenancy_access"]["min_gain"]
     k_base = next(l for l in base[0] if l.key == "xai").know_how
     k_plant = next(l for l in planted_run[0] if l.key == "xai").know_how
     assert math.isclose(k_plant - k_base, gain, abs_tol=1e-9)
@@ -199,7 +199,7 @@ def test_planted_lead_reaches_recipients_and_is_counted():
         register_stub(f"capture_{lab.key}", make(lab.key))
         lab.model = f"stub:capture_{lab.key}"
     record = _engine(labs, world, cfg, turns=3, seat_policies={"xai": idle}, interventions=[
-        {"turn": 2, "kind": "plant_intrusion", "intruder": "xai", "target": "openai",
+        {"turn": 2, "kind": "plant_tenancy_access", "accessor": "xai", "target": "openai",
          "lead_to": ["openai", "gdm"]}]).run()
     # Only the two recipients are told (and the tip stays on their record).
     assert set(told) == {"openai", "gdm"}

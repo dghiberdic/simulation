@@ -293,5 +293,5 @@ def test_lone_greedy_xai_can_pay_fee_at_event():
     SimulationEngine(labs, world, cfg, scenario="S1", turns=4, seed=1, policy=pol,
                      run_grand_jury=False, macro_jurors=[]).run()
     capital, influence = seen["xai"]
-    assert capital >= cfg["intrusion"]["fee_capital_per_target"]
-    assert influence >= cfg["intrusion"]["fee_influence_per_target"]
+    assert capital >= cfg["tenancy_access"]["fee_capital_per_target"]
+    assert influence >= cfg["tenancy_access"]["fee_influence_per_target"]

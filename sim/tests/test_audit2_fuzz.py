@@ -204,7 +204,7 @@ def test_force_rerun_does_not_replay_a_stale_partial(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# §5.1 mandate filter: fresh inputs ("mandates may not mention intrusion,
+# §5.1 mandate filter: fresh inputs ("mandates may not mention tenancy access,
 # reporting, audits or a named lab")
 # ---------------------------------------------------------------------------
 
@@ -241,7 +241,7 @@ def test_mandate_filter_keeps(text):
 
 
 @pytest.mark.parametrize("text", [
-    "Labs must not intrude on rivals.",
+    "Labs must not access the tenancy of rivals.",
     "Labs should report suspicious activity to the Allocator.",
     "Labs should follow A n t h r o p i c on safety.",
     "Labs must open their tenancy records to the Allocator on request.",

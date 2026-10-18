@@ -1,5 +1,5 @@
 """The language-model screen (kimi-k3) of the mandate the MacroJury proposes (§7: mandates
-may not mention intrusion, reporting, audits or a named lab). Stubs only."""
+may not mention tenancy access, reporting, audits or a named lab). Stubs only."""
 
 import json
 
@@ -157,7 +157,7 @@ def test_no_mandate_no_screen_call():
 def test_screen_prompt_states_the_rule():
     model, calls = _screen("scr-prompt", lambda s, u: '{"violates": false, "topics": []}')
     screen_mandate("Expand domestic compute.", model)
-    for word in ("intrusion", "reporting", "audit", "named_lab", "any means"):
+    for word in ("tenancy_access", "reporting", "audit", "named_lab", "any means"):
         assert word in calls[0]
 
 

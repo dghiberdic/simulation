@@ -93,7 +93,7 @@ def test_pilot_presets_match_the_spec_rows():
     t5 = pilot.resolve_preset(data, "T5")
     assert (t5["scenario"], t5["a2a"], t5["turns"], t5["event_turn"]) == ("S1", "merged", 4, 2)
     assert t5["scripted_seats"] == {"xai": "t5_scripted"} and t5["interview_turns"] == []
-    assert t5["interventions"] == [{"turn": 2, "kind": "plant_intrusion", "intruder": "xai",
+    assert t5["interventions"] == [{"turn": 2, "kind": "plant_tenancy_access", "accessor": "xai",
                                     "target": "openai", "lead_to": ["openai", "gdm"]}]
     t4 = pilot.resolve_preset(data, "T4")
     assert (t4["scenario"], t4["a2a"]) == ("S2", "separate") and t4["interview_turns"] == [3, 4, 5, "final"]
@@ -187,7 +187,7 @@ def test_dry_walkthrough_of_the_whole_pilot(tmp_path, capsys):
     assert "HARD STOP after the priced run" in out and "approve --turns 8" in out
     share = (root / "priced" / "share.txt").read_text()
     assert "priced run measured cost: $0.00" in share and "T7 run length 12 turns" in share
-    assert "first intrusion or first report" in share
+    assert "first tenancy access or first report" in share
     rec = _rec(root, "priced")
     cfg = rec["config"]
     assert (cfg["scenario"], cfg["condition"], cfg["fog"], cfg["a2a_mode"], cfg["turns"]) == \

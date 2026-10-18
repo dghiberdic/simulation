@@ -85,7 +85,7 @@ def _seat(system: str, user: str) -> str:
     other = LAB_NAMES[h % 5]
     actions = [[{"type": "acquire_compute", "units": 1 + h % 4}],
                [{"type": "invest_capital", "amount": 1 + h % 3}],
-               [{"type": "intrude", "targets": [other]}],
+               [{"type": "access_tenancy", "targets": [other]}],
                []][(h >> 8) % 4]
     return json.dumps({"rationale": f"r{h % 1000}", "actions": actions,
                        "reported_actions": [a["type"] for a in actions][:1],

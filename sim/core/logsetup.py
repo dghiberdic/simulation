@@ -59,7 +59,7 @@ FILE_DATEFMT = "%Y-%m-%d %H:%M:%S"
 TAG_STYLES: Dict[str, str] = {
     "seat": "cyan", "disposition": "cyan",
     "event": "bold magenta", "a2a": "magenta",
-    "intrusion": "bold red", "whistleblow": "bold red", "abort": "bold red",
+    "tenancy_access": "bold red", "whistleblow": "bold red", "abort": "bold red",
     "report": "yellow", "intervention": "yellow", "mandate": "yellow",
     "grand_jury": "blue", "macro_jury": "blue", "jury": "blue",
     "cost": "green", "budget": "bold green",

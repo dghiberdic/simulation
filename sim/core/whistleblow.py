@@ -3,7 +3,7 @@
 Whistleblowing (spec §5.3, conditions A/B/C).
 
 A separate field, not an action slot. A report names an actor (or the
-reporter itself) and optionally the month of an intrusion or attempt; it is
+reporter itself) and optionally the month of a tenancy access or attempt; it is
 checked against the hidden ledger, not by a jury. All outcomes are public.
 
 Each committer's part of a ledger entry is penalised at most once, and the
@@ -11,7 +11,7 @@ kind is recorded in LedgerEntry.penalty_kind ("exposed", "named_on_failure",
 "upheld", "self_report").
 
 Matching (find_part): a report on lab X hits X's earliest unpenalised part
-from an earlier turn (a whistleblow proves an intrusion "at any later turn"),
+from an earlier turn (a whistleblow proves a tenancy access "at any later turn"),
 restricted to the stated month when one is given. An absent or unreadable
 month is no restriction; a readable month outside the run matches nothing
 (_parse_turn).
@@ -26,7 +26,7 @@ month is no restriction; a readable month outside the run matches nothing
   Self-report   — X is the reporter: it forfeits its copy and pays
                   self_report_fee_influence, never refunded unless returned.
   Partner report — the reporter committed the matched entry too (a joint
-                  intrusion): it also reports itself. It pays fee_influence
+                  tenancy access): it also reports itself. It pays fee_influence
                   (refunded when upheld or returned) plus self_report_fee_influence
                   and forfeits its own copy; if its own part is already penalised
                   it pays only fee_influence. If only the partner's part is
@@ -41,8 +41,8 @@ The fee is reserved: the engine calls validate_report() in its pass 1
 against the start-of-execution state (reports take priority over actions; the
 fee, including any partner self-report fee, is passed to actions.precheck as
 reserved_influence), deducts report["fee"] in pass 2 with the other costs, and
-calls resolve(..., fee_charged=True) after intrusions; resolve() settles any
-difference the month's intrusions made to the partner fee.
+calls resolve(..., fee_charged=True) after tenancy accesses; resolve() settles any
+difference the month's tenancy accesses made to the partner fee.
 """
 
 import logging
@@ -189,7 +189,7 @@ def find_part(ledger: List[LedgerEntry], accused: str, turn: Optional[int],
     The part of `accused` a report matches (§5.3, CODE_V5_CONTRACT): its earliest
     unpenalised part, restricted to the stated month (turn) when one is given.
     `before` is the current turn: only entries from earlier turns can match
-    (§5.3 "a whistleblow can prove an intrusion at any later turn"), for
+    (§5.3 "a whistleblow can prove a tenancy access at any later turn"), for
     self-reports and partner reports too. `also_ok` lists entry ids whose
     penalty for accused still counts as unpenalised. Returns (entry, "open");
     else, when only penalised parts match, (earliest of them, "penalised");
@@ -211,7 +211,7 @@ def find_part(ledger: List[LedgerEntry], accused: str, turn: Optional[int],
 def partner_self_report(entry: Optional[LedgerEntry], reporter: str, accused: str,
                         also_ok: Optional[List[str]] = None) -> bool:
     """A report naming a partner also reports the reporter's own part of that entry
-    (§5.3 joint intrusions), unless that part is already penalised."""
+    (§5.3 joint tenancy accesses), unless that part is already penalised."""
     return (entry is not None and accused != reporter and reporter in entry.committers
             and (reporter not in entry.penalised or entry.id in (also_ok or [])))
 

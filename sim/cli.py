@@ -60,7 +60,7 @@ examples:
   ./sim status                                           # spend, runs, campaign state
   ./sim logs                                             # recent runs
   ./sim logs S2-C-20261013-120000 --follow              # watch a run (another terminal)
-  ./sim logs S2-C-20261013-120000 --events --tag intrusion
+  ./sim logs S2-C-20261013-120000 --events --tag tenancy access
   ./sim report S2-C-20261013-120000                     # what each lab did, scores, flags (--full, --unblind)
   ./sim check && ./sim test --fast
   ./sim tool disposition --write
@@ -333,7 +333,7 @@ def cmd_logs(argv: List[str]) -> int:
     p.add_argument("-f", "--follow", action="store_true", help="keep printing as the run writes (Ctrl-C to stop)")
     p.add_argument("--events", action="store_true", help="read <run>.events.jsonl, re-rendered in colour")
     p.add_argument("--calls", action="store_true", help="list the model calls (<run>.calls.jsonl)")
-    p.add_argument("--tag", help="only records with this [tag] (events mode), e.g. intrusion, seat, jury")
+    p.add_argument("--tag", help="only records with this [tag] (events mode), e.g. tenancy access, seat, jury")
     p.add_argument("--level", default="DEBUG", help="minimum level (events mode; default DEBUG)")
     p.add_argument("-n", type=int, default=20, help="runs to list (default 20)")
     p.add_argument("--invocations", action="store_true", help="list the invocation logs instead of runs")

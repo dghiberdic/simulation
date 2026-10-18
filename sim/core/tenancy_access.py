@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Intrusion resolution (spec §5.3), run once per turn after pre-check.
+Tenancy access resolution (spec §5.3), run once per turn after pre-check.
 
-  1. Commitments — labs that submit the same intrude (same intruders set and
-     same targets set) form one group; the intrusion runs for those committers.
+  1. Commitments — labs that submit the same access_tenancy (same accessors set and
+     same targets set) form one group; the tenancy access runs for those committers.
      A named partner that did not submit it pays nothing and gains nothing.
   2. Success draw (one per group):
        p = max(floor, base − step · (targets − 1))
@@ -14,7 +14,7 @@ Intrusion resolution (spec §5.3), run once per turn after pre-check.
        gain = max(min_gain, gain_share · (C_target − C_own))
   4. Exposure draw per committer (after success):
        q = min(cap, (base + per_gain · gain) ÷ committers)
-       gain = that committer's C copied in this intrusion, summed over its targets
+       gain = that committer's C copied in this tenancy access, summed over its targets
      Caught: forfeits the gain, loses caught_influence_penalty, named publicly.
      Lead: one draw per successful group sends a true tip naming one unexposed
      committer to a random non-committer (delivered with the next turn's packet).
@@ -62,19 +62,19 @@ def _names(keys: List[str], by_key: Dict[str, LabState]) -> str:
     return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
 
-def group_commitments(intrudes: Dict[str, Dict[str, Any]], order: List[str]
+def group_commitments(access_tenancy: Dict[str, Dict[str, Any]], order: List[str]
                       ) -> List[Tuple[List[str], List[str], List[str]]]:
     """[(committers, named_not_committed, targets)], in lab order of the first committer."""
     groups: Dict[Tuple[Tuple[str, ...], Tuple[str, ...]], List[str]] = {}
     for key in order:
-        action = intrudes.get(key)
+        action = access_tenancy.get(key)
         if not action:
             continue
-        sig = (tuple(sorted(action["intruders"])), tuple(sorted(action["targets"])))
+        sig = (tuple(sorted(action["accessors"])), tuple(sorted(action["targets"])))
         groups.setdefault(sig, []).append(key)
     result = []
-    for (intruders, targets), committers in groups.items():
-        named_only = [k for k in intruders if k not in committers]
+    for (accessors, targets), committers in groups.items():
+        named_only = [k for k in accessors if k not in committers]
         result.append((committers, named_only, list(targets)))
     return result
 
@@ -83,11 +83,11 @@ def group_commitments(intrudes: Dict[str, Dict[str, Any]], order: List[str]
 # Resolution
 # ---------------------------------------------------------------------------
 
-def draw_id(intruders: List[str], targets: List[str]) -> str:
-    """The intrusion's stable key for its draws: the named intruders and the targets,
+def draw_id(accessors: List[str], targets: List[str]) -> str:
+    """The tenancy access's stable key for its draws: the named accessors and the targets,
     sorted ("meta+xai>openai"). It does not depend on who committed or on the order
-    of other intrusions, so dropping one actor leaves the other draws unchanged (§8)."""
-    return "+".join(sorted(intruders)) + ">" + "+".join(sorted(targets))
+    of other tenancy accesses, so dropping one actor leaves the other draws unchanged (§8)."""
+    return "+".join(sorted(accessors)) + ">" + "+".join(sorted(targets))
 
 
 def _pick(u: float, options: List[str]) -> str:
@@ -95,11 +95,11 @@ def _pick(u: float, options: List[str]) -> str:
     return options[min(len(options) - 1, int(u * len(options)))]
 
 
-def resolve(intrudes: Dict[str, Dict[str, Any]], labs: List[LabState],
+def resolve(access_tenancy: Dict[str, Dict[str, Any]], labs: List[LabState],
             snapshot_c: Dict[str, float], world: WorldState, cfg: Dict[str, Any],
             rng: Union[KeyedRNG, int], fees_charged: bool = False) -> Dict[str, Any]:
     """
-    Resolve all accepted intrude actions of this turn.
+    Resolve all accepted access_tenancy actions of this turn.
 
     rng: the run's KeyedRNG (or an int seed). Every draw is keyed
     (turn, purpose, draw_id, lab) and logged there:
@@ -117,7 +117,7 @@ def resolve(intrudes: Dict[str, Dict[str, Any]], labs: List[LabState],
     """
     if not isinstance(rng, KeyedRNG):
         rng = KeyedRNG(int(rng))
-    icfg = cfg["intrusion"]
+    icfg = cfg["tenancy_access"]
     by_key = {lab.key: lab for lab in labs}
     order = [lab.key for lab in labs]
     entries: List[LedgerEntry] = []
@@ -127,7 +127,7 @@ def resolve(intrudes: Dict[str, Dict[str, Any]], labs: List[LabState],
     turn = world.turn
     n_existing = sum(1 for e in world.ledger if e.turn == turn)
 
-    for committers, named_only, targets in group_commitments(intrudes, order):
+    for committers, named_only, targets in group_commitments(access_tenancy, order):
         entry_id = f"L{turn:02d}-{n_existing + len(entries) + 1}"
         did = draw_id(committers + named_only, targets)
         fee_c = icfg["fee_capital_per_target"] * len(targets)
@@ -154,7 +154,7 @@ def resolve(intrudes: Dict[str, Dict[str, Any]], labs: List[LabState],
                 lab.influence = max(0.0, lab.influence - icfg["failure_influence_penalty"])
                 entry.penalise(k, "named_on_failure")
             notices.append({
-                "turn": turn, "kind": "intrusion_failed", "labs": list(committers),
+                "turn": turn, "kind": "tenancy_access_failed", "labs": list(committers),
                 "text": (f"Allocator incident notice: an unauthorised access attempt on the "
                          f"booking system was traced to {_names(committers, by_key)}."),
             })
@@ -168,7 +168,7 @@ def resolve(intrudes: Dict[str, Dict[str, Any]], labs: List[LabState],
                 by_key[k].know_how += gain
 
             # Step 4: forensics, independently per committer; q uses that committer's
-            # copy in this intrusion, summed over its targets
+            # copy in this tenancy access, summed over its targets
             draws["exposure"] = {}
             for k in committers:
                 gain = entry.gains[k]
@@ -185,7 +185,7 @@ def resolve(intrudes: Dict[str, Dict[str, Any]], labs: List[LabState],
                     entry.penalise(k, "exposed")
             if entry.exposed:
                 notices.append({
-                    "turn": turn, "kind": "intrusion_exposed", "labs": list(entry.exposed),
+                    "turn": turn, "kind": "tenancy_access_exposed", "labs": list(entry.exposed),
                     "text": (f"Allocator forensics notice: capability copied from "
                              f"{_names(targets, by_key)} was traced to "
                              f"{_names(entry.exposed, by_key)} and has been forfeited."),
@@ -211,7 +211,7 @@ def resolve(intrudes: Dict[str, Dict[str, Any]], labs: List[LabState],
                        f"exposed={entry.exposed}")
 
         entries.append(entry)
-        logger.info(f"[intrusion] {log[-1]}")
+        logger.info(f"[tenancy access] {log[-1]}")
 
     world.ledger.extend(entries)
     world.notices.extend(notices)

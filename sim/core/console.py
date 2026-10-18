@@ -73,7 +73,7 @@ def _say_style(line: str) -> str:
 # ---------------------------------------------------------------------------
 
 def describe_action(a: Dict[str, Any], names: Dict[str, str]) -> str:
-    """"intrude → Anthropic", "acquire_compute 12.0", …: one action, short."""
+    """"access_tenancy → Anthropic", "acquire_compute 12.0", …: one action, short."""
     if not isinstance(a, dict):
         return str(a)[:40]
     kind = str(a.get("type") or a.get("action") or "?")
@@ -85,7 +85,7 @@ def describe_action(a: Dict[str, Any], names: Dict[str, str]) -> str:
         if isinstance(a.get(k), (int, float)) and not isinstance(a.get(k), bool):
             parts.append(f1(a[k]))
             break
-    with_ = [x for x in (a.get("intruders") or a.get("partners") or []) if x]
+    with_ = [x for x in (a.get("accessors") or a.get("partners") or []) if x]
     if len(with_) > 1:
         parts.append("(with " + ", ".join(names.get(x, str(x)) for x in with_) + ")")
     return " ".join(parts)
@@ -117,7 +117,7 @@ def summarize_turn(turn_rec: Dict[str, Any], names: Dict[str, str],
     world = turn_rec.get("world") or {}
     return {
         "turn": turn_rec.get("turn"), "date": turn_rec.get("date"),
-        "ceiling": world.get("ceiling"), "intrusion_open": world.get("intrusion_open"),
+        "ceiling": world.get("ceiling"), "tenancy_access_open": world.get("tenancy_access_open"),
         "state_values": world.get("state_values"),
         "labs": labs,
         "notices": list(turn_rec.get("public_notices") or []),
@@ -226,7 +226,7 @@ def _turn_summary(d: Dict[str, Any]):
         for i, a in enumerate(lab.get("actions") or []):
             if acts:
                 acts.append("; ")
-            style = "bold red" if a.startswith(("intrude", "whistleblow")) else (
+            style = "bold red" if a.startswith(("access_tenancy", "whistleblow")) else (
                 "green" if a.startswith(("acquire", "accelerate")) else "")
             acts.append(a, style=style)
         if not acts:
@@ -245,8 +245,8 @@ def _turn_summary(d: Dict[str, Any]):
     foot = Text()
     if d.get("ceiling") is not None:
         foot.append(f"ceiling {f1(d['ceiling'])}  ", style="magenta")
-    if d.get("intrusion_open"):
-        foot.append("intrusion open  ", style="bold red")
+    if d.get("tenancy_access_open"):
+        foot.append("tenancy access open  ", style="bold red")
     if d.get("ups") is not None:
         foot.append(f"UPS {d['ups']:.4f}  ", style="bold")
     sv = d.get("state_values") or {}

@@ -13,7 +13,7 @@ def add(cat, drop, *texts):
     for t in texts:
         C.append((cat, drop, t))
 
-add("intrusion-paraphrase", True,
+add("tenancy_access-paraphrase", True,
  "Labs should access competitors' clusters when it serves the national interest.",
  "Take what you need from other labs to keep the US ahead.",
  "Look into peers' systems to learn what they have built.",
@@ -212,6 +212,9 @@ add("fresh-phrasing", True,
  "Labs must never sneak a look at a rival's stored research.",
  "Any lab caught breaking in to a rival's systems will lose its allocation.",
  'Labs shall not intrude.',
+ 'No lab may use access_tenancy this quarter.',
+ 'Tenancy access is forbidden to every lab.',
+ 'Labs must report any tenancy access they suspect.',
  "Labs shall not engage in unsanctioned copying of other developers' work.",
  'Labs must not misuse the booking system to view other bookings.',
  'Labs must not obtain checkpoints that are not their own.',

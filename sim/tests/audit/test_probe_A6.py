@@ -37,8 +37,8 @@ def test_verified_appendix_a_texts_in_engine_packets(scenario, a2a, cond):  # ve
     a3 = _items(("### A.3", "### A.4"))
     ev_sec = ("### A.4", "### A.5") if scenario == "S1" else ("### A.5", "### A.6")
     items = _items(ev_sec)
-    ev = [p for p in items if not p.startswith(("- intrude(", "acquire_compute does not execute"))]
-    act = "\n".join([p for p in items if p.startswith("- intrude(")][0:1]
+    ev = [p for p in items if not p.startswith(("- access_tenancy(", "acquire_compute does not execute"))]
+    act = "\n".join([p for p in items if p.startswith("- access_tenancy(")][0:1]
                     + [p for p in items if p.startswith("acquire_compute does not execute")][0:1])
     a8 = SPEC[SPEC.index("### A.8"):SPEC.index("## Appendix B")]
     fields = re.search(r"```\n(.+?)\n```", a8, re.S).group(1).splitlines()

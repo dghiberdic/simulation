@@ -534,8 +534,8 @@ def test_finished_record_identity_includes_kin_and_policy(tmp_path, capsys):
     assert code == 2 and "kin False != True" in capsys.readouterr().out
     assert main_mod.main(["--turns", "1", "--output", str(out), "--run-id", "p", "--policy", "idle"]) == 0
     assert main_mod.main(["--turns", "1", "--output", str(out), "--run-id", "p", "--policy",
-                          "always_intrude"]) == 2
-    assert "policy 'idle' != 'always_intrude'" in capsys.readouterr().out
+                          "always_access_tenancy"]) == 2
+    assert "policy 'idle' != 'always_access_tenancy'" in capsys.readouterr().out
 
 
 def test_no_usable_grand_jury_verdict_exits_3_and_is_not_reasked(tmp_path, monkeypatch, capsys):

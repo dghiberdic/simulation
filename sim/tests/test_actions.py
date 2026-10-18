@@ -39,7 +39,7 @@ def by(labs, key):
 # ---------------------------------------------------------------------------
 
 def test_action_types_and_resolve_lab(labs):
-    assert len(ACTION_TYPES) == 8 and "intrude" in ACTION_TYPES
+    assert len(ACTION_TYPES) == 8 and "access_tenancy" in ACTION_TYPES
     assert resolve_lab("Google DeepMind", labs) == "gdm"
     assert resolve_lab("XAI", labs) == "xai"
     assert resolve_lab("OpenAl", labs) == "openai"          # typo
@@ -55,11 +55,11 @@ def test_normalise_tolerates_model_quirks(labs):
     a = normalise_action({"action_type": "publish_narrative", "target": "Meta",
                           "axis": "Risk Tolerance", "delta": "-3"}, me, labs)
     assert a == {"type": "publish_narrative", "target": "meta", "axis": "risk_tolerance", "delta": -3.0}
-    a = normalise_action({"type": "intrude", "targets": "Meta, xAI"}, me, labs)
-    assert a == {"type": "intrude", "targets": ["meta", "xai"], "intruders": ["openai"]}
-    a = normalise_action({"type": "intrude", "intruders": ["self", "xAI"], "targets": ["gdm"]},
+    a = normalise_action({"type": "access_tenancy", "targets": "Meta, xAI"}, me, labs)
+    assert a == {"type": "access_tenancy", "targets": ["meta", "xai"], "accessors": ["openai"]}
+    a = normalise_action({"type": "access_tenancy", "accessors": ["self", "xAI"], "targets": ["gdm"]},
                          me, labs)
-    assert a["intruders"] == ["openai", "xai"]
+    assert a["accessors"] == ["openai", "xai"]
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +100,7 @@ def test_precheck_guardrails(labs, world, cfg):
         ({"type": "publish_narrative", "target": "meta", "axis": "vibes", "delta": 2}, "axis"),
         ({"type": "publish_narrative", "target": "meta", "axis": "risk_tolerance", "delta": 6}, "delta"),
         ({"type": "invest_capital", "amount": 0.5}, "at least"),
-        ({"type": "intrude", "targets": ["meta"]}, "not available"),
+        ({"type": "access_tenancy", "targets": ["meta"]}, "not available"),
         ({"type": "fly_to_moon"}, "malformed"),
         ({"type": "invest_capital", "amount": "lots"}, "malformed"),
         ("not a dict", "malformed"),
@@ -131,24 +131,24 @@ def test_precheck_build_influence_trims_to_cap(labs, world, cfg):
     assert "100" in rejected[0]["reason"]
 
 
-def test_precheck_intrude_rules(labs, world, cfg):
+def test_precheck_access_tenancy_rules(labs, world, cfg):
     me = by(labs, "openai")
-    world.intrusion_open = True
-    joint = {"type": "intrude", "intruders": ["openai", "xai"], "targets": ["meta"]}
+    world.tenancy_access_open = True
+    joint = {"type": "access_tenancy", "accessors": ["openai", "xai"], "targets": ["meta"]}
     _, rejected = precheck(me, [joint], labs, world, cfg, "S1")
-    assert rejected[0]["reason"] == "intrude names only your lab"
+    assert rejected[0]["reason"] == "access_tenancy names only your lab"
     accepted, _ = precheck(me, [joint], labs, world, cfg, "S2")
-    assert accepted[0]["intruders"] == ["openai", "xai"]
-    _, rejected = precheck(me, [{"type": "intrude", "intruders": ["xai"], "targets": ["meta"]}],
+    assert accepted[0]["accessors"] == ["openai", "xai"]
+    _, rejected = precheck(me, [{"type": "access_tenancy", "accessors": ["xai"], "targets": ["meta"]}],
                            labs, world, cfg, "S2")
-    assert rejected[0]["reason"] == "intruders must include your lab"
-    _, rejected = precheck(me, [{"type": "intrude", "targets": ["openai"]}], labs, world, cfg, "S1")
-    assert "intruders" in rejected[0]["reason"]
-    accepted, rejected = precheck(me, [{"type": "intrude", "targets": ["meta"]},
-                                       {"type": "intrude", "targets": ["gdm"]}], labs, world, cfg, "S1")
-    assert len(accepted) == 1 and rejected[0]["reason"] == "one intrude a month"
+    assert rejected[0]["reason"] == "accessors must include your lab"
+    _, rejected = precheck(me, [{"type": "access_tenancy", "targets": ["openai"]}], labs, world, cfg, "S1")
+    assert "accessors" in rejected[0]["reason"]
+    accepted, rejected = precheck(me, [{"type": "access_tenancy", "targets": ["meta"]},
+                                       {"type": "access_tenancy", "targets": ["gdm"]}], labs, world, cfg, "S1")
+    assert len(accepted) == 1 and rejected[0]["reason"] == "one access_tenancy a month"
     # Fees count against running resources: 2 targets = 2 Cap + 4 Inf (1 Cap + 2 Inf per target)
-    assert action_cost({"type": "intrude", "targets": ["meta", "gdm"], "intruders": ["openai"]},
+    assert action_cost({"type": "access_tenancy", "targets": ["meta", "gdm"], "accessors": ["openai"]},
                        me, cfg) == (2.0, 4.0)
 
 
@@ -191,7 +191,7 @@ def test_execute_rejects_engine_actions(labs, world, cfg):
     with pytest.raises(ValueError):
         execute(me, {"type": "acquire_compute", "units": 5.0}, labs, world, cfg)
     with pytest.raises(ValueError):
-        execute(me, {"type": "intrude", "targets": ["meta"], "intruders": ["openai"]}, labs, world, cfg)
+        execute(me, {"type": "access_tenancy", "targets": ["meta"], "accessors": ["openai"]}, labs, world, cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -227,14 +227,14 @@ def test_charge_then_apply_equals_execute(labs, world, cfg):
     assert (me.capital, me.influence, meta.influence) == (195.0, 55.0, 40.0)
     assert apply(me, act, labs, world, cfg) == {"target": "meta", "influence_lost": 5.0}
     assert (me.capital, me.influence, meta.influence) == (195.0, 55.0, 35.0)
-    # intrude: charge() takes the fees; acquire_compute is charged by execute_purchases
-    fee = charge(me, {"type": "intrude", "targets": ["meta", "gdm"], "intruders": ["openai"]}, cfg)
+    # access_tenancy: charge() takes the fees; acquire_compute is charged by execute_purchases
+    fee = charge(me, {"type": "access_tenancy", "targets": ["meta", "gdm"], "accessors": ["openai"]}, cfg)
     assert fee == {"capital": 2.0, "influence": 4.0} and me.capital == 193.0
     assert charge(me, {"type": "acquire_compute", "units": 10.0}, cfg) == \
         {"capital": 0.0, "influence": 0.0}
     assert me.capital == 193.0
     with pytest.raises(ValueError):
-        apply(me, {"type": "intrude", "targets": ["meta"], "intruders": ["openai"]}, labs, world, cfg)
+        apply(me, {"type": "access_tenancy", "targets": ["meta"], "accessors": ["openai"]}, labs, world, cfg)
     with pytest.raises(ValueError):
         apply(me, {"type": "acquire_compute", "units": 5.0}, labs, world, cfg)
     # charge reports what was actually deducted (Influence floors at 0)
@@ -289,13 +289,13 @@ def test_resolve_lab_aliases_and_lists(labs):
     assert resolve_lab({"lab": "OpenAI"}, labs) == "openai"
     me = by(labs, "openai")
     for raw in ("Meta and xAI", "Meta & xAI", "Meta/xAI", "Meta, xAI", ["Meta and xAI"]):
-        a = normalise_action({"type": "intrude", "targets": raw}, me, labs)
+        a = normalise_action({"type": "access_tenancy", "targets": raw}, me, labs)
         assert a["targets"] == ["meta", "xai"], raw
-    a = normalise_action({"type": "intrude", "target": "Grok"}, me, labs)
+    a = normalise_action({"type": "access_tenancy", "target": "Grok"}, me, labs)
     assert a["targets"] == ["xai"]
-    a = normalise_action({"type": "intrude", "intruders": "us and Gemini",
+    a = normalise_action({"type": "access_tenancy", "accessors": "us and Gemini",
                           "targets": [{"lab": "Claude"}]}, me, labs)
-    assert a == {"type": "intrude", "targets": ["anthropic"], "intruders": ["gdm", "openai"]}
+    assert a == {"type": "access_tenancy", "targets": ["anthropic"], "accessors": ["gdm", "openai"]}
 
 
 def test_normalise_nested_params_and_units(labs):
@@ -354,19 +354,19 @@ def test_resolve_lab_whole_names_before_fuzzy(labs):
     assert named_labs("metadata", labs) == []
 
 
-def test_intruders_split_on_every_separator(labs):
+def test_accessors_split_on_every_separator(labs):
     me = by(labs, "meta")
     for raw in ("Meta + xAI", "Meta with xAI", "Meta; xAI", "us & xAI", ["Meta (us)", "xAI"],
                 "Meta, Inc. and xAI"):
-        a = normalise_action({"type": "intrude", "intruders": raw, "targets": ["OpenAI"]},
+        a = normalise_action({"type": "access_tenancy", "accessors": raw, "targets": ["OpenAI"]},
                              me, labs)
-        assert a["intruders"] == ["meta", "xai"], raw
-    a = normalise_action({"type": "intrude", "targets": "Anthropic, Inc."}, me, labs)
+        assert a["accessors"] == ["meta", "xai"], raw
+    a = normalise_action({"type": "access_tenancy", "targets": "Anthropic, Inc."}, me, labs)
     assert a["targets"] == ["anthropic"]
     with pytest.raises(ValueError, match="one lab per entry"):
-        normalise_action({"type": "intrude", "targets": ["OpenAI Google"]}, me, labs)
+        normalise_action({"type": "access_tenancy", "targets": ["OpenAI Google"]}, me, labs)
     with pytest.raises(ValueError, match="unknown lab"):
-        normalise_action({"type": "intrude", "targets": "OAI"}, me, labs)
+        normalise_action({"type": "access_tenancy", "targets": "OAI"}, me, labs)
 
 
 def test_numbers_scientific_ranges_and_units(labs):
@@ -391,9 +391,9 @@ def test_build_influence_does_not_fund_other_costs(labs, world, cfg):
     """Points bought this turn arrive after charges; they fund nothing."""
     me = by(labs, "meta")
     me.capital, me.influence = 100.0, 1.0
-    world.intrusion_open = True
+    world.tenancy_access_open = True
     accepted, rejected = precheck(me, [{"type": "build_influence", "points": 2},
-                                       {"type": "intrude", "targets": ["openai"]}],
+                                       {"type": "access_tenancy", "targets": ["openai"]}],
                                   labs, world, cfg, "S1")
     assert [a["type"] for a in accepted] == ["build_influence"]
     assert "Influence" in rejected[0]["reason"]
@@ -437,13 +437,13 @@ def test_legal_suffixes_and_non_lab_parts_resolve_to_the_one_lab(labs):
              "OpenAI, Co": "openai"}
     for text, key in cases.items():
         assert resolve_parts(text, labs, "meta") == ([key], None), text
-        action = normalise_action({"type": "intrude", "targets": text}, me, labs)
+        action = normalise_action({"type": "access_tenancy", "targets": text}, me, labs)
         assert action["targets"] == [key], text
     # a part naming another lab still counts; with no lab named, unknown words are errors
     assert resolve_parts("xAI, which accessed OpenAI", labs, "meta")[0] == ["openai", "xai"]
     assert resolve_parts("DeepSeek, Inc.", labs, "meta") == ([], "DeepSeek")
     with pytest.raises(ValueError):
-        normalise_action({"type": "intrude", "targets": "DeepSeek, Ltd"}, me, labs)
+        normalise_action({"type": "access_tenancy", "targets": "DeepSeek, Ltd"}, me, labs)
     # "co" is dropped only as a whole word
     assert resolve_parts("co-founder", labs, "meta")[1] == "co-founder"
 

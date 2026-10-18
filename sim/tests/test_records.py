@@ -57,6 +57,23 @@ def test_finished_records_drops_partials_side_files_and_dry_dirs(tmp_path):
     assert len(records.finished_records([tmp_path], recursive=True, include_dry=True)) == 2
 
 
+def test_records_from_before_the_rename_read_under_the_current_names(tmp_path):
+    old = _rec({"scores": [1]})
+    old["config"]["effective_cfg"] = {"intrusion": {"gain_share": 0.3}}
+    old["turns"] = [{"intrusion": {"log": []}, "world": {"intrusion_open": True},
+                     "actions": {"xai": [{"type": "intrude", "intruders": ["xai"], "targets": ["openai"],
+                                          "rationale": "We intrude on OpenAI."}]},
+                     "interventions": [{"kind": "plant_intrusion", "intruder": "xai"}]}]
+    (tmp_path / "S1-A-run01.json").write_text(json.dumps(old))
+    for rec in (records.load_records([tmp_path])[0][1], records.read_record(tmp_path / "S1-A-run01.json")):
+        turn = rec["turns"][0]
+        assert rec["config"]["effective_cfg"] == {"tenancy_access": {"gain_share": 0.3}}
+        assert turn["world"] == {"tenancy_access_open": True} and "tenancy_access" in turn
+        assert turn["actions"]["xai"][0] == {"type": "access_tenancy", "accessors": ["xai"], "targets": ["openai"],
+                                             "rationale": "We intrude on OpenAI."}   # free text kept
+        assert turn["interventions"] == [{"kind": "plant_tenancy_access", "accessor": "xai"}]
+
+
 def test_world_setting_falls_back_to_the_shipped_world():
     from core.config import load_world, world_setting
     assert world_setting({"event_turn": 2}, "event_turn") == 2

@@ -191,7 +191,7 @@ def _action_str(a: Any) -> str:
     if not isinstance(a, dict):
         return str(a)
     parts = [str(a.get("type") or a.get("action") or "?")]
-    for field in ("units", "amount", "points", "target", "axis", "delta", "intruders",
+    for field in ("units", "amount", "points", "target", "axis", "delta", "accessors",
                   "targets", "trimmed_from"):
         if field in a and a[field] not in (None, []):
             val = a[field]
@@ -220,7 +220,7 @@ def _month_header(record: Dict[str, Any], turn: Dict[str, Any]) -> str:
 def _turn_leads(turn: Dict[str, Any]) -> List[Dict[str, Any]]:
     leads = turn.get("leads")
     if leads is None:
-        leads = (turn.get("intrusion") or {}).get("leads", [])
+        leads = (turn.get("tenancy_access") or {}).get("leads", [])
     return [lead for lead in leads or [] if isinstance(lead, dict)]
 
 
@@ -237,7 +237,7 @@ def _tip_text(record: Dict[str, Any], lead: Dict[str, Any], turn_no: Any) -> Tup
 
 
 def _entry_partners(e: Dict[str, Any], key: Optional[str] = None) -> Tuple[List[str], List[str]]:
-    """(the other committers, labs named in the intrude that did not commit)."""
+    """(the other committers, labs named in the access_tenancy that did not commit)."""
     partners = [k for k in (e.get("committers") or []) if k != key]
     named = e.get("named_not_committed")
     if named is None:
@@ -1353,8 +1353,8 @@ def _merged_fallback(record: Dict[str, Any], turn: Dict[str, Any]) -> List[str]:
 
 
 def _intervention_str(record: Dict[str, Any], iv: Dict[str, Any]) -> str:
-    if iv.get("kind") == "plant_intrusion":
-        return (f"planted intrusion {iv.get('entry_id')} (gain {f2(iv.get('gain'))}); "
+    if iv.get("kind") == "plant_tenancy_access":
+        return (f"planted tenancy access {iv.get('entry_id')} (gain {f2(iv.get('gain'))}); "
                 f"tip sent to {_names(record, iv.get('lead_to'))}")
     if iv.get("kind") == "windfall":
         return f"windfall: {_name(record, iv.get('lab'))} +{f2(iv.get('capability'))} capability"
@@ -1553,7 +1553,7 @@ def _assemble_full(rec: Dict[str, Any], rationale_chars: Optional[int]) -> str:
             out.append(_tip_line_gj(rec, lead, t))
         for iv in turn.get("interventions") or []:
             out.append(f"  [researcher] {_intervention_str(rec, iv)}")
-        for note in _order_log(rec, (turn.get("intrusion") or {}).get("log", [])):
+        for note in _order_log(rec, (turn.get("tenancy_access") or {}).get("log", [])):
             out.append(f"  [hidden] {note}")
         for n in _order_notices(rec, turn.get("public_notices") or []):
             out.append(f"  [public notice] {n}")

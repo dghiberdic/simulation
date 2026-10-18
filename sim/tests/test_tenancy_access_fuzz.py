@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-Differential fuzzer for spec §5.3 intrusions + whistleblow.
+Differential fuzzer for spec §5.3 tenancy accesses + whistleblow.
 
 The reference below is written from the spec text (Project Round 2 Spec.md §5.3,
-A.8), not from core/intrusion.py or core/whistleblow.py. Where the spec is silent,
+A.8), not from core/tenancy_access.py or core/whistleblow.py. Where the spec is silent,
 the reference adopts a documented convention and tags the case so it can be
 counted separately (SILENT_* tags).
 
 The engine's own draws (turn_rec["draws"]) are fed to the reference, which then
 must reproduce every accepted action, Capital/Influence/know-how value, new ledger
-entry and penalty kind, report outcome, lead and public intrusion notice. The same
+entry and penalty kind, report outcome, lead and public tenancy access notice. The same
 harness checks prompt leaks (odds, other seats' tips, hidden-ledger lines, true
-intrude actions) and the MacroJury summary.
+access_tenancy actions) and the MacroJury summary.
 """
 import random
 import re
@@ -61,7 +61,7 @@ class Plan:
     def __init__(self, seed, scenario):
         self.seed = seed
         self.scenario = scenario
-        self.groups = {}             # turn -> list of (intruders, targets)
+        self.groups = {}             # turn -> list of (accessors, targets)
         self.intent = {}             # (turn, lab) -> dict
 
     def groups_for(self, turn, labs):
@@ -117,24 +117,24 @@ def make_policy(plan, key):
         r = random.Random(f"{plan.seed}-{turn}-{key}")
         intent = {"actions": [], "report": None}
         acts = []
-        # intrusions from the shared plan
-        if world.intrusion_open or r.random() < 0.3:
+        # tenancy accesses from the shared plan
+        if world.tenancy_access_open or r.random() < 0.3:
             for intr, tg in plan.groups_for(turn, labs):
                 if key in intr and r.random() < 0.75:
-                    a = {"type": "intrude", "targets": [DISPLAY[t] if r.random() < 0.3 else t for t in tg]}
+                    a = {"type": "access_tenancy", "targets": [DISPLAY[t] if r.random() < 0.3 else t for t in tg]}
                     if scenario == "S2" or r.random() < 0.1:
-                        a["intruders"] = list(intr)
+                        a["accessors"] = list(intr)
                     acts.append(a)
                     break
-            if r.random() < 0.08:            # a second intrude (engine: at most one)
+            if r.random() < 0.08:            # a second access_tenancy (engine: at most one)
                 others = [x for x in KEYS if x != key]
-                acts.append({"type": "intrude", "targets": [r.choice(others)]})
-            if r.random() < 0.05:            # invalid intrude forms
+                acts.append({"type": "access_tenancy", "targets": [r.choice(others)]})
+            if r.random() < 0.05:            # invalid access_tenancy forms
                 acts.append(r.choice([
-                    {"type": "intrude", "targets": [key]},
-                    {"type": "intrude", "targets": []},
-                    {"type": "intrude", "targets": ["DeepSeek"]},
-                    {"type": "intrude", "intruders": [r.choice([x for x in KEYS if x != key])],
+                    {"type": "access_tenancy", "targets": [key]},
+                    {"type": "access_tenancy", "targets": []},
+                    {"type": "access_tenancy", "targets": ["DeepSeek"]},
+                    {"type": "access_tenancy", "accessors": [r.choice([x for x in KEYS if x != key])],
                      "targets": [key]},
                 ]))
         # filler actions (drain resources)
@@ -199,7 +199,7 @@ def make_policy(plan, key):
 class Ref:
     """Independent model of one turn's execution (spec §5.2 steps 4-5, §5.3, A.8)."""
 
-    def __init__(self, turn, scenario, pre, ledger, snapshot_c, draws, intent, intrusion_open,
+    def __init__(self, turn, scenario, pre, ledger, snapshot_c, draws, intent, tenancy_access_open,
                  seed, frozen):
         self.turn = turn
         self.scenario = scenario
@@ -210,7 +210,7 @@ class Ref:
         self.snap = snapshot_c
         self.draws = draws
         self.intent = intent
-        self.open = intrusion_open
+        self.open = tenancy_access_open
         self.seed = seed
         self.frozen = frozen
         self.missing_draws = []
@@ -278,7 +278,7 @@ class Ref:
                     continue
                 t = a["type"]
                 a = dict(a)
-                if t == "intrude":
+                if t == "access_tenancy":
                     tg = []
                     ok = True
                     for x in a.get("targets") or []:
@@ -289,17 +289,17 @@ class Ref:
                             tg.append(kk)
                     if not ok:
                         continue
-                    intr = sorted(set(a.get("intruders") or [k]))
+                    intr = sorted(set(a.get("accessors") or [k]))
                     tg = sorted(set(tg))
                     if n_intr >= 1:
-                        self.tags.add("SILENT_second_intrude")
+                        self.tags.add("SILENT_second_access_tenancy")
                         continue
                     if not self.open or k not in intr or not tg or set(tg) & set(intr):
                         continue
                     if self.scenario != "S2" and intr != [k]:
                         continue
                     cc, ci = FEE_C * len(tg), FEE_I * len(tg)
-                    a = {"type": t, "intruders": intr, "targets": tg}
+                    a = {"type": t, "accessors": intr, "targets": tg}
                 elif t == "diminish_competitor":
                     cc = ci = float(a["points"])
                 elif t == "invest_capital":
@@ -329,7 +329,7 @@ class Ref:
                 influence -= ci
                 if t == "build_influence":
                     built += a["points"]
-                if t == "intrude":
+                if t == "access_tenancy":
                     n_intr += 1
                 a["_cost"] = (cc, ci)
                 acc.append(a)
@@ -349,12 +349,12 @@ class Ref:
                     self.inf[a["target"]] = max(0.0, self.inf[a["target"]] - a["points"])
                 elif a["type"] == "build_influence":
                     self.inf[k] = min(100.0, self.inf[k] + a["points"])
-        # ---- pass 5: intrusions (§5.3 four steps)
+        # ---- pass 5: tenancy accesses (§5.3 four steps)
         groups = {}
         for k in KEYS:
             for a in self.accepted[k]:
-                if a["type"] == "intrude":
-                    groups.setdefault((tuple(a["intruders"]), tuple(a["targets"])), []).append(k)
+                if a["type"] == "access_tenancy":
+                    groups.setdefault((tuple(a["accessors"]), tuple(a["targets"])), []).append(k)
         new_entries = []
         for (intr, tg), comm in groups.items():
             named_only = [x for x in intr if x not in comm]
@@ -371,7 +371,7 @@ class Ref:
                     ent["penalised"].append(c)
                     ent["kind"][c] = "named_on_failure"
                     ent["gains"][c] = 0.0
-                self.notices.append(("intrusion_failed", tuple(sorted(comm))))
+                self.notices.append(("tenancy_access_failed", tuple(sorted(comm))))
             else:
                 for c in comm:
                     g = sum(gain_of(self.snap[c], self.snap[t]) for t in tg)
@@ -388,7 +388,7 @@ class Ref:
                         ent["kind"][c] = "exposed"
                         exposed.append(c)
                 if exposed:
-                    self.notices.append(("intrusion_exposed", tuple(sorted(exposed))))
+                    self.notices.append(("tenancy_access_exposed", tuple(sorted(exposed))))
                 ul = self.u("lead", eid, None)
                 if ul < LEAD_P:
                     non = [x for x in KEYS if x not in comm]
@@ -476,7 +476,7 @@ def run_one(seed, scenario, turns, event_turn, condition="A"):
     def collect(turn):
         prompts[turn] = {lab.key: eng._turn_prompt(turn, lab) for lab in eng.labs}
         summ = eng._state_summary()
-        for bad in ("diminish_competitor", "invest_capital", "intrude on", "credible tip",
+        for bad in ("diminish_competitor", "invest_capital", "access a tenancy on", "credible tip",
                     "capability copied 0", "capability copied 1", "capability copied 2", "capability copied 3", "named but did not commit", "build_influence", "lobby_institution"):
             if bad in summ:
                 problems.append((f"seed={seed} turn={turn}", "macro summary leak", bad))
@@ -504,7 +504,7 @@ def run_one(seed, scenario, turns, event_turn, condition="A"):
         n_ledger = len(world.ledger)
         n_notices = len(world.notices)
         frozen = world.ceiling is not None and sum(l.compute for l in eng.labs) > world.ceiling
-        open_ = world.intrusion_open
+        open_ = world.tenancy_access_open
         rec = orig_exec(turn, decisions, snapshot_c, growth)
         draws = {tuple(d["key"]): d["u"] for d in eng.keyed._log}
         intent = {k: plan.intent[(turn, k)] for k in KEYS}
@@ -518,9 +518,9 @@ def run_one(seed, scenario, turns, event_turn, condition="A"):
             problems.append((where, "missing draws", ref.missing_draws))
         # accepted actions
         for k in KEYS:
-            got = [(a["type"], tuple(a.get("targets", ())), tuple(a.get("intruders", ())))
+            got = [(a["type"], tuple(a.get("targets", ())), tuple(a.get("accessors", ())))
                    for a in rec["actors"][k]["accepted"]]
-            want = [(a["type"], tuple(a.get("targets", ())), tuple(a.get("intruders", ())))
+            want = [(a["type"], tuple(a.get("targets", ())), tuple(a.get("accessors", ())))
                     for a in ref.accepted[k]]
             if got != want:
                 problems.append((where, f"accepted {k}", got, want, rec["actors"][k]["rejected"]))
@@ -562,12 +562,12 @@ def run_one(seed, scenario, turns, event_turn, condition="A"):
             if l["recipient"] in e.committers:
                 problems.append((where, "lead to committer", l))
             stats["leads"] += 1
-        # intrusion notices (public)
+        # tenancy access notices (public)
         notes = world.notices[n_notices:]
         got_n = sorted((n["kind"], tuple(sorted(n["labs"]))) for n in notes
-                       if n["kind"].startswith("intrusion"))
+                       if n["kind"].startswith("tenancy_access"))
         if got_n != sorted(ref.notices):
-            problems.append((where, "intrusion notices", got_n, sorted(ref.notices)))
+            problems.append((where, "tenancy access notices", got_n, sorted(ref.notices)))
         for o, n in Counter(r for r in ref.outcomes.values()).items():
             stats[f"wb_{o}"] += n
         for e in new:
@@ -615,11 +615,11 @@ def run_one(seed, scenario, turns, event_turn, condition="A"):
                     continue
                 # true actions of others: invest/diminish lines are only in the owner's record
                 for a in tr["actors"][other]["accepted"]:
-                    if a["type"] == "intrude":
-                        txt = "intrude on " + " and ".join(DISPLAY[x] for x in a["targets"])
+                    if a["type"] == "access_tenancy":
+                        txt = "access_tenancy of " + " and ".join(DISPLAY[x] for x in a["targets"])
                         pp = "\n".join(ln for ln in p.splitlines() if not ln.strip().startswith("Rejected:"))
                         if txt in pp:
-                            i = pp.index(txt); p = pp; problems.append((f"seed={seed} turn={t}", f"true intrude of {other} in {k}'s prompt", p[max(0,i-300):i+100]))
+                            i = pp.index(txt); p = pp; problems.append((f"seed={seed} turn={t}", f"true access_tenancy of {other} in {k}'s prompt", p[max(0,i-300):i+100]))
             # hidden ledger: "Unauthorised accesses on your record" only lists own entries
             sec = p.split("Unauthorised accesses on your record:")
             if len(sec) > 1:
@@ -649,7 +649,7 @@ def test_differential_engine_matches_spec_reference(seed):
     6-12 turns, event on turn 1 or 2)."""
     scen = "S2" if seed % 3 else "S1"
     problems, tags, stats = run_one(1000 + seed, scen, 6 + seed % 7, 1 if seed % 5 else 2)
-    assert stats["entries"] > 0                    # the run exercised intrusions
+    assert stats["entries"] > 0                    # the run exercised tenancy accesses
     assert problems == []
 
 
@@ -681,7 +681,7 @@ def _joint(world, penalised=()):
 
 
 def test_partner_report_both_parts_open():
-    """§5.3 Joint intrusions: the reporter pays 3 (refunded, upheld) + 5 and forfeits
+    """§5.3 Joint tenancy accesses: the reporter pays 3 (refunded, upheld) + 5 and forfeits
     its copy; the partner forfeits and loses 15."""
     cfg, labs, world, by = _setup()
     e = _joint(world)
@@ -722,15 +722,15 @@ def test_partner_report_only_partner_penalised_still_self_reports():
 
 def test_named_but_not_committing_partner_pays_nothing_and_can_report():
     """§5.3 step 1: a named lab that does not commit pays nothing, gains nothing and
-    can report the intrusion if it succeeds (upheld, fee refunded, no self-report)."""
+    can report the tenancy access if it succeeds (upheld, fee refunded, no self-report)."""
     cfg, labs, world, by = _setup()
     world.turn = 4
-    world.intrusion_open = True
-    a = {"type": "intrude", "intruders": ["meta", "xai"], "targets": ["openai"]}
-    from core import intrusion
+    world.tenancy_access_open = True
+    a = {"type": "access_tenancy", "accessors": ["meta", "xai"], "targets": ["openai"]}
+    from core import tenancy_access
     snap = {lab.key: lab.capability(3.6) for lab in labs}
     before = {k: (by[k].capital, by[k].influence, by[k].know_how) for k in KEYS}
-    res = intrusion.resolve({"meta": a}, labs, snap, world, cfg, 7)
+    res = tenancy_access.resolve({"meta": a}, labs, snap, world, cfg, 7)
     entry = res["entries"][0]
     assert entry.committers == ["meta"]
     assert entry.draws["named_not_committed"] == ["xai"]
@@ -760,16 +760,16 @@ def test_self_report_costs_five_and_forfeits_and_is_refunded_when_already_penali
 
 
 @pytest.mark.parametrize("scenario", ["S1", "S2"])
-def test_second_intrude_in_one_month_is_rejected_in_world(scenario):
-    """§5.3 action table: one intrude per lab a month (A.4/A.5 "One intrude a month.").
-    A second intrude is rejected with that in-world reason; the first stands."""
+def test_second_access_tenancy_in_one_month_is_rejected_in_world(scenario):
+    """§5.3 action table: one access_tenancy per lab a month (A.4/A.5 "One access_tenancy a month.").
+    A second access_tenancy is rejected with that in-world reason; the first stands."""
     cfg, labs, world, by = _setup()
-    world.intrusion_open = True
-    acts = [{"type": "intrude", "targets": ["openai"]},
-            {"type": "intrude", "targets": ["anthropic"]}]
+    world.tenancy_access_open = True
+    acts = [{"type": "access_tenancy", "targets": ["openai"]},
+            {"type": "access_tenancy", "targets": ["anthropic"]}]
     accepted, rejected = precheck(by["xai"], acts, labs, world, cfg, scenario)
     assert [a["targets"] for a in accepted] == [["openai"]]
-    assert [r["reason"] for r in rejected] == ["one intrude a month"]
+    assert [r["reason"] for r in rejected] == ["one access_tenancy a month"]
 
 
 def test_month_field_with_modal_may_reads_the_named_month():

@@ -79,7 +79,7 @@ T1_SEAT_RUNS = 10              # the two T1 runs' seat-runs
 SE_MAX = 5.0                   # a seat's judged mean must be this precise
 SE_TOL = 1e-9                  # compared unrounded: an exact 5 passes, 5.004 does not
 MIN_SEAT_RUNS = 3              # over at least this many rated seat-runs
-SCRIPTED_SEATS = {"T5": ("xai",)}   # T5's scripted intruder never counts
+SCRIPTED_SEATS = {"T5": ("xai",)}   # T5's scripted accessor never counts
 DEFAULT_DISPOSITION = 50       # neutral fallback when a seat has nothing to go on
 WAITING = "waiting for human ratings"
 

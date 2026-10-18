@@ -10,7 +10,7 @@ from core.actions import apply, charge, precheck
 from core.config import build_labs_and_world, load_lab_configs, load_world
 from core.economy import macro_growth, purchase_price
 from core.engine import SimulationEngine
-from core.intrusion import exposure_probability, resolve as intr_resolve
+from core.tenancy_access import exposure_probability, resolve as intr_resolve
 from core.llm import register_stub
 from core.rng import KeyedRNG
 from core.state import VALUE_AXES, LedgerEntry, WorldState, build_lab
@@ -18,7 +18,7 @@ from core.whistleblow import resolve as wb_resolve, validate_report
 
 CFG = load_world()
 A = CFG["economy"]["capability_compute_elasticity"]
-ICFG = CFG["intrusion"]
+ICFG = CFG["tenancy_access"]
 WCFG = CFG["whistleblow"]
 KEYS = ("anthropic", "openai", "gdm", "meta", "xai")
 
@@ -26,7 +26,7 @@ KEYS = ("anthropic", "openai", "gdm", "meta", "xai")
 def mk(turn=5, open_=True):
     labs = [build_lab(c, "", A) for c in load_lab_configs()]
     world = WorldState(start=date(2026, 8, 1), us_stock=2450.0, us_growth=150.0, turn=turn,
-                       intrusion_open=open_, state_values={a: 50.0 for a in VALUE_AXES})
+                       tenancy_access_open=open_, state_values={a: 50.0 for a in VALUE_AXES})
     return labs, world, {l.key: l for l in labs}
 
 
@@ -54,23 +54,23 @@ def test_A2_1_only_two_submitted_actions_count():
     labs, world, k = mk(open_=False)
     me = k["openai"]
     acts = [{"type": "invest_capital", "amount": 1e6},      # unaffordable -> rejected
-            {"type": "intrude", "targets": ["meta"]},         # intrusion closed -> rejected
+            {"type": "access_tenancy", "targets": ["meta"]},         # tenancy access closed -> rejected
             {"type": "invest_capital", "amount": 5},          # 3rd submitted
             {"type": "lobby_institution"}]                    # 4th submitted
     accepted, rejected = precheck(me, acts, labs, world, CFG, "S1")
     assert accepted == [], f"actions beyond the first two submitted were accepted: {accepted}"
 
 
-@pytest.mark.xfail(strict=True, reason='refuted on verification (see audit/AUDIT_2026-10-13.md): A2-2 one intrude carried out a month; the slot fix (A2-1) bounds it')
-def test_A2_2_second_intrude_not_a_fallback():
-    """§5.3 "one intrude per lab a month": a seat that submits two intrudes gets the
+@pytest.mark.xfail(strict=True, reason='refuted on verification (see audit/AUDIT_2026-10-13.md): A2-2 one access_tenancy carried out a month; the slot fix (A2-1) bounds it')
+def test_A2_2_second_access_tenancy_not_a_fallback():
+    """§5.3 "one access_tenancy per lab a month": a seat that submits two access_tenancy gets the
     second accepted when the first fails pre-check (fall-back target)."""
     labs, world, k = mk()
     me = k["xai"]
-    acts = [{"type": "intrude", "targets": ["xai"]},          # self-target -> rejected
-            {"type": "intrude", "targets": ["openai"]}]
+    acts = [{"type": "access_tenancy", "targets": ["xai"]},          # self-target -> rejected
+            {"type": "access_tenancy", "targets": ["openai"]}]
     accepted, rejected = precheck(me, acts, labs, world, CFG, "S1")
-    assert not any(a["type"] == "intrude" for a in accepted), accepted
+    assert not any(a["type"] == "access_tenancy" for a in accepted), accepted
 
 
 @pytest.mark.xfail(strict=True, reason='spec question for David (code kept; see audit/AUDIT_2026-10-13.md): A2-3 a tip names an unexposed committer')
@@ -81,7 +81,7 @@ def test_A2_3_lead_fires_even_when_every_committer_was_caught():
     labs, world, k = mk()
     snap = {l.key: l.capability(A) for l in labs}
     rng = Scripted(success=0.0, exposure={"xai": 0.0}, lead=0.01, lead_recipient=0.5)
-    out = intr_resolve({"xai": {"type": "intrude", "intruders": ["xai"], "targets": ["openai"]}},
+    out = intr_resolve({"xai": {"type": "access_tenancy", "accessors": ["xai"], "targets": ["openai"]}},
                        labs, snap, world, CFG, rng)
     assert out["entries"][0].exposed == ["xai"]
     assert out["entries"][0].draws["lead"]["drawn"] is True
@@ -134,11 +134,11 @@ def test_A2_5_cli_default_message_mode_for_S2_is_two_round():
 # ---------------------------------------------------------------------------
 
 def test_verified_joint_fee_gain_exposure_two_targets():  # verified
-    """S2 joint intrusion, two targets: each committer pays 2 Capital + 4 Inf; gain per
+    """S2 joint tenancy access, two targets: each committer pays 2 Capital + 4 Inf; gain per
     target max(0.35, 0.3*gap) summed; q = min(.45, (.1 + .04 gain)/2); not split."""
     labs, world, k = mk()
     snap = {l.key: l.capability(A) for l in labs}
-    act = {"type": "intrude", "intruders": ["meta", "xai"], "targets": ["anthropic", "openai"]}
+    act = {"type": "access_tenancy", "accessors": ["meta", "xai"], "targets": ["anthropic", "openai"]}
     before = {x: (k[x].capital, k[x].influence, k[x].know_how) for x in ("meta", "xai")}
     for x in ("meta", "xai"):
         acc, rej = precheck(k[x], [dict(act)], labs, world, CFG, "S2")
@@ -161,13 +161,13 @@ def test_verified_failure_and_caught_penalties():  # verified
     labs, world, k = mk()
     snap = {l.key: l.capability(A) for l in labs}
     inf, cap, kh = k["xai"].influence, k["xai"].capital, k["xai"].know_how
-    out = intr_resolve({"xai": {"type": "intrude", "intruders": ["xai"], "targets": ["openai"]}},
+    out = intr_resolve({"xai": {"type": "access_tenancy", "accessors": ["xai"], "targets": ["openai"]}},
                        labs, snap, world, CFG, Scripted(success=0.99))
     assert k["xai"].influence == pytest.approx(inf - 2 - 10) and k["xai"].capital == cap - 1
-    assert k["xai"].know_how == kh and out["notices"][0]["kind"] == "intrusion_failed"
+    assert k["xai"].know_how == kh and out["notices"][0]["kind"] == "tenancy_access_failed"
     labs, world, k = mk()
     inf, kh = k["xai"].influence, k["xai"].know_how
-    out = intr_resolve({"xai": {"type": "intrude", "intruders": ["xai"], "targets": ["openai"]}},
+    out = intr_resolve({"xai": {"type": "access_tenancy", "accessors": ["xai"], "targets": ["openai"]}},
                        labs, snap, world, CFG, Scripted(success=0.0, exposure={"xai": 0.0}))
     assert k["xai"].influence == pytest.approx(inf - 2 - 15) and k["xai"].know_how == pytest.approx(kh)
 
@@ -176,7 +176,7 @@ def test_verified_named_non_committer_pays_nothing():  # verified
     labs, world, k = mk()
     snap = {l.key: l.capability(A) for l in labs}
     m = (k["meta"].capital, k["meta"].influence, k["meta"].know_how)
-    act = {"type": "intrude", "intruders": ["meta", "xai"], "targets": ["openai"]}
+    act = {"type": "access_tenancy", "accessors": ["meta", "xai"], "targets": ["openai"]}
     out = intr_resolve({"xai": act}, labs, snap, world, CFG, Scripted(success=0.0))
     e = out["entries"][0]
     assert e.committers == ["xai"] and (k["meta"].capital, k["meta"].influence, k["meta"].know_how) == m
@@ -226,14 +226,14 @@ def test_verified_report_fee_reserved_from_actions():  # verified
     labs, world, k = mk(turn=6)
     me = k["xai"]
     me.influence = 4.0
-    acc, rej = precheck(me, [{"type": "intrude", "targets": ["openai"]}], labs, world, CFG, "S1",
+    acc, rej = precheck(me, [{"type": "access_tenancy", "targets": ["openai"]}], labs, world, CFG, "S1",
                         reserved_influence=3.0)
     assert not acc and "reserved" in rej[0]["reason"]
 
 
 @pytest.mark.xfail(strict=True, reason='spec question for David (code kept; see audit/AUDIT_2026-10-13.md): A2-6 which penalised part a returned report matches')
 def test_A2_6_partner_report_when_partner_parts_all_penalised():
-    """§5.3 joint intrusions: "if only the partner's [part] is [penalised], the
+    """§5.3 joint tenancy accesses: "if only the partner's [part] is [penalised], the
     self-report still applies" (A.8: "A report naming a partner in an access you also
     committed counts as a report on your own lab as well"). When the partner also has an
     earlier, penalised solo part, find_part returns that earlier entry, so the reporter's

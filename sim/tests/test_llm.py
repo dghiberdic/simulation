@@ -869,12 +869,12 @@ def test_parse_json_single_candidate(text, keys, expected):
     assert llm.parse_json_detail(text, keys).ambiguous is False
 
 
-DRAFT = json.dumps({"actions": [{"type": "intrude", "intruders": ["Meta"], "targets": ["Anthropic"]}]})
+DRAFT = json.dumps({"actions": [{"type": "access_tenancy", "accessors": ["Meta"], "targets": ["Anthropic"]}]})
 FINAL = json.dumps({"rationale": "hold this month", "public_statement": "We hold."})
 
 
 @pytest.mark.parametrize("text,keys", [
-    # Case 5: a draft intrusion, then a final object without "actions"
+    # Case 5: a draft tenancy access, then a final object without "actions"
     (DRAFT + "\nNo - too risky. Final answer:\n" + FINAL, PROPOSAL_KEYS),
     (DRAFT + "\nFinal:\n" + json.dumps({"rationale": "hold", "actions": []}), PROPOSAL_KEYS),
     ('Draft: {"actions": [1]}\nFinal: {"actions": [2]} trailing words', ("actions",)),

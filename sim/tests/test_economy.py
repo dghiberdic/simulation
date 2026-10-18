@@ -67,7 +67,7 @@ def test_world_constants_match_spec():
     assert cfg["actions"]["accelerate_infrastructure"] == {"capital": 5, "influence": 5, "stock_growth": 20}
     assert cfg["actions"]["invest_capital"]["return_per_turn"] == 0.008
     assert cfg["actions"]["build_influence"]["capital_per_point"] == 30
-    i = cfg["intrusion"]
+    i = cfg["tenancy_access"]
     assert (i["fee_capital_per_target"], i["fee_influence_per_target"], i["gain_share"],
             i["min_gain"], i["exposure_per_gain"]) == (1, 2, 0.3, 0.35, 0.04)
     assert cfg["macro_jury"]["review_turns"] == [2, 6, 10]

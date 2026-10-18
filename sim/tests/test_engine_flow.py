@@ -214,10 +214,10 @@ def test_parallel_equals_sequential():
 import core.engine as engine_mod
 from core.costs import BudgetExceeded
 
-# Intrusions always succeed, are never exposed, and always send a lead.
-SURE = {"economy.know_how_shock_sd": 0.0, "intrusion.success_base": 1.0,
-        "intrusion.success_floor": 1.0, "intrusion.exposure_base": 0.0,
-        "intrusion.exposure_per_gain": 0.0, "intrusion.lead_probability": 1.0}
+# Tenancy accesses always succeed, are never exposed, and always send a lead.
+SURE = {"economy.know_how_shock_sd": 0.0, "tenancy_access.success_base": 1.0,
+        "tenancy_access.success_floor": 1.0, "tenancy_access.exposure_base": 0.0,
+        "tenancy_access.exposure_per_gain": 0.0, "tenancy_access.lead_probability": 1.0}
 
 
 def _month_no(user):
@@ -309,9 +309,9 @@ def test_separate_mode_proposal_messages_share_the_budget_and_arrive_next_month(
 
 ACTION_TYPES = ("acquire_compute", "accelerate_infrastructure", "invest_capital",
                 "build_influence", "publish_narrative", "diminish_competitor",
-                "lobby_institution", "intrude", "fly_to_moon")
+                "lobby_institution", "access_tenancy", "fly_to_moon")
 GARBAGE = [{}, {"units": None, "amount": "lots", "points": [], "target": {"x": 1},
-                "targets": 7, "intruders": "everyone", "axis": 3, "delta": "up"},
+                "targets": 7, "accessors": "everyone", "axis": 3, "delta": "up"},
            {"parameters": {"units": "NaN", "target": None}}, {"amount": 1e309, "points": -5},
            {"target": "Meta and xAI", "targets": ["nobody"], "axis": "vibes", "delta": 1e9}]
 
@@ -563,10 +563,10 @@ def test_joint_access_record_tip_and_months():
             return {"messages": []}
         if m == 1 and key in ("meta", "xai"):
             return {"rationale": "x", "actions": [
-                {"type": "intrude", "intruders": ["Meta", "xAI"], "targets": ["OpenAI"]}]}
+                {"type": "access_tenancy", "accessors": ["Meta", "xAI"], "targets": ["OpenAI"]}]}
         if m == 1 and key == "gdm":    # names Anthropic, which does not commit
             return {"rationale": "x", "actions": [
-                {"type": "intrude", "intruders": ["Google DeepMind", "Anthropic"],
+                {"type": "access_tenancy", "accessors": ["Google DeepMind", "Anthropic"],
                  "targets": ["OpenAI"]}]}
         return {"rationale": "x", "actions": []}
 
@@ -633,7 +633,7 @@ def test_report_fee_reserved_and_outcomes_in_plain_words():
         if stage != "proposal":
             return {"messages": []}
         if key == "meta" and m == 1:
-            return {"rationale": "x", "actions": [{"type": "intrude", "targets": ["OpenAI"]}]}
+            return {"rationale": "x", "actions": [{"type": "access_tenancy", "targets": ["OpenAI"]}]}
         if key == "openai" and m == 2:           # 7 Influence: lobby (5) or the fee (3)
             eng.by_key["openai"].influence = 7.0
             return {"rationale": "x", "report": {"accused": "Meta", "month": "August"},
@@ -700,7 +700,7 @@ def test_evidence_only_report_names_no_lab():
 
 
 def test_month_one_resolves_on_opening_figures_and_shows_opening_sheet():
-    """Month-1 intrusions copy against the opening capabilities (internal,
+    """Month-1 tenancy accesses copy against the opening capabilities (internal,
     unrounded); the own sheet shows opening know-how and the income note."""
     prompts = {}
 
@@ -708,7 +708,7 @@ def test_month_one_resolves_on_opening_figures_and_shows_opening_sheet():
         if stage != "proposal":
             return {"messages": []}
         if m == 1 and key == "meta":
-            return {"rationale": "x", "actions": [{"type": "intrude", "targets": ["OpenAI"]}]}
+            return {"rationale": "x", "actions": [{"type": "access_tenancy", "targets": ["OpenAI"]}]}
         return {"rationale": "x", "actions": []}
     eng = _model_engine(beh, scenario="S2", turns=2, overrides=SURE, prompts=prompts,
                         event_turn=1)   # updated: v5 event on turn 4 by default
@@ -716,8 +716,8 @@ def test_month_one_resolves_on_opening_figures_and_shows_opening_sheet():
     seed_k = {lab.key: lab.know_how for lab in eng.labs}
     rec = eng.run()
     gain = rec["ledger"][0]["gains"]["meta"]
-    from core.intrusion import copy_gain
-    assert gain == pytest.approx(copy_gain(seed_c["meta"], seed_c["openai"], eng.cfg["intrusion"]))
+    from core.tenancy_access import copy_gain
+    assert gain == pytest.approx(copy_gain(seed_c["meta"], seed_c["openai"], eng.cfg["tenancy_access"]))
     p1 = prompts[("meta", "proposal", 1)]
     income = rec["turns"][0]["macro_growth"]["income"]["meta"]
     assert (f"know-how {seed_k['meta']:.1f} (part of capability), Capital income this month: "
@@ -733,29 +733,29 @@ def test_later_months_resolve_on_the_posted_ledger():
         if stage != "proposal":
             return {"messages": []}
         if m == 2 and key == "meta":
-            return {"rationale": "x", "actions": [{"type": "intrude", "targets": ["OpenAI"]}]}
+            return {"rationale": "x", "actions": [{"type": "access_tenancy", "targets": ["OpenAI"]}]}
         return {"rationale": "x", "actions": []}
     eng = _model_engine(beh, scenario="S1", turns=2, overrides=SURE, prompts=prompts,
                         event_turn=1)   # updated: v5 event on turn 4 by default
     from core import engine as engine_mod
     seen = {}
-    real = engine_mod.intrusion.resolve
+    real = engine_mod.tenancy_access.resolve
 
-    def spy(intrudes, labs, snapshot_c, *a, **kw):
+    def spy(access_tenancy, labs, snapshot_c, *a, **kw):
         seen.update(snapshot_c)
-        return real(intrudes, labs, snapshot_c, *a, **kw)
-    engine_mod.intrusion.resolve, orig = spy, real
+        return real(access_tenancy, labs, snapshot_c, *a, **kw)
+    engine_mod.tenancy_access.resolve, orig = spy, real
     try:
         rec = eng.run()
     finally:
-        engine_mod.intrusion.resolve = orig
-    from core.intrusion import copy_gain
+        engine_mod.tenancy_access.resolve = orig
+    from core.tenancy_access import copy_gain
     p2 = prompts[("meta", "proposal", 2)]
     import re
     shown = {n: float(c) for n, c in re.findall(r"^  (\w[\w ]*?): capability ([0-9.]+)", p2, re.M)}
     assert seen["meta"] == pytest.approx(shown["Meta"], abs=0.05) and seen["meta"] != shown["Meta"]
     gain = rec["ledger"][0]["gains"]["meta"]
-    assert gain == pytest.approx(copy_gain(seen["meta"], seen["openai"], eng.cfg["intrusion"]))
+    assert gain == pytest.approx(copy_gain(seen["meta"], seen["openai"], eng.cfg["tenancy_access"]))
 
 
 def test_invest_line_names_the_repayment_month_and_repaid_line():
@@ -989,7 +989,7 @@ def test_partner_report_through_the_engine():
             return {"messages": []}
         if m == 1 and key in ("meta", "xai"):
             return {"rationale": "x", "actions": [
-                {"type": "intrude", "intruders": ["Meta", "xAI"], "targets": ["OpenAI"]}]}
+                {"type": "access_tenancy", "accessors": ["Meta", "xAI"], "targets": ["OpenAI"]}]}
         if m == 2 and key == "meta":
             return {"rationale": "x", "actions": [],
                     "report": {"accused": "xAI", "month": "August 2026"}}
@@ -1020,10 +1020,10 @@ def test_record_config_logs_effective_cfg_and_initial_state(tmp_path):
     (after overrides) and every seat's t=0 state, so a replay never re-reads config
     files; disposition is null in choose mode. Saved in the partial log too."""
     import math
-    eng = _model_engine(lambda k, s, m, u: _idle(s), turns=1, overrides={"intrusion.gain_share": 0.25},
+    eng = _model_engine(lambda k, s, m, u: _idle(s), turns=1, overrides={"tenancy_access.gain_share": 0.25},
                         output_dir=tmp_path, run_id="cfglog")
     cfg = eng.record["config"]
-    assert cfg["effective_cfg"]["intrusion"]["gain_share"] == 0.25
+    assert cfg["effective_cfg"]["tenancy_access"]["gain_share"] == 0.25
     assert cfg["effective_cfg"]["event_turn"] == 4 and cfg["effective_cfg"] == json.loads(json.dumps(eng.cfg))
     init = cfg["initial_state"]
     assert set(init["labs"]) == set(KEYS) and init["world"]["start"] == "2026-08-01"

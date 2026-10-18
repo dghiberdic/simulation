@@ -17,6 +17,7 @@ stub models). The main analyses read finished main runs only (§9.2, §9.3).
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
@@ -36,6 +37,36 @@ KIN_SCENARIO, KIN_CONDITION, KIN_SEAT = "S2", "A", "anthropic"
 # ---------------------------------------------------------------------------
 # Reading and writing
 # ---------------------------------------------------------------------------
+
+# Records written before 18 Oct 2026 call the action intrude (intruders,
+# intrusion, plant_intrusion, ...); upgrade_legacy_names renames keys and
+# name-like string values on read. Free text (transcripts, rationales) is kept.
+_LEGACY_NAMES = {"intrusions": "tenancy_accesses", "intrusion": "tenancy_access",
+                 "intruders": "accessors", "intruder": "accessor",
+                 "intruding": "accessing", "intruded": "accessed",
+                 "intrudes": "access_tenancy", "intrude": "access_tenancy"}
+_LEGACY_RE = re.compile("|".join(_LEGACY_NAMES), re.IGNORECASE)
+_NAME_LIKE = re.compile(r"[A-Za-z0-9_.:\-]+")
+
+
+def _legacy_name(name: str) -> str:
+    def new(m: "re.Match[str]") -> str:
+        word = _LEGACY_NAMES[m.group(0).lower()]
+        return word.upper() if m.group(0).isupper() else word
+    return _LEGACY_RE.sub(new, name)
+
+
+def upgrade_legacy_names(obj: Any) -> Any:
+    """obj with pre-rename keys and name-like values ("intrude") under their current names."""
+    if isinstance(obj, dict):
+        return {(_legacy_name(k) if isinstance(k, str) and _LEGACY_RE.search(k) else k):
+                upgrade_legacy_names(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [upgrade_legacy_names(v) for v in obj]
+    if isinstance(obj, str) and _NAME_LIKE.fullmatch(obj) and _LEGACY_RE.search(obj):
+        return _legacy_name(obj)
+    return obj
+
 
 def write_json_atomic(path: PathLike, obj: Any, indent: Optional[int] = 2) -> Path:
     """Write obj as JSON to path atomically (write-then-rename, flushed to disk)."""
@@ -66,7 +97,7 @@ def read_json(path: PathLike) -> Optional[Any]:
 def read_record(path: PathLike) -> Optional[Dict[str, Any]]:
     """The JSON object at path, or None when it is missing, unreadable or not an object."""
     rec = read_json(path)
-    return rec if isinstance(rec, dict) else None
+    return upgrade_legacy_names(rec) if isinstance(rec, dict) else None
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +246,7 @@ def load_records(paths: Sequence[PathLike], include_dry: bool = False, recursive
         if not is_run_record(rec):
             print(f"[skip] {path}: not a run record", file=sys.stderr)
             continue
+        rec = upgrade_legacy_names(rec)
         if is_dry(rec) and not include_dry:
             print(f"[skip] {path}: dry-run record (pass --include-dry to read it)", file=sys.stderr)
             continue

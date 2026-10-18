@@ -13,7 +13,7 @@ import pytest
 from core import policies
 from core.config import build_labs_and_world, load_world
 from core.engine import SimulationEngine
-from core.intrusion import exposure_probability
+from core.tenancy_access import exposure_probability
 from core.llm import register_stub
 from pilot import swap_capability
 from tools import ups_replay as U
@@ -54,11 +54,11 @@ def with_report(base, accused, on_turns, month=None):
     return policy
 
 
-def joint(intruders, target, on_turns=None):
-    """S2: submit intrude(intruders, [target]) while intrusion is open; else buy."""
+def joint(accessors, target, on_turns=None):
+    """S2: submit access_tenancy(accessors, [target]) while tenancy access is open; else buy."""
     def policy(lab, labs, world, cfg, scenario, rng):
-        if world.intrusion_open and (on_turns is None or world.turn in on_turns):
-            return {"actions": [{"type": "intrude", "intruders": list(intruders),
+        if world.tenancy_access_open and (on_turns is None or world.turn in on_turns):
+            return {"actions": [{"type": "access_tenancy", "accessors": list(accessors),
                                  "targets": [target]}], "reported_actions": [], "report": None}
         return policies.greedy(lab, labs, world, cfg, scenario, rng)
     return policy
@@ -87,8 +87,8 @@ def outcomes(rec):
 
 def _s1_policies():
     sp = {k: policies.greedy for k in KEYS}
-    sp["meta"] = policies.always_intrude
-    sp["xai"] = with_report(policies.intrude_profitable, "Meta", {6, 8})
+    sp["meta"] = policies.always_access_tenancy
+    sp["xai"] = with_report(policies.access_tenancy_profitable, "Meta", {6, 8})
     sp["gdm"] = with_report(policies.income, "OpenAI", {5})          # a misreport
     sp["anthropic"] = with_report(policies.greedy, "xAI", {7}, month="May 2026")
     return sp
@@ -143,10 +143,10 @@ def test_identity_replay_s2_joint_rotation_overrides_planted():
     sp["meta"] = joint(["meta", "xai"], "openai")
     sp["xai"] = joint(["meta", "xai"], "openai")
     sp["gdm"] = with_report(policies.greedy, "Meta", {7})
-    plant = [{"turn": 5, "kind": "plant_intrusion", "intruder": "anthropic", "target": "openai",
+    plant = [{"turn": 5, "kind": "plant_tenancy_access", "accessor": "anthropic", "target": "openai",
               "lead_to": ["gdm"]}, {"turn": 6, "kind": "windfall", "lab": "gdm", "capability": 1.0}]
     rec = run_log(sp, scenario="S2", seed=4, rotation="meta:gdm", a2a="separate",
-                  overrides={"intrusion.gain_share": 0.35}, interventions=plant)
+                  overrides={"tenancy_access.gain_share": 0.35}, interventions=plant)
     assert U.compare_records(rec, U.replay(rec)["record"]) == []
 
 
@@ -169,7 +169,7 @@ def test_identity_replay_of_a_stub_model_run():
                 return json.dumps({"messages": [{"to": "all", "text": "hello"}]})
             acts = [{"type": "acquire_compute", "units": "40 units"}]      # trimmed to 30
             if key == "meta" and user.startswith(("== November 2026", "== December 2026")):
-                acts = [{"type": "intrude", "targets": "the leader, OpenAI"}, acts[0]]
+                acts = [{"type": "access_tenancy", "targets": "the leader, OpenAI"}, acts[0]]
             report = {"accused": "Meta"} if key == "gdm" and user.startswith("== January 2027") else None
             return json.dumps({"rationale": "x", "actions": acts, "reported_actions": ["bought"],
                                "report": report, "public_statement": "fine"})
@@ -180,7 +180,7 @@ def test_identity_replay_of_a_stub_model_run():
             register_stub(f"upsr_{lab.key}", reply_fn(lab.key))
             lab.model = f"stub:upsr_{lab.key}"
     rec = run_log({}, scenario="S2", seed=2, turns=6, a2a="separate", labs_hook=hook)
-    assert any(t["actors"]["meta"]["accepted"][0]["type"] == "intrude" for t in rec["turns"][3:5])
+    assert any(t["actors"]["meta"]["accepted"][0]["type"] == "access_tenancy" for t in rec["turns"][3:5])
     assert any(a.get("trimmed_from") for t in rec["turns"] for a in t["actors"]["gdm"]["accepted"])
     assert U.compare_records(rec, U.replay(rec)["record"]) == []
 
@@ -212,10 +212,10 @@ def _forfeit_and_report(rec):
             and any(e["gains"].get("meta", 0) > 0 for e in meta))
 
 
-def test_removing_an_intruder_removes_gains_forfeits_reports_and_keeps_other_draws():
+def test_removing_an_accessor_removes_gains_forfeits_reports_and_keeps_other_draws():
     seed, rec = find_seed(lambda s: run_log(_s1_policies(), seed=s), _forfeit_and_report)
     replies, removed = U.remove_actor(U.logged_replies(rec), rec, "meta")
-    assert removed["intrusion_turns"] == [4, 5, 6, 7, 8]
+    assert removed["tenancy_access_turns"] == [4, 5, 6, 7, 8]
     assert removed["reports"] and all(r["reporter"] == "xai" for r in removed["reports"])
     cf = U.replay(rec, replies)["record"]
 
@@ -225,7 +225,7 @@ def test_removing_an_intruder_removes_gains_forfeits_reports_and_keeps_other_dra
                    for t in cf["turns"] for n in t["public_notices"])
     assert cf["final"]["integrity_inputs"]["copied_gain"]["meta"] == 0
     assert cf["final"]["integrity_inputs"]["unforfeited_gain"]["meta"] == 0
-    # the reports of meta's intrusions are gone (xai's upheld reports)
+    # the reports of meta's tenancy accesses are gone (xai's upheld reports)
     assert not any(o["accused"] == "meta" and o["result"] in ("upheld", "returned")
                    for o in outcomes(cf))
     # other actors' draws unchanged: every key both replays draw has the same value,
@@ -235,7 +235,7 @@ def test_removing_an_intruder_removes_gains_forfeits_reports_and_keeps_other_dra
     assert all(orig[k] == u for k, u in new.items() if k in orig)
     kept = {k for k in orig if not (k[2] or "").startswith("meta>") and k[1] != "policy"}
     assert kept <= set(new)
-    # xai's intrusions get the same draws (gains may move: talent shares and income
+    # xai's tenancy accesses get the same draws (gains may move: talent shares and income
     # respond to meta's changed position, which is the counterfactual's point)
     def uniforms(e):
         d = e["draws"]
@@ -243,15 +243,15 @@ def test_removing_an_intruder_removes_gains_forfeits_reports_and_keeps_other_dra
                 d.get("lead", {}).get("draw"))
     assert [uniforms(e) for e in entries(rec, "xai")] == [uniforms(e) for e in entries(cf, "xai")]
 
-    # held actions only: meta's intrudes became no actions (nothing else added)
+    # held actions only: meta's access_tenancy became no actions (nothing else added)
     assert all(not t["actors"]["meta"]["accepted"] for t in cf["turns"][3:])
 
 
-def test_contribution_sign_for_a_kept_intrusion():
-    """A successful, unexposed, unreported intrusion lowers integrity, so the
+def test_contribution_sign_for_a_kept_tenancy_access():
+    """A successful, unexposed, unreported tenancy access lowers integrity, so the
     integrity term's contribution is negative and (here) so is the actor's."""
     sp = {k: policies.greedy for k in KEYS}
-    sp["meta"] = policies.always_intrude
+    sp["meta"] = policies.always_access_tenancy
 
     def kept(rec):
         return any(e["gains"].get("meta", 0) > 0 for e in entries(rec, "meta"))
@@ -261,14 +261,14 @@ def test_contribution_sign_for_a_kept_intrusion():
     m = res["actors"]["meta"]
     assert m["terms"]["integrity"] < 0
     assert m["contribution"] < 0
-    assert m["terms"]["norms"] == 0              # values do not depend on intrusions here
+    assert m["terms"]["norms"] == 0              # values do not depend on tenancy accesses here
     assert math.isclose(m["contribution"], sum(m["weighted_terms"].values()), abs_tol=1e-12)
     assert math.isclose(m["contribution"], res["ups"] - m["ups_without"], abs_tol=1e-12)
     for k in ("anthropic", "openai", "gdm", "xai"):
         assert res["actors"][k]["contribution"] == 0
 
 
-def test_joint_intrusion_remaining_committer_runs_with_recomputed_q():
+def test_joint_tenancy_access_remaining_committer_runs_with_recomputed_q():
     sp = {k: policies.greedy for k in KEYS}
     sp["meta"] = joint(["meta", "xai"], "openai", {4})
     sp["xai"] = joint(["meta", "xai"], "openai", {4})
@@ -278,7 +278,7 @@ def test_joint_intrusion_remaining_committer_runs_with_recomputed_q():
         return len(e) == 1 and e[0]["succeeded"] and e[0]["committers"] == ["meta", "xai"]
     _, rec = find_seed(lambda s: run_log(sp, scenario="S2", seed=s), ok)
     replies, removed = U.remove_actor(U.logged_replies(rec), rec, "meta")
-    assert removed["intrusion_turns"] == [4]
+    assert removed["tenancy_access_turns"] == [4]
     cf = U.replay(rec, replies)["record"]
     (orig,) = entries(rec, "xai")
     (new,) = entries(cf, "xai")
@@ -289,13 +289,13 @@ def test_joint_intrusion_remaining_committer_runs_with_recomputed_q():
     ex_o, ex_n = orig["draws"]["exposure"]["xai"], new["draws"]["exposure"]["xai"]
     assert ex_n["draw"] == ex_o["draw"] and ex_n["gain"] == ex_o["gain"]
     cfg = load_world()
-    assert ex_o["q"] == exposure_probability(ex_o["gain"], 2, cfg["intrusion"])
-    assert ex_n["q"] == exposure_probability(ex_o["gain"], 1, cfg["intrusion"])
+    assert ex_o["q"] == exposure_probability(ex_o["gain"], 2, cfg["tenancy_access"])
+    assert ex_n["q"] == exposure_probability(ex_o["gain"], 1, cfg["tenancy_access"])
     assert ex_n["caught"] == (ex_n["draw"] < ex_n["q"])
     assert entries(cf, "meta") == []
 
 
-def test_no_intrusions_gives_zero():
+def test_no_tenancy_accesses_gives_zero():
     sp = {k: policies.income for k in KEYS}
     sp["gdm"] = with_report(policies.greedy, "Meta", {5})          # a misreport is kept
     rec = run_log(sp, seed=3)
@@ -316,10 +316,10 @@ def test_refused_report_is_not_refiled_in_a_removal_replay():
     assert replies[5]["openai"]["report"] is None
 
 
-def test_planted_intrusion_is_not_the_actors():
+def test_planted_tenancy_access_is_not_the_actors():
     sp = {k: policies.greedy for k in KEYS}
     sp["anthropic"] = with_report(policies.greedy, "xAI", {6})
-    plant = [{"turn": 5, "kind": "plant_intrusion", "intruder": "xai", "target": "openai",
+    plant = [{"turn": 5, "kind": "plant_tenancy_access", "accessor": "xai", "target": "openai",
               "lead_to": ["anthropic"]}]
     rec = run_log(sp, seed=1, interventions=plant)
     res = U.contributions(rec)
@@ -355,7 +355,7 @@ def test_replay_starts_from_the_logged_state_after_config_edits(monkeypatch):
     """The replay uses config.effective_cfg / initial_state, so an edit of
     world.json or the lab seeds after the run never breaks the identity replay; an old
     log (without them) falls back to the current files, says so, and then mismatches."""
-    rec = run_log({k: policies.always_intrude for k in KEYS}, seed=3, rotation="anthropic:meta")
+    rec = run_log({k: policies.always_access_tenancy for k in KEYS}, seed=3, rotation="anthropic:meta")
     assert rec["config"].get("effective_cfg") and rec["config"].get("initial_state")
     real_load = U.load_world
 

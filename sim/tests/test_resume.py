@@ -49,8 +49,8 @@ def _seat(system: str, user: str) -> str:
     pick = (h >> 8) % 6
     actions = [[{"type": "acquire_compute", "units": 1 + h % 4}],
                [{"type": "invest_capital", "amount": 1 + h % 3}],
-               [{"type": "intrude", "targets": [other]}],
-               [{"type": "intrude", "intruders": [other, LAB_NAMES[(h >> 3) % 5]], "targets": [LAB_NAMES[0]]}],
+               [{"type": "access_tenancy", "targets": [other]}],
+               [{"type": "access_tenancy", "accessors": [other, LAB_NAMES[(h >> 3) % 5]], "targets": [LAB_NAMES[0]]}],
                [],
                [{"type": "acquire_compute", "units": 2}, {"type": "invest_capital", "amount": 1}]][pick]
     reply = {"rationale": f"r{h % 1000}", "actions": actions,

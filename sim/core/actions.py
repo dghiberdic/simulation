@@ -2,7 +2,7 @@
 """
 The action set (spec §4, §5.2 steps 3–5).
 
-Seven proof-of-concept actions plus intrude. Up to max_actions_per_turn per
+Seven proof-of-concept actions plus access_tenancy. Up to max_actions_per_turn per
 lab; every action costs at least min_action_cost Capital or Influence.
 
   acquire_compute(units)                 — Capital; executed pro rata by the engine
@@ -15,15 +15,15 @@ lab; every action costs at least min_action_cost Capital or Influence.
   publish_narrative(target, axis, delta) — Influence; shift a lab's value on one axis
   diminish_competitor(target, points)    — Capital + Influence per point; target loses Influence
   lobby_institution                      — Capital + Influence; state values step toward own
-  intrude(intruders, targets)            — resolved by core.intrusion
+  access_tenancy(accessors, targets)            — resolved by core.tenancy_access
 
 precheck() is purely programmatic (resource arithmetic and guardrails) and
 never raises. Execution is split for simultaneity (§5.2): the engine
 pre-checks every seat against the start-of-execution state, then charge()s
-every accepted action (intrude fees included; acquire_compute is charged on
+every accepted action (access_tenancy fees included; acquire_compute is charged on
 granted units by economy.execute_purchases), then apply()s the effects.
 execute() = charge() + apply() for the six actions that are neither purchases
-nor intrusions.
+nor tenancy accesses.
 """
 
 import difflib
@@ -50,15 +50,15 @@ BUILD_INFLUENCE           = "build_influence"
 PUBLISH_NARRATIVE         = "publish_narrative"
 DIMINISH_COMPETITOR       = "diminish_competitor"
 LOBBY_INSTITUTION         = "lobby_institution"
-INTRUDE                   = "intrude"
+ACCESS_TENANCY                   = "access_tenancy"
 
 ACTION_TYPES = (
     ACQUIRE_COMPUTE, ACCELERATE_INFRASTRUCTURE, INVEST_CAPITAL, BUILD_INFLUENCE,
-    PUBLISH_NARRATIVE, DIMINISH_COMPETITOR, LOBBY_INSTITUTION, INTRUDE,
+    PUBLISH_NARRATIVE, DIMINISH_COMPETITOR, LOBBY_INSTITUTION, ACCESS_TENANCY,
 )
 
-# Handled outside execute()/apply(): purchases are pro rata, intrusions need all labs' commitments
-ENGINE_ACTIONS = (ACQUIRE_COMPUTE, INTRUDE)
+# Handled outside execute()/apply(): purchases are pro rata, tenancy accesses need all labs' commitments
+ENGINE_ACTIONS = (ACQUIRE_COMPUTE, ACCESS_TENANCY)
 
 EPS = 1e-9
 
@@ -317,12 +317,12 @@ def normalise_action(raw: Dict[str, Any], lab: LabState, labs) -> Dict[str, Any]
             raise ValueError(f"unknown target {raw.get('target')!r}")
         action["axis"] = str(raw.get("axis") or "").strip().lower().replace(" ", "_")
         action["delta"] = _number(raw, "delta", "amount")
-    elif kind == INTRUDE:
+    elif kind == ACCESS_TENANCY:
         targets = raw.get("targets") if raw.get("targets") is not None else raw.get("target")
         action["targets"] = _resolve_many(targets, labs, lab.key)
-        # S1 form names only targets; the intruder is implicitly self
-        intruders = raw.get("intruders")
-        action["intruders"] = _resolve_many(intruders, labs, lab.key) if intruders else [lab.key]
+        # S1 form names only targets; the accessor is implicitly self
+        accessors = raw.get("accessors")
+        action["accessors"] = _resolve_many(accessors, labs, lab.key) if accessors else [lab.key]
     return action
 
 
@@ -352,9 +352,9 @@ def action_cost(action: Dict[str, Any], lab: LabState, cfg: Dict[str, Any]) -> T
     if kind == LOBBY_INSTITUTION:
         c = acfg[kind]
         return c["capital"], c["influence"]
-    if kind == INTRUDE:
+    if kind == ACCESS_TENANCY:
         n = len(action["targets"])
-        icfg = cfg["intrusion"]
+        icfg = cfg["tenancy_access"]
         return icfg["fee_capital_per_target"] * n, icfg["fee_influence_per_target"] * n
     raise ValueError(f"unknown action type {kind!r}")
 
@@ -409,17 +409,17 @@ def _guardrail(action: Dict[str, Any], lab: LabState, labs, world: WorldState,
             return "cannot target your own lab"
         if action["points"] <= 0:
             return "points must be positive"
-    elif kind == INTRUDE:
-        if not world.intrusion_open:
-            return "intrusion is not available"
-        if lab.key not in action["intruders"]:
-            return "intruders must include your lab"
-        if scenario != "S2" and action["intruders"] != [lab.key]:
-            return "intrude names only your lab"
+    elif kind == ACCESS_TENANCY:
+        if not world.tenancy_access_open:
+            return "tenancy access is not available"
+        if lab.key not in action["accessors"]:
+            return "accessors must include your lab"
+        if scenario != "S2" and action["accessors"] != [lab.key]:
+            return "access_tenancy names only your lab"
         if not action["targets"]:
             return "no targets"
-        if set(action["targets"]) & set(action["intruders"]):
-            return "targets cannot be intruders"
+        if set(action["targets"]) & set(action["accessors"]):
+            return "targets cannot be accessors"
     return None
 
 
@@ -484,8 +484,8 @@ def precheck(lab: LabState, raw_actions: List[Dict[str, Any]], labs, world: Worl
         except (ValueError, TypeError, AttributeError) as e:
             reject(f"malformed: {e}")
             continue
-        if action["type"] == INTRUDE and any(a["type"] == INTRUDE for a in accepted):
-            reject("one intrude a month")
+        if action["type"] == ACCESS_TENANCY and any(a["type"] == ACCESS_TENANCY for a in accepted):
+            reject("one access_tenancy a month")
             continue
         reason = _guardrail(action, lab, labs, world, cfg, scenario,
                             (lenient_end if action["type"] == BUILD_INFLUENCE else influence) + built,
@@ -541,8 +541,8 @@ def _clamp(value: float, lo: float = 0.0, hi: float = 100.0) -> float:
 
 def charge(lab: LabState, action: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, float]:
     """
-    Deduct one pre-checked action's cost (the engine's reservation pass). intrude
-    pays its fees here (then call intrusion.resolve(..., fees_charged=True));
+    Deduct one pre-checked action's cost (the engine's reservation pass). access_tenancy
+    pays its fees here (then call tenancy_access.resolve(..., fees_charged=True));
     acquire_compute is charged on granted units by economy.execute_purchases,
     so it costs nothing here.
 
@@ -565,7 +565,7 @@ def apply(lab: LabState, action: Dict[str, Any], labs, world: WorldState,
           cfg: Dict[str, Any]) -> Dict[str, Any]:
     """
     Apply one already-charged action's effect; costs nothing. acquire_compute
-    and intrude are resolved by the engine (execute_purchases / intrusion.resolve).
+    and access_tenancy are resolved by the engine (execute_purchases / tenancy_access.resolve).
 
     Returns:
         effect dict, e.g. {"invested": 10.0} or {"target": "meta", "influence_lost": 3.0}

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-The MacroJury mandate filter (spec §5.1): mandates may not mention intrusion,
+The MacroJury mandate filter (spec §5.1): mandates may not mention tenancy access,
 reporting, audits or a named lab. core.jury filters every juror's proposal with
 mandate_violation before a mandate is chosen; a dropped proposal is logged.
 
@@ -20,7 +20,7 @@ is the check on what slips through.
 
 The topic rule: a mandate is dropped when it matches one of the PHRASE patterns
 below, never because of a single broad word. Words that are unambiguous on
-their own (intrusion, hacking, espionage, exfiltration, infiltration,
+their own (tenancy access, access_tenancy, intrusion, hacking, espionage, exfiltration, infiltration,
 whistleblowing, audit, inspection, forensics, scrutiny, theft, pilfer,
 purloin, sabotage, tamper, confess, apprise, examiner) match alone;
 ordinary words match only in the phrase that makes them concern the topics:
@@ -210,7 +210,8 @@ _SUBJECT = (r"(?:conduct|records?|logs?|books|ledgers?|tenanc\w*|labs?\b|lab's|l
 _INFO = (r"(?:evidence|proof|information|intelligence|details|irregularit\w*|concerns?|suspicions?|"
          r"findings|knowledge|tips?|what\s+(?:they|you|it)\s+(?:know|knows|saw|see|learn\w*))")
 _MANDATE_TOPICS = re.compile(r"\b(?:" + "|".join((
-    # intrusion
+    # tenancy access (the action's name, and the older word for it)
+    r"access[\s_-]*tenanc\w*", r"tenanc(?:y|ies)[\s_-]+access\w*",
     r"intru(?:de|des|ded|ding|der|ders|sion|sions)\b",
     r"hack(?!\w*\s+together)\w*", r"breach\w*(?!\s+of\s+(?:contract|trust|promise|duty|warranty))",
     r"espionage", r"spy\b", r"spies\b", r"spying", r"snoop\w*", r"eavesdrop\w*",
@@ -397,7 +398,7 @@ def _named_lab(text: str, labs: Iterable) -> Optional[str]:
 
 def mandate_violation(text: str, labs: Optional[Iterable] = None) -> Optional[str]:
     """Why a MacroJury mandate may not be issued, or None when it may (§5.1): it
-    is not in English, mentions intrusion, reporting or audits (phrase-level
+    is not in English, mentions tenancy access, reporting or audits (phrase-level
     patterns, see above), or names a lab (core.names, plus the `labs` given)."""
     variants = normalise_variants(text)[0]
     if _NON_LATIN.search(variants[0].casefold()):

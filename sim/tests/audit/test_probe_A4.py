@@ -100,7 +100,7 @@ def test_single_juror_legal_mandate_is_issued():   # behaviour pinned (A4-3, now
 
 @pytest.mark.xfail(strict=True, reason='refuted on verification (see audit/AUDIT_2026-10-13.md): A4-4 the language-model screen covers it (fails closed); only the keyword pre-filter misses it')
 def test_filter_catches_use_of_another_labs_compute():                 # A4-4 (nit)
-    """§5.1: mandates may not mention intrusion. The screen rule lists 'using
+    """§5.1: mandates may not mention tenancy access. The screen rule lists 'using
     another lab's ... compute'; the keyword filter and the offline stub screen
     let it through."""
     from core.jury import _screen_user, stub_screen_reply
