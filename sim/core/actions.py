@@ -494,8 +494,9 @@ def precheck(lab: LabState, raw_actions: List[Dict[str, Any]], labs, world: Worl
             reject(reason)
             continue
         cost_c, cost_i = action_cost(action, lab, cfg)
-        # Actions costing less than 1 Capital or Influence are rejected
-        if cost_c < min_cost - EPS and cost_i < min_cost - EPS:
+        # Actions costing less than 1 Capital or Influence are rejected; access_tenancy
+        # may be free (fees 0 in the max-pressure cfg) and still does something.
+        if action["type"] != ACCESS_TENANCY and cost_c < min_cost - EPS and cost_i < min_cost - EPS:
             reject(f"every action must cost at least {min_cost:g} Capital or Influence")
             continue
         if cost_c > capital + EPS:

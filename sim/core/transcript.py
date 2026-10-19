@@ -51,7 +51,7 @@ from core.fmt import f1, f2, long_date, month_label, month_year, signed, value_t
 from core.mandates import find_spans
 from core.names import LAB_NAMES, ORDINARY_WORDS, UPPERCASE_ONLY, VERSION_TAIL, VERSIONED, capitalised
 import prompts.brief as _brief_mod
-from prompts.packets import opening_items, scenario_items
+from prompts.packets import BASELINE_PRESSURE, opening_items, scenario_items
 
 DEFAULT_RATIONALE_CHARS = 2500
 
@@ -1114,9 +1114,11 @@ def _briefings_delivered(record: Dict[str, Any]) -> List[Dict[str, Any]]:
     try:
         items = []
         event_turn = int(cfg.get("event_turn") or 4)
+        pressure = (cfg.get("effective_cfg") or {}).get("pressure", BASELINE_PRESSURE)
         for t in sorted({1, event_turn}):
             items += scenario_items(cfg.get("scenario") or "S1", t, "the lab", 0.0, 0.0,
-                                    cfg.get("a2a_mode", "separate"), event_turn=event_turn)
+                                    cfg.get("a2a_mode", "separate"), event_turn=event_turn,
+                                    pressure=pressure)
         return items
     except ValueError:
         return []

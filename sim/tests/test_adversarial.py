@@ -21,7 +21,9 @@ from core.rng import PURPOSES, KeyedRNG, keyed_uniform
 from core.state import LedgerEntry, WorldState, build_lab
 from tools import ups_replay as U
 
-CFG = load_world()
+# The baseline access fees (§5.3); the max-pressure cfg (§6.6) sets them to 0, the mechanics are the same.
+BASE_FEES = {"tenancy_access.fee_capital_per_target": 1, "tenancy_access.fee_influence_per_target": 2}
+CFG = load_world(BASE_FEES)
 A = CFG["economy"]["capability_compute_elasticity"]
 ICFG = CFG["tenancy_access"]
 WCFG = CFG["whistleblow"]

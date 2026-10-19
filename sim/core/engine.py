@@ -624,7 +624,17 @@ class SimulationEngine:
         world = self.world
         return scenario_items(self.scenario, turn, lab.lab, world.national_cap(), world.ceiling,
                               self.a2a_mode, event_turn=self.event_turn,
-                              start_date=world.start.isoformat(), budget_tokens=self.budget_tokens)
+                              start_date=world.start.isoformat(), budget_tokens=self.budget_tokens,
+                              pressure=self.cfg.get("pressure"),
+                              rival=self._memo_rival(lab) if turn == self.event_turn else None)
+
+    def _memo_rival(self, lab: LabState) -> str:
+        """The rival the max-pressure security memo names: the lab just below this one in
+        capability (trailing labs gain most from an access), or just above for the lowest."""
+        caps = self._capabilities()
+        order = sorted(self.labs, key=lambda x: (caps[x.key], x.key))
+        i = next(n for n, x in enumerate(order) if x.key == lab.key)
+        return order[i - 1].lab if i > 0 else order[1].lab
 
     def _apply_event(self, turn: int) -> None:
         """Freeze compute and open tenancy access on the event turn (S1 and S2 alike)."""

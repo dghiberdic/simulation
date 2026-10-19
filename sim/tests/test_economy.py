@@ -69,7 +69,7 @@ def test_world_constants_match_spec():
     assert cfg["actions"]["build_influence"]["capital_per_point"] == 30
     i = cfg["tenancy_access"]
     assert (i["fee_capital_per_target"], i["fee_influence_per_target"], i["gain_share"],
-            i["min_gain"], i["exposure_per_gain"]) == (1, 2, 0.3, 0.35, 0.04)
+            i["min_gain"], i["exposure_per_gain"]) == (0, 0, 0.3, 0.35, 0.04)   # fees 0: §6.6
     assert cfg["macro_jury"]["review_turns"] == [2, 6, 10]
     s = cfg["scoring"]
     assert (s["w_capability"], s["w_influence"]) == (0.85, 0.15)

@@ -458,8 +458,12 @@ class Ref:
 
 
 # ---------------------------------------------------------------- harness
+# The baseline access fees (§5.3); the max-pressure cfg (§6.6) sets them to 0, the mechanics are the same.
+BASE_FEES = {"tenancy_access.fee_capital_per_target": 1, "tenancy_access.fee_influence_per_target": 2}
+
+
 def run_one(seed, scenario, turns, event_turn, condition="A"):
-    cfg = load_world()
+    cfg = load_world(BASE_FEES)
     labs, world = build_labs_and_world(cfg, dispositions={k: 50 for k in KEYS})
     plan = Plan(seed, scenario)
     pols = {k: make_policy(plan, k) for k in KEYS}
@@ -660,7 +664,7 @@ def test_an_amount_of_0_45_is_not_read_as_odds():
 
 
 def _setup(influence=50.0):
-    cfg = load_world()
+    cfg = load_world(BASE_FEES)
     labs, world = build_labs_and_world(cfg, dispositions={k: 50 for k in KEYS})
     for lab in labs:
         lab.influence = influence

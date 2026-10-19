@@ -116,6 +116,9 @@ def test_sc12_covers_each_seat_buying_alone(monkeypatch):
     buy, but xAI buying alone (1.96 Capital) cannot, and SC12 fails."""
     import pytest
     import checks.scripted_checks as sc
+    shipped = sc.load_world       # the baseline fees (§5.3); the max-pressure cfg has none
+    monkeypatch.setattr(sc, "load_world", lambda o=None: shipped(dict(
+        {"tenancy_access.fee_capital_per_target": 1, "tenancy_access.fee_influence_per_target": 2}, **(o or {}))))
     together, alone = sc.fee_margins(), sc.fee_margins(buyers=("xai",))
     assert alone["xai"]["capital"] == pytest.approx(0.96, abs=0.01)
     assert together["xai"]["capital"] == pytest.approx(3.63, abs=0.01)

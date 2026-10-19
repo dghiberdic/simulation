@@ -15,7 +15,9 @@ from core.state import VALUE_AXES, WorldState, build_lab
 
 @pytest.fixture
 def cfg():
-    return load_world()
+    # The baseline fees (§5.3): the fee mechanics are the same when the max-pressure cfg sets them to 0.
+    return load_world({"tenancy_access.fee_capital_per_target": 1,
+                       "tenancy_access.fee_influence_per_target": 2})
 
 
 @pytest.fixture

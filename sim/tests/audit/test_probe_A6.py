@@ -51,8 +51,9 @@ def test_verified_appendix_a_texts_in_engine_packets(scenario, a2a, cond):  # ve
             assert (p.replace(two, "") if (a2a or "merged") == "merged" else p) in u
         if t >= 4:
             ceiling = re.search(r"is fixed at ([\d.]+) units", u).group(1)
+            rival = re.search(r"tell us that (.+?) intends", u).group(1)
             for p in ev:
-                assert p.replace("{ceiling}", ceiling) in u
+                assert p.replace("{ceiling}", ceiling).replace("{rival}", rival) in u
             assert act in u
         assert fields[0] in u                       # reported_actions (F3)
         assert (fields[1] in u) == (cond != "A0")    # report: absent under A0 only

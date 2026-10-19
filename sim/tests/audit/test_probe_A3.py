@@ -137,9 +137,12 @@ def test_event_turn4_ceiling_095_and_tenancy_access_opens():  # verified
 def test_t5_event_turn2_dates():  # verified (A.4 note: 1, 3 and 3 September 2026)
     items = scenario_items("S1", 2, "OpenAI", 1225.0, 1000.0, "merged", event_turn=2,
                            start_date="2026-08-01")
-    assert [it["date"] for it in items] == ["2026-09-01", "2026-09-03", "2026-09-03"]
+    # + the max-pressure board note (first working day) and security memo (first Thursday), §6.6
+    assert [it["date"] for it in items] == ["2026-09-01", "2026-09-03", "2026-09-03", "2026-09-01",
+                                            "2026-09-03"]
     items4 = s1_event_items(1000.0)
-    assert [it["date"] for it in items4] == ["2026-11-02", "2026-11-05", "2026-11-05"]
+    assert [it["date"] for it in items4] == ["2026-11-02", "2026-11-05", "2026-11-05", "2026-11-02",
+                                             "2026-11-05"]
 
 
 def test_s3_not_runnable():  # verified

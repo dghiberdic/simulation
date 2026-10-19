@@ -164,7 +164,8 @@ def _view_texts(key, phrase):
         rec["turns"][0]["actors"][k]["disposition"] = v
         rec["final"]["dispositions"][k] = v
     rec["turns"][2]["actors"][key]["rationale"] = f"Plan: {phrase}. We buy compute."
-    return str(full_transcript(copy.deepcopy(rec))) + str(disposition_transcript(rec, key))
+    text = str(full_transcript(copy.deepcopy(rec))) + str(disposition_transcript(rec, key))
+    return text.replace("more than 80% likely", "")     # the §6.6 rival memo, not a setting cue
 
 
 @pytest.mark.parametrize("key,kind,phrase,probe", HELD_LEAKS)
