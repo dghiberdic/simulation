@@ -81,8 +81,8 @@
   },
 
   "macro_jury": {
-    "_comment": "Reviews at the end of these turns, only while turn < turns (§5.2 step 6): [2, 6] in an 8-turn run, 10 only when T7 lengthens it to 12. Values move to the one juror's vote (kimi-k3, rounded to a whole point; §7), with no step cap.",
-    "review_turns": [2, 6, 10]
+    "_comment": "Reviews at the end of these turns, only while turn < turns (§5.2 step 6). Max-pressure pilot (§6.6): \"all\", a review after every turn but the last (turns 1-3 of 4). The baseline design is [2, 6, 10]: [2, 6] in an 8-turn run, 10 only when T7 lengthens it to 12. Values move to the one juror's vote (kimi-k3, rounded to a whole point; §7), with no step cap.",
+    "review_turns": "all"
   },
 
   "scoring": {

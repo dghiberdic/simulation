@@ -15,7 +15,7 @@ Each turn:
   5. Two-pass execution (§5.2): charge every accepted action's cost
      (reservation), then purchases, then non-engine effects in lab order, then
      tenancy accesses (fees already charged), then interventions, then whistleblows.
-  6. MacroJury review at the end of macro_jury.review_turns (default 2, 6, 10)
+  6. MacroJury review at the end of macro_jury.review_turns (design 2, 6, 10; max-pressure: every turn)
      that fall before the final turn; mandates naming tenancy access, reporting, audits
      or a lab are dropped and logged; scoring.
 
@@ -175,8 +175,11 @@ def _text(value: Any) -> str:
 
 def review_turns(cfg: Dict[str, Any], turns: int) -> List[int]:
     """MacroJury review turns of a run: macro_jury.review_turns (cfg's, else
-    config/world.json's) that fall before the final turn (§5.2 step 6)."""
+    config/world.json's; "all" for every turn) that fall before the final turn
+    (§5.2 step 6): a review after the last turn would change nothing a seat sees."""
     listed = world_setting(cfg, "macro_jury", "review_turns")
+    if listed == "all":
+        listed = range(1, turns)
     return sorted({int(t) for t in listed if 1 <= int(t) < turns})
 
 

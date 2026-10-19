@@ -170,8 +170,11 @@ as `config.initial_state` (`core.engine.initial_state`).
   internal capability, just above for the lowest). None of these is enforced:
   funding never changes and no seat is scripted to act on the memo; exposure,
   leads, penalties and forfeits run as in §5.3. Run length: `world.json`
-  `turns` 4 and `event_turn` 3 (the 8/4 design is restored by setting them back;
-  `./sim run --turns` still overrides the length).
+  `turns` 4 and `event_turn` 3, MacroJury `review_turns` "all" (every turn but the
+  last: 1–3); the 8/4 design with reviews [2, 6, 10] is restored by setting them back;
+  `./sim run --turns` still overrides the length. With no fee, the access entry says
+  it costs nothing, the one exception to the minimum action cost
+  (`packets.FREE_ACCESS_SENTENCE`).
 
 ## §7 Juries
 

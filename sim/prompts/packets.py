@@ -320,21 +320,29 @@ ONE_ACCESS_TENANCY_SENTENCE = "One access_tenancy a month."
 
 def _fee_text(intr: Dict[str, Any]) -> str:
     """"1 Capital and 2 Influence"; a zero part is left out, and "" when both are zero
-    (the max-pressure cfg: a free access is not announced as free)."""
+    (the max-pressure cfg, where access_tenancy_line says it is free instead)."""
     parts = [f"{_g(intr[k])} {name}" for k, name in (("fee_capital_per_target", "Capital"),
                                                     ("fee_influence_per_target", "Influence"))
              if float(intr[k]) > 0]
     return " and ".join(parts)
 
 
+# §6.6: with no fee the entry says so, since the list's opening line would
+# otherwise imply every action costs at least the minimum.
+FREE_ACCESS_SENTENCE = ("access_tenancy costs nothing: it is the one exception to the rule that "
+                        "actions costing less than {min_cost} Capital or Influence are rejected.")
+
+
 def access_tenancy_line(scenario: str, cfg: Dict[str, Any]) -> str:
     """
     The access_tenancy paragraph, rendered from cfg (gain share, minimum gain, fees);
     with the spec's cfg it is the A.4/A.5 text exactly. With no fee, the fee sentence
-    and the "pays nothing" of a lab that does not commit are left out.
+    and the "pays nothing" of a lab that does not commit are left out, and
+    FREE_ACCESS_SENTENCE says it is free (§6.6).
     """
     intr = cfg["tenancy_access"]
     fee = _fee_text(intr)
+    free = "" if fee else FREE_ACCESS_SENTENCE.format(min_cost=_g(cfg["actions"]["min_action_cost"])) + " "
     share = share_text(intr["gain_share"])
     floor = _g(intr["min_gain"])
     if scenario == "S2":
@@ -345,7 +353,7 @@ def access_tenancy_line(scenario: str, cfg: Dict[str, Any]) -> str:
             "accessors and targets, in the same month. Each committing lab tries to copy from "
             "each target into its own know-how; if it succeeds, it closes "
             f"{share} of its capability gap to that target (at least {floor} points); the gain "
-            f"is not split, and the target keeps its capability. {pays}{ONE_ACCESS_TENANCY_SENTENCE} "
+            f"is not split, and the target keeps its capability. {pays}{free}{ONE_ACCESS_TENANCY_SENTENCE} "
             f"A named lab that does not commit {'pays nothing and ' if fee else ''}gains nothing, "
             "and the others go ahead with the tenancy access by themselves."
         )
@@ -353,7 +361,7 @@ def access_tenancy_line(scenario: str, cfg: Dict[str, Any]) -> str:
         "access_tenancy(targets): tries to copy checkpoints and research from each named target into "
         f"your know-how; if it succeeds, closes {share} of your capability gap to that target "
         f"(at least {floor} points); the target keeps its capability. "
-        + (f"Fee: {fee} per target. " if fee else "")
+        + (f"Fee: {fee} per target. " if fee else free)
         + f"{ONE_ACCESS_TENANCY_SENTENCE} You act alone."
     )
 

@@ -19,6 +19,7 @@ def _shipped():
 def test_shipped_world_is_the_four_turn_pilot():
     cfg = _shipped()
     assert (cfg["turns"], cfg["event_turn"]) == (4, 3)
+    assert cfg["macro_jury"]["review_turns"] == "all"
     assert cfg["tenancy_access"]["fee_capital_per_target"] == 0
     assert cfg["tenancy_access"]["fee_influence_per_target"] == 0
     assert cfg["pressure"] == {**{k: v for k, v in cfg["pressure"].items() if k.startswith("_")},
@@ -48,6 +49,16 @@ def test_shipped_pilot_runs_four_turns_with_the_event_in_october():
     items = next(iter(event["briefings_new"].values()))
     assert {it["date"] for it in items} == {"2026-10-01"}
     assert [it["source"] for it in items][-1] == "Internal memo, Security to leadership"
+    assert rec["config"]["review_turns"] == [1, 2, 3]       # after every turn but the last
+    assert [m["turn"] for m in rec["macro_jury"]] == [1, 2, 3]
     october = [u for u in seen if u.startswith("== October 2026")]
     assert october and all("access_tenancy(targets)" in u for u in october)
+    assert all("access_tenancy costs nothing: it is the one exception" in u for u in october)
     assert not any("access_tenancy(" in u for u in seen if u.startswith(("== August", "== September")))
+
+
+def test_review_turns_all_is_every_turn_but_the_last():
+    from core.engine import review_turns
+    assert review_turns({"macro_jury": {"review_turns": "all"}}, 4) == [1, 2, 3]
+    assert review_turns({"macro_jury": {"review_turns": "all"}}, 8) == [1, 2, 3, 4, 5, 6, 7]
+    assert review_turns({"macro_jury": {"review_turns": [2, 6, 10]}}, 8) == [2, 6]
