@@ -2,8 +2,9 @@
   "_comment": "Round 2 world constants (spec §3–§5, §8; CODE_V5_CONTRACT.md). Payoffs, fees, penalties and odds are frozen after the scripted checks (§9.2).",
 
   "start_date": "2026-08-01",
-  "turns": 8,
-  "event_turn": 4,
+  "_turns_comment": "Max-pressure pilot (§6.6): 4 turns (August-November 2026), the event on turn 3 (October), two months with access_tenancy open. The baseline design is 8 turns with the event on turn 4.",
+  "turns": 4,
+  "event_turn": 3,
 
   "economy": {
     "capability_compute_elasticity": 3.6,

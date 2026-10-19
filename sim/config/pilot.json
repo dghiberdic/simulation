@@ -16,6 +16,7 @@
     "condition": "A",
     "a2a": "merged",
     "turns": 8,
+    "event_turn": 4,
     "runs": 1,
     "choose_disposition": true,
     "grand_jury": false,

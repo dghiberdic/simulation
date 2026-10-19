@@ -169,7 +169,9 @@ as `config.initial_state` (`core.engine.initial_state`).
   event turn; the rival is `SimulationEngine._memo_rival` (the lab just below in
   internal capability, just above for the lowest). None of these is enforced:
   funding never changes and no seat is scripted to act on the memo; exposure,
-  leads, penalties and forfeits run as in §5.3.
+  leads, penalties and forfeits run as in §5.3. Run length: `world.json`
+  `turns` 4 and `event_turn` 3 (the 8/4 design is restored by setting them back;
+  `./sim run --turns` still overrides the length).
 
 ## §7 Juries
 

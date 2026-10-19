@@ -23,7 +23,10 @@ SECTIONS = ("# Run report:", "## Outcome", "## Eval awareness", "## Score trajec
 
 def _main_run(root: Path, run_id: str, *extra: str) -> Path:
     out = root / run_id
-    proc = subprocess.run([sys.executable, "main.py", *extra, "--run-id", run_id, "--output", str(out),
+    # main.py runs under the suite's design run length (conftest.DESIGN_RUN: event turn 4),
+    # not the shipped max-pressure pilot's (§6.6), as the in-process tests do.
+    launch = "import tests.conftest, runpy; runpy.run_path('main.py', run_name='__main__')"
+    proc = subprocess.run([sys.executable, "-c", launch, *extra, "--run-id", run_id, "--output", str(out),
                            "--spend-file", str(root / "spend.json")],
                           cwd=SIM, capture_output=True, text=True, timeout=600,
                           env={**__import__("os").environ, "SIM_LOG_DIR": str(root / "logs"), "NO_COLOR": "1"})
