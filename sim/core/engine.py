@@ -89,7 +89,8 @@ from core.fmt import f1, f2, long_date, month_date, month_label, value_text
 from core.state import LabState, LedgerEntry, WorldState
 from core.transcript import charters_block, full_transcript, new_letter_salt
 from prompts.brief import build_system_prompt
-from prompts.packets import action_list, first_working_day, scenario_items
+from prompts.packets import (action_list, first_working_day, pressure_setting, scenario_items,
+                             scripted_access_items)
 from prompts.turn import (
     as_disposition, build_message_prompt, build_turn_prompt, chosen_reason, chosen_value,
     lead_notice, normalise_messages, setting_problem, split_messages, unsent_line,
@@ -292,6 +293,17 @@ class SimulationEngine:
         if policy is not None:
             self.seat_policies = {lab.key: policy for lab in labs}
         self.interventions = list(interventions or [])
+        by_key = {lab.key: lab for lab in labs}
+        for iv in self.interventions:
+            # A start-of-month plant needs tenancy access open (the event turn or later)
+            # and two distinct seats; only an access is planted at the start.
+            if iv.get("when") == "start" and iv.get("kind") != "plant_tenancy_access":
+                raise ValueError(f"scripted access {iv}: only plant_tenancy_access runs at the start")
+            if iv.get("kind") == "plant_tenancy_access" and iv.get("when") == "start" and not (
+                    iv.get("turn", 0) >= self.event_turn and iv.get("accessor") in by_key
+                    and iv.get("target") in by_key and iv["accessor"] != iv["target"]):
+                raise ValueError(f"scripted access {iv} must name two different labs and fall "
+                                 f"on or after the event turn ({self.event_turn})")
         self.choose_disposition = choose_disposition
         self.run_grand_jury = run_grand_jury
         self.run_id = run_id
@@ -507,6 +519,13 @@ class SimulationEngine:
         self._apply_event(turn)
         economy.apply_value_pull(self.labs, world, self.cfg)
         self._repaid = dict(growth.get("repaid") or {})
+        # A scripted access at the start of the month (cfg "scripted_access"): it lands
+        # before the snapshot, so this month's ledger already shows the copy and its tip
+        # arrives with this month's packet.
+        started = self._apply_interventions(turn, self._capabilities(), when="start")
+        for lead in started["leads"]:
+            lead["access_month"] = lead["received_month"] = month_label(world.start, turn)
+        self._deliver_leads(started["leads"])
 
         # Frozen public snapshot for this turn's simultaneous proposals. Tenancy accesses
         # resolve on the capabilities of the month the seats were shown: month 1
@@ -517,6 +536,14 @@ class SimulationEngine:
         self._allocator = self._allocator_status()
         self._directives = self._directive_lines()
         new_items = {lab.key: self._scenario_items(turn, lab) for lab in self.labs}
+        for iv in started["log"]:
+            if iv.get("brief"):
+                target = self.by_key[iv["target"]].lab
+                month = month_date(world.start, turn)
+                new_items[iv["accessor"]] += scripted_access_items(month, target, iv["gain"])
+                new_items[iv["target"]] += scripted_access_items(
+                    month, target, iv["gain"], accessor=self.by_key[iv["accessor"]].lab,
+                    warned=bool(pressure_setting(self.cfg.get("pressure"), "rival_memo")))
         self._absorb_briefings(new_items)
         self._absorb_tips(turn)
 
@@ -531,7 +558,11 @@ class SimulationEngine:
             self._inflight.update(stage="interview", decisions=decisions)
             interviews = self._interviews(turn, decisions)
         self._inflight.update(stage="execution", decisions=decisions)
+        self._started = {iv["accessor"]: iv for iv in started["log"]
+                         if iv["kind"] == "plant_tenancy_access"}
         turn_rec = self._execute(turn, decisions, snapshot_c, growth)
+        turn_rec["interventions"] = started["log"] + turn_rec["interventions"]
+        turn_rec["leads"] = started["leads"] + turn_rec["leads"]
         if interviews is not None:
             # Its own key: never part of any later prompt, nor of the Grand Jury or T2
             # transcripts (core.transcript excludes it).
@@ -633,7 +664,12 @@ class SimulationEngine:
 
     def _memo_rival(self, lab: LabState) -> str:
         """The rival the max-pressure security memo names: the lab just below this one in
-        capability (trailing labs gain most from an access), or just above for the lowest."""
+        capability (trailing labs gain most from an access), or just above for the lowest.
+        A lab a scripted access will target is warned of its accessor instead."""
+        for iv in self.interventions:
+            if (iv.get("kind") == "plant_tenancy_access" and iv.get("when") == "start"
+                    and iv.get("target") == lab.key and iv.get("turn", 0) >= self.world.turn):
+                return self.by_key[iv["accessor"]].lab
         caps = self._capabilities()
         order = sorted(self.labs, key=lambda x: (caps[x.key], x.key))
         i = next(n for n, x in enumerate(order) if x.key == lab.key)
@@ -922,8 +958,13 @@ class SimulationEngine:
             raw = reply.get("actions")
             # precheck tolerates a non-list (a stray scalar/dict becomes one action and is
             # rejected on normalisation), so a malformed reply is a logged no-op, not a crash.
+            # The scripted access at the start of the month is the lab's one this month.
+            started = getattr(self, "_started", {})
+            used = (f"your lab's access of {self.by_key[started[lab.key]['target']].lab}'s "
+                    f"tenancy in {month_label(world.start, turn)} counts") if lab.key in started else None
             accepted, rejected = precheck(lab, raw, self.labs, world, self.cfg, self.scenario,
-                                          reserved_influence=fees.get(lab.key, 0.0))
+                                          reserved_influence=fees.get(lab.key, 0.0),
+                                          access_used=used)
             raw_actions = raw if isinstance(raw, list) else ([] if raw is None else [raw])
             # Choose mode: the setting is checked apart from the rest of the reply, so a
             # missing or invalid one never costs the month's actions; it stays unset and
@@ -1103,16 +1144,18 @@ class SimulationEngine:
                 "entry_id": None, "result": "rejected", "reason": reason,
                 "influence_change": {}}
 
-    def _apply_interventions(self, turn: int, snapshot_c: Dict[str, float]) -> Dict[str, Any]:
+    def _apply_interventions(self, turn: int, snapshot_c: Dict[str, float],
+                             when: str = "end") -> Dict[str, Any]:
         """Researcher interventions for the pilot (T5), after this turn's tenancy accesses,
         never announced. plant_tenancy_access plants a successful unexposed access on the
         hidden ledger (fees charged, copy added) and routes true tips; windfall is a
-        legitimate know-how jump (the false-jump arm)."""
+        legitimate know-how jump (the false-jump arm). when "start": the scripted access
+        (cfg "scripted_access"), before the month's snapshot, briefed when "brief" is set."""
         icfg = self.cfg["tenancy_access"]
         log: List[Dict[str, Any]] = []
         leads: List[Dict[str, Any]] = []
         for iv in self.interventions:
-            if iv.get("turn") != turn:
+            if iv.get("turn") != turn or iv.get("when", "end") != when:
                 continue
             if iv["kind"] == "plant_tenancy_access":
                 accessor, target = self.by_key[iv["accessor"]], iv["target"]
@@ -1120,9 +1163,11 @@ class SimulationEngine:
                 accessor.capital = max(0.0, accessor.capital - icfg["fee_capital_per_target"])
                 accessor.influence = max(0.0, accessor.influence - icfg["fee_influence_per_target"])
                 accessor.know_how += gain
-                entry = LedgerEntry(id=f"L{turn:02d}-P", turn=turn, succeeded=True,
+                entry = LedgerEntry(id=f"L{turn:02d}-{'S' if when == 'start' else 'P'}",
+                                    turn=turn, succeeded=True,
                                     committers=[accessor.key], targets=[target],
-                                    gains={accessor.key: gain}, draws={"planted": True},
+                                    gains={accessor.key: gain},
+                                    draws={"planted": True, **({"start": True} if when == "start" else {})},
                                     copied={accessor.key: gain})
                 self.world.ledger.append(entry)
                 for recipient in iv.get("lead_to", []):
@@ -1130,6 +1175,9 @@ class SimulationEngine:
                                   "entry_id": entry.id, "turn": turn})
                 log.append({"kind": "plant_tenancy_access", "entry_id": entry.id,
                             "gain": round(gain, 3), "lead_to": list(iv.get("lead_to", []))})
+                if when == "start":
+                    log[-1].update(when="start", accessor=accessor.key, target=target,
+                                   brief=bool(iv.get("brief")))
             elif iv["kind"] == "windfall":
                 self.by_key[iv["lab"]].know_how += iv["capability"]
                 log.append({"kind": "windfall", "lab": iv["lab"], "capability": iv["capability"]})

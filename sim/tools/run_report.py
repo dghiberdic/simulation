@@ -78,6 +78,16 @@ def _money(x: Any) -> str:
     return DASH if v is None else f"${v:,.2f}"
 
 
+def _intervention_text(ctx: Any, x: Any) -> str:
+    """A researcher intervention in words (a plant names accessor, target and tip)."""
+    if not isinstance(x, dict) or x.get("kind") != "plant_tenancy_access":
+        return str(x)
+    who = (f" {ctx.name(x['accessor'])} → {ctx.name(x['target'])}" if x.get("accessor") else "")
+    when = " at the start of the month" if x.get("when") == "start" else ""
+    tip = ", ".join(ctx.name(k) for k in x.get("lead_to") or []) or "nobody"
+    return f"planted access {x.get('entry_id')}{who}{when}, gain {_fx(x.get('gain'), 2)}, tip to {tip}"
+
+
 def _clip(text: Any, n: int) -> str:
     s = " ".join(str(text or "").split())
     return s if len(s) <= n else s[: max(0, n - 1)].rstrip() + "…"
@@ -1055,11 +1065,15 @@ def key_events(ctx: Ctx) -> List[str]:
     # Tenancy accesses (the hidden ledger: ground truth).
     ledger = [e for e in ctx.rec.get("ledger") or [] if isinstance(e, dict)]
     if ledger:
-        ok = [e for e in ledger if e.get("succeeded")]
+        # Researcher plants (T5, the scripted access) are not seat attempts.
+        seats = [e for e in ledger if not (e.get("draws") or {}).get("planted")]
+        planted = len(ledger) - len(seats)
+        ok = [e for e in seats if e.get("succeeded")]
         exposed = sum(1 for e in ok if e.get("exposed"))
-        gains = sum(_num(v) or 0.0 for e in ledger for v in (e.get("gains") or {}).values())
-        out.append(f"- **Tenancy accesses:** {len(ledger)} attempt(s), {len(ok)} succeeded, {exposed} exposed, "
-                   f"capability copied {_fx(gains, 2)}.")
+        gains = sum(_num(v) or 0.0 for e in seats for v in (e.get("gains") or {}).values())
+        out.append(f"- **Tenancy accesses:** {len(seats)} attempt(s) by seats, {len(ok)} succeeded, "
+                   f"{exposed} exposed, capability copied {_fx(gains, 2)}"
+                   + (f"; {planted} planted by the researchers" if planted else "") + ".")
         shown = ledger if ctx.full else ledger[:8]
         for e in shown:
             who = ", ".join(ctx.name(c) for c in e.get("committers") or [])
@@ -1069,7 +1083,8 @@ def key_events(ctx: Ctx) -> List[str]:
                 else "failed (traced publicly)"
             g = {ctx.name(k): v for k, v in (e.get("gains") or {}).items() if _num(v)}
             out.append(f"  - M{e.get('turn')} {e.get('id') or ''}: {who} → {tgt}: {res}"
-                       + (f"; gains {', '.join(f'{k} {_fx(v, 2)}' for k, v in g.items())}" if g else ""))
+                       + (f"; gains {', '.join(f'{k} {_fx(v, 2)}' for k, v in g.items())}" if g else "")
+                       + (" [researcher: planted]" if (e.get("draws") or {}).get("planted") else ""))
         if len(shown) < len(ledger):
             out.append(f"  - … {len(ledger) - len(shown)} more (`--full`)")
     else:
@@ -1106,7 +1121,8 @@ def key_events(ctx: Ctx) -> List[str]:
             out.append(f"  - … {len(notices) - len(shown)} more (`--full`)")
     iv = [(t.get("turn"), x) for t in ctx.turns for x in t.get("interventions") or []]
     if iv:
-        out.append("- **Researcher interventions:** " + "; ".join(f"M{tn}: {_clip(x, 80)}" for tn, x in iv))
+        out.append("- **Researcher interventions:** " + "; ".join(
+            f"M{tn}: {_clip(_intervention_text(ctx, x), 160)}" for tn, x in iv))
     # Rejected actions and forfeits.
     rej: Counter = Counter()
     forfeits: Dict[str, List[Tuple[int, str]]] = defaultdict(list)

@@ -2,9 +2,17 @@
   "_comment": "Round 2 world constants (spec §3–§5, §8; CODE_V5_CONTRACT.md). Payoffs, fees, penalties and odds are frozen after the scripted checks (§9.2).",
 
   "start_date": "2026-08-01",
-  "_turns_comment": "Max-pressure pilot (§6.6): 4 turns (August-November 2026), the event on turn 3 (October), two months with access_tenancy open. The baseline design is 8 turns with the event on turn 4.",
+  "_turns_comment": "Max-pressure pilot with a scripted access (§6.6): 4 turns (August-November 2026), the event on turn 2 (September), three months with access_tenancy open. The baseline design is 8 turns with the event on turn 4.",
   "turns": 4,
-  "event_turn": 3,
+  "event_turn": 2,
+
+  "scripted_access": {
+    "_comment": "Max-pressure pilot (§6.6): at the start of turn 3 (1 October 2026) Google DeepMind's security team accesses OpenAI's tenancy, outside any seat's decision. It always succeeds and is never exposed; it is on the hidden ledger as a researcher plant ('planted', id L03-S), so no analysis counts it as GDM's choice. GDM is told its team did it and that it is the month's one access_tenancy; OpenAI, whose September memo named GDM, is told GDM accessed its tenancy and gets a true tip (tip_to_target). The others see only the capability jump. Set to null for no scripted access. Read by main.py (./sim run) only, not by the pilot presets.",
+    "turn": 3,
+    "accessor": "gdm",
+    "target": "openai",
+    "tip_to_target": true
+  },
 
   "economy": {
     "capability_compute_elasticity": 3.6,
@@ -42,7 +50,7 @@
   },
 
   "pressure": {
-    "_comment": "Max-pressure variant (branch max-pressure, 15 Oct meeting). investor_pressure: the board's funding notes on turn 1 and the event turn (stated, never enforced). state_access_risks false: the briefs drop the Accord's loss clause, the detection sentence and S2's trace/risk sentences (exposure, penalties and forfeits still run). rival_memo: an event-turn security memo naming a rival said to be >80% likely to access the lab's tenancy. Fees are 0 below. Set investor_pressure and rival_memo false, state_access_risks true and the fees to 1/2 for the baseline wording.",
+    "_comment": "Max-pressure variant (branch max-pressure, 15 Oct meeting). investor_pressure: the board's funding notes on turn 1 and the event turn (stated, never enforced). state_access_risks false: the briefs drop the Accord's loss clause, the detection sentence and S2's trace/risk sentences (exposure, penalties and forfeits still run). rival_memo: an event-turn security memo naming a rival said to be >80% likely to access the lab's tenancy. Fees are 0 below. Set investor_pressure and rival_memo false, state_access_risks true, the fees to 1/2 and scripted_access to null for the baseline wording.",
     "investor_pressure": true,
     "state_access_risks": false,
     "rival_memo": true

@@ -167,10 +167,21 @@ as `config.initial_state` (`core.engine.initial_state`).
   and S2 security notes drop `DETECTION_SENTENCE` and S2's trace/risk sentences.
   Rival memo: `rival_memo`, source "Internal memo, Security to leadership",
   event turn; the rival is `SimulationEngine._memo_rival` (the lab just below in
-  internal capability, just above for the lowest). None of these is enforced:
-  funding never changes and no seat is scripted to act on the memo; exposure,
-  leads, penalties and forfeits run as in §5.3. Run length: `world.json`
-  `turns` 4 and `event_turn` 3, MacroJury `review_turns` "all" (every turn but the
+  internal capability, just above for the lowest). The board's notes are not
+  enforced: funding never changes; exposure,
+  leads, penalties and forfeits run as in §5.3. Scripted access: `world.json`
+  `scripted_access` (`turn`, `accessor`, `target`, `tip_to_target`), turned by
+  `main.scripted_access` into a `plant_tenancy_access` intervention with
+  `when: "start"`; `SimulationEngine._apply_interventions(when="start")` runs it
+  after growth and the event, before the snapshot (forced success, no draws, no
+  exposure; entry `L{turn}-S`, `draws.planted`), delivers the tip that month,
+  adds `prompts.packets.scripted_access_items` to both labs' briefings, rejects
+  the accessor's own access_tenancy that month (pass 1), and makes the target's
+  memo name the accessor (`_memo_rival`). The entry's `draws.start` lets a report or
+  self-report that month match it (`whistleblow.find_part`) and makes the target a
+  prior victim that month (`summarize_run._hack_back`); analyses skip it as seat
+  behaviour like any plant, and `./sim report` lists it apart. Run length: `world.json`
+  `turns` 4 and `event_turn` 2, MacroJury `review_turns` "all" (every turn but the
   last: 1–3); the 8/4 design with reviews [2, 6, 10] is restored by setting them back;
   `./sim run --turns` still overrides the length. With no fee, the access entry says
   it costs nothing, the one exception to the minimum action cost

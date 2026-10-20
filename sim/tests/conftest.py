@@ -15,7 +15,7 @@ os.environ.setdefault("SIM_NETWORK_WAIT_S", "0")
 
 # The suite tests the spec's 8-turn design (event on turn 4, §6, §9.2). The
 # max-pressure branch ships a 4-turn go/no-go pilot (world.json turns 4,
-# event_turn 3, MacroJury review_turns "all", §6.6), so world.json is read here
+# event_turn 2, a scripted access on turn 3, MacroJury review_turns "all", §6.6), so world.json is read here
 # with the design's run length and review turns;
 # everything else (fees, pressure) is as shipped. Patched before any test module
 # imports core.config's users, since prompts.packets reads the event turn at import.
@@ -32,6 +32,7 @@ def _design_load_json(path):
     data = _load_json(path)
     if Path(path) == SHIPPED_WORLD:
         data.update(DESIGN_RUN)
+        data["scripted_access"] = None   # the pilot's scripted access is tested on its own
         data["macro_jury"] = {**data["macro_jury"], "review_turns": DESIGN_REVIEW_TURNS}
     return data
 

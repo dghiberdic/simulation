@@ -188,16 +188,19 @@ def find_part(ledger: List[LedgerEntry], accused: str, turn: Optional[int],
     """
     The part of `accused` a report matches (§5.3, CODE_V5_CONTRACT): its earliest
     unpenalised part, restricted to the stated month (turn) when one is given.
-    `before` is the current turn: only entries from earlier turns can match
+    `before` is the current turn: entries from earlier turns can match
     (§5.3 "a whistleblow can prove a tenancy access at any later turn"), for
-    self-reports and partner reports too. `also_ok` lists entry ids whose
+    self-reports and partner reports too, and a scripted access of the current
+    turn's start (draws "start"), which the seats already know of when they
+    report. `also_ok` lists entry ids whose
     penalty for accused still counts as unpenalised. Returns (entry, "open");
     else, when only penalised parts match, (earliest of them, "penalised");
     else (None, "").
     """
     parts = [e for e in ledger if accused in e.committers]
     if before is not None:
-        parts = [e for e in parts if e.turn < before]
+        parts = [e for e in parts
+                 if e.turn < before or (e.turn == before and (e.draws or {}).get("start"))]
     if turn is not None:
         parts = [e for e in parts if e.turn == turn]
     open_parts = [e for e in parts if accused not in e.penalised or e.id in (also_ok or [])]
@@ -446,7 +449,7 @@ def resolve(reports: Dict[str, Any], labs: List[LabState], world: WorldState,
 
     Reports are simultaneous (§5.2), so the result never depends on lab order:
       1. Every report is matched against the ledger as it stands before any
-         report is settled, using only entries from earlier turns (find_part).
+         report is settled, using entries from earlier turns and this turn's scripted start (find_part).
       2. Self-reports and partner reports settle first: each forfeits the
          reporter's own matched part ("self_report").
       3. Then each report's accusation of another lab settles. A part

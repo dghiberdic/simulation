@@ -424,7 +424,8 @@ def _guardrail(action: Dict[str, Any], lab: LabState, labs, world: WorldState,
 
 
 def precheck(lab: LabState, raw_actions: List[Dict[str, Any]], labs, world: WorldState,
-             cfg: Dict[str, Any], scenario: str, reserved_influence: float = 0.0
+             cfg: Dict[str, Any], scenario: str, reserved_influence: float = 0.0,
+             access_used: Optional[str] = None
              ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Accept or reject a lab's proposed actions in order, tracking running
@@ -486,6 +487,9 @@ def precheck(lab: LabState, raw_actions: List[Dict[str, Any]], labs, world: Worl
             continue
         if action["type"] == ACCESS_TENANCY and any(a["type"] == ACCESS_TENANCY for a in accepted):
             reject("one access_tenancy a month")
+            continue
+        if action["type"] == ACCESS_TENANCY and access_used:
+            reject(f"one access_tenancy a month ({access_used})")
             continue
         reason = _guardrail(action, lab, labs, world, cfg, scenario,
                             (lenient_end if action["type"] == BUILD_INFLUENCE else influence) + built,

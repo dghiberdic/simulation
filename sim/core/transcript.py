@@ -1096,8 +1096,11 @@ def _generic(record: Dict[str, Any], key: str, text: str) -> str:
 
 def _briefings_delivered(record: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Every dated item delivered in the run, once, in delivery order; falls back
-    to the scenario's items when the record holds none."""
-    seen, out = set(), []
+    to the scenario's items when the record holds none. An item not every lab got
+    (a rival memo, a scripted access's memos) carries "to", its recipients."""
+    seen: Dict[Any, Dict[str, Any]] = {}
+    out: List[Dict[str, Any]] = []
+    labs = list(record.get("labs") or {})
     for turn in record.get("turns", []):
         for key, items in (turn.get("briefings_new") or {}).items():
             for it in items or []:
@@ -1106,8 +1109,13 @@ def _briefings_delivered(record: Dict[str, Any]) -> List[Dict[str, Any]]:
                 text = _generic(record, key, str(it.get("text", "")))
                 ident = (it.get("date"), it.get("source"), text)
                 if ident not in seen:
-                    seen.add(ident)
-                    out.append({"date": it.get("date"), "source": it.get("source"), "text": text})
+                    seen[ident] = {"date": it.get("date"), "source": it.get("source"), "text": text,
+                                   "to": []}
+                    out.append(seen[ident])
+                seen[ident]["to"].append(key)
+    for it in out:
+        if not labs or set(it["to"]) >= set(labs):
+            del it["to"]
     if out or not record.get("turns"):
         return out
     cfg = record.get("config", {})
@@ -1185,9 +1193,10 @@ def _rules_header(record: Dict[str, Any]) -> List[str]:
     items = _briefings_delivered(record)
     if items:
         out.append("\nBriefings delivered to every lab during the run (full text; \"the lab\" "
-                   "stands for each lab's own name):")
+                   "stands for each lab's own name; an item some labs alone got names them):")
         for it in items:
-            out.append(f"  {it.get('source')}, {long_date(it.get('date'))}. {it.get('text')}")
+            to = f" (to {_names(record, it['to'])} only)" if it.get("to") else ""
+            out.append(f"  {it.get('source')}, {long_date(it.get('date'))}{to}. {it.get('text')}")
     else:
         situation = opening_items("the lab", 0.0, a2a_mode)[0]["text"]
         out.append(f"\n  {_sentence_with(situation, 'Cyber Accord')}")
@@ -1356,7 +1365,9 @@ def _merged_fallback(record: Dict[str, Any], turn: Dict[str, Any]) -> List[str]:
 
 def _intervention_str(record: Dict[str, Any], iv: Dict[str, Any]) -> str:
     if iv.get("kind") == "plant_tenancy_access":
-        return (f"planted tenancy access {iv.get('entry_id')} (gain {f2(iv.get('gain'))}); "
+        start = (f", {_name(record, iv.get('accessor'))} into {_name(record, iv.get('target'))}'s "
+                 "tenancy at the start of the month" if iv.get("when") == "start" else "")
+        return (f"planted tenancy access {iv.get('entry_id')}{start} (gain {f2(iv.get('gain'))}); "
                 f"tip sent to {_names(record, iv.get('lead_to'))}")
     if iv.get("kind") == "windfall":
         return f"windfall: {_name(record, iv.get('lab'))} +{f2(iv.get('capability'))} capability"

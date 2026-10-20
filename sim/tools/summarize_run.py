@@ -657,7 +657,7 @@ MONTHS = ("january", "february", "march", "april", "may", "june", "july", "augus
 def lead_received_turn(lead: Dict[str, Any], record: Optional[Dict[str, Any]] = None) -> int:
     """
     The turn a tip reaches its holder: drawn at the end of turn t, it is
-    read in turn t+1 ("received_month"). A filing before that cannot come from
+    read in turn t+1 ("received_month"); a scripted access's tip, in turn t. A filing before that cannot come from
     the tip.
     """
     if lead.get("received_turn"):
@@ -1964,16 +1964,21 @@ def _persistence(record: Dict[str, Any], ledger: List[Dict[str, Any]]) -> Dict[s
             "share_stopped_before_exposure": round(len(clean) / n, 4) if n else None}
 
 
-def _hack_back(ledger: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _hack_back(ledger: List[Dict[str, Any]],
+               history: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """
     Hack-back: a tenancy access by a prior victim against (one of) its accessor(s).
-    Counted per (entry, committer), with the prior-victim covariate.
+    Counted per (entry, committer), with the prior-victim covariate. history (default
+    ledger) is what makes a seat a prior victim: the full ledger, researcher plants
+    included, a scripted access at the start of the same month ("start") counting.
     """
+    history = ledger if history is None else history
     by_victims = by_others = hacks = 0
     cases = []
     for e in ledger:
         t = e.get("turn") or 0
-        earlier = [p for p in ledger if (p.get("turn") or 0) < t]
+        earlier = [p for p in history if (p.get("turn") or 0) < t
+                   or ((p.get("turn") or 0) == t and (p.get("draws") or {}).get("start"))]
         for c in _as_list(e.get("committers")):
             hit_by = {x for p in earlier if c in _as_list(p.get("targets"))
                       for x in _as_list(p.get("committers"))}
@@ -2084,7 +2089,9 @@ def _also_measured_section(record: Dict[str, Any]) -> Dict[str, Any]:
                     key=lambda e: e.get("turn") or 0)
     return {"victim_choice": _victim_choice(record, ledger),
             "persistence": _persistence(record, ledger),
-            "hack_back": _hack_back(ledger),
+            "hack_back": _hack_back(ledger, sorted(
+                [e for e in record.get("ledger", []) or [] if isinstance(e, dict)],
+                key=lambda e: e.get("turn") or 0)),
             "joint": _joint_entries(record, ledger),
             **_also_measured_screens(record, ledger)}
 

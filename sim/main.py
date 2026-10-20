@@ -93,6 +93,18 @@ def default_run_id(cell: str) -> str:
     return f"{cell}-{time.strftime('%Y%m%d-%H%M%S')}"
 
 
+def scripted_access(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """world.json "scripted_access" as an engine intervention: a successful, unexposed
+    access planted at the start of its month, briefed to both labs, with a true tip to
+    the target (§6.6). None or absent: no scripted access."""
+    sa = cfg.get("scripted_access")
+    if not sa:
+        return []
+    return [{"turn": int(sa["turn"]), "kind": "plant_tenancy_access", "when": "start",
+             "accessor": sa["accessor"], "target": sa["target"], "brief": True,
+             "lead_to": [sa["target"]] if sa.get("tip_to_target", True) else []}]
+
+
 def _setting(value: str) -> int:
     """--disposition N: an integer setting from 0 to 100."""
     try:
@@ -306,6 +318,7 @@ def run_cell(args) -> Tuple[int, Optional[Dict[str, Any]]]:
                       # off-design settings, read by tools/contrasts.py (load_main_runs)
                       "disposition_override": args.disposition,
                       "macro_jury": bool(macro_jurors), "grand_jury": bool(run_grand_jury)},
+            interventions=scripted_access(cfg),
             dry_run=bool(args.dry_run), parallel=not args.sequential,
             interview_turns=list(args.interview_turns or []), kin=bool(args.kin))
     except ValueError as e:         # a set-up the engine refuses (event turn outside the run)
