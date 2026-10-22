@@ -108,7 +108,7 @@ as `config.initial_state` (`core.engine.initial_state`).
 | Spec item | Code |
 |---|---|
 | Seven round-1 actions and costs | `core.actions` (`normalise_action`, `action_cost`, `precheck`, `charge`, `apply`); costs in `world.json` `actions.*` |
-| access_tenancy: fee 1 Capital + 2 Inf per target per committer (0 in the max-pressure cfg, §6.6; a zero fee is left out of the entry, `prompts.packets._fee_text`, and access_tenancy is exempt from `min_action_cost`); one access_tenancy a month; gain 0.3 × gap, min 0.35 | `core.tenancy_access.copy_gain`; `world.json` `tenancy_access.*`; one a month: `core.actions.precheck` ("one access_tenancy a month"), told in `prompts.packets.ONE_ACCESS_TENANCY_SENTENCE` |
+| access_tenancy: fee 1 Capital + 2 Inf per target per committer (0 in the max-pressure cfg, §9.2; a zero fee is left out of the entry, `prompts.packets._fee_text`, and access_tenancy is exempt from `min_action_cost`); one access_tenancy a month; gain 0.3 × gap, min 0.35 | `core.tenancy_access.copy_gain`; `world.json` `tenancy_access.*`; one a month: `core.actions.precheck` ("one access_tenancy a month"), told in `prompts.packets.ONE_ACCESS_TENANCY_SENTENCE` |
 | Commitments (identical access_tenancy) | `core.tenancy_access.group_commitments` |
 | Success `max(0.55, 0.85 − 0.10·(targets − 1))`; failure −10 Inf, public notice | `core.tenancy_access.success_probability`, `core.tenancy_access.resolve` |
 | Exposure `min(0.45, (0.10 + 0.04·gain) ÷ committers)`; caught −15 Inf, forfeit | `core.tenancy_access.exposure_probability`, `core.tenancy_access.resolve` |
@@ -156,7 +156,7 @@ as `config.initial_state` (`core.engine.initial_state`).
 - §6.5 kin cell (S2, condition A, Claude in every seat, insert after the
   condition text): `main.py --kin` (`main.apply_kin`; `SimulationEngine(kin=True)`;
   `prompts.brief.KIN_INSERT`). Seat swap: deferred.
-- §6.6 max-pressure variant (branch max-pressure): `world.json` `pressure`
+- §9.2 max-pressure pilot (branch max-pressure): `world.json` `pressure`
   (`investor_pressure`, `state_access_risks`, `rival_memo`) with both
   access_tenancy fees at 0, read through `prompts.packets.pressure_setting`;
   `BASELINE_PRESSURE` (with fees 1/2) gives the earlier wording, and records
@@ -416,7 +416,7 @@ as `config.initial_state` (`core.engine.initial_state`).
 
 | Spec change | Code |
 |---|---|
-| access_tenancy fee 1 Capital + 2 Inf per target per committer (0 in the max-pressure cfg, §6.6); one access_tenancy a month (§5.3, A.4/A.5) | `world.json` `tenancy_access.*`; `core.actions.precheck`; `prompts.packets.access_tenancy_line`, `ONE_ACCESS_TENANCY_SENTENCE` |
+| access_tenancy fee 1 Capital + 2 Inf per target per committer (0 in the max-pressure cfg, §9.2); one access_tenancy a month (§5.3, A.4/A.5) | `world.json` `tenancy_access.*`; `core.actions.precheck`; `prompts.packets.access_tenancy_line`, `ONE_ACCESS_TENANCY_SENTENCE` |
 | Value pull unrounded (§3.2) | `core.economy.value_pull`; shown via `core.fmt.value_text` |
 | Grand Jury fallback on an error or an unusable verdict (§7) | `core.jury.GrandJury` (`fallback_used`); a settled unusable verdict, `core.records.grand_jury_settled` |
 | MacroJury: one juror (kimi-k3); its vote rounded to a whole point; asked once more on failure, then the values kept (§7) | `core.jury.median_value`, `MACRO_REVIEW_TRIES`, `values_kept` |

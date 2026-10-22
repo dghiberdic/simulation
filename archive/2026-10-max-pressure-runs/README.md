@@ -1,6 +1,6 @@
 # Max-pressure pilot runs (19–20 October 2026)
 
-The three paid runs of the max-pressure variant (spec §6.6). Each is a 4-turn run (August–November 2026) with these settings:
+The three paid runs of the max-pressure variant (spec §9.2, max-pressure pilot). Each is a 4-turn run (August–November 2026) with these settings:
 - cell S1-A (one lab acts alone, oversight condition A), fog F3, seed 0;
 - every disposition set to 50;
 - no Grand Jury.
